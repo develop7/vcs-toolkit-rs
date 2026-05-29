@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/git", "crates/jj", "crates/github"]
+
+# Metadata shared by every crate in the toolkit. Each crate inherits these via
+# `field.workspace = true` in its own Cargo.toml. NOTE: `version` is *not* here
+# on purpose — the three crates publish independently and carry their own
+# version (see each crate's [package]).
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ZelAnton/vcs-toolkit-rs"
+authors = ["Anton Zhelezniakou"]
+
+# ---------------------------------------------------------------------------
+# Workspace dependencies
+#
+# Convention (see AGENTS.md "Dependency management"): this workspace fixes NO
+# allow-list of crates. Declare a dependency here once and reference it from a
+# member with `<crate>.workspace = true` when more than one crate needs it.
+# Give every entry an inline comment explaining *why* it's here. Pin major
+# versions, enable only the features used, and keep Cargo.lock committed.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
