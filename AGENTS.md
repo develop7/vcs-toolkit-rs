@@ -19,19 +19,31 @@ library crates:
 | `crates/jj` | `vcs-jj` | `jj` |
 | `crates/github` | `vcs-github` | `gh` (GitHub CLI) |
 
-The three wrappers expose the same shape: a `run<I, S>(args)` helper that
-executes the underlying binary and returns trimmed stdout (or an `io::Error`
-carrying stderr on failure), plus typed wrappers like `version()`. Keep that
-shape consistent across crates when adding command wrappers.
+Each wrapper exposes the same shape — an **interface trait**
+(`GitApi`/`JjApi`/`GitHubApi`) and a real client struct
+(`Git`/`Jj`/`GitHub`) generic over a `Runner`. Typed, repo-scoped methods take
+`dir: &Path` and return parsed structs; pure parsers live in each crate's
+`parse.rs`. Keep this shape consistent across crates and **keep the traits
+object-safe** (no generic methods, no nested-reference lifetimes — use
+`&[PathBuf]`, not `&[&Path]`) so `&dyn Api` and `mockall` both work.
+
+**Mockability is a first-class requirement.** Consumers depend on the trait and,
+in tests, either enable the `mock` feature for a `mockall`-generated mock
+(`MockGitApi`) or call `Git::with_runner(`[`ScriptedRunner`]`)` to drive the real
+argument-building and parsing against canned output. New commands must keep both
+seams working (add a trait method + a hermetic `ScriptedRunner` test).
 
 `vcs-process` is the one shared crate the wrappers depend on. It launches every
 child inside an OS **job** — a Windows [Job Object] with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, or a Linux [cgroup v2] killed via
 `cgroup.kill` (falling back to a POSIX process group when no writable cgroup is
 available) — so the whole process tree dies with the parent. The platform FFI
-lives only here (`crates/process/src/{windows,linux,other}.rs`); the wrappers
-just call `vcs_process::run`. v1 guarantees kill-on-close; resource limits are a
-future extension, observable via `Job::mechanism()`.
+lives only here (`crates/process/src/{windows,linux,other}.rs`). The `Runner`
+trait is the execution seam: `JobRunner` is the real one, `ScriptedRunner` the
+test double. v1 guarantees kill-on-close; resource limits are a future
+extension, observable via `Job::mechanism()`.
+
+[`ScriptedRunner`]: crates/process/src/runner.rs
 
 [Job Object]: https://learn.microsoft.com/windows/win32/procthread/job-objects
 [cgroup v2]: https://docs.kernel.org/admin-guide/cgroup-v2.html
@@ -44,7 +56,9 @@ cargo test                          # all unit + integration tests (workspace)
 cargo test -p vcs-git               # scope to one crate
 cargo test <name>                   # tests matching a substring
 cargo test -- --ignored             # tests needing the real git/jj/gh binaries
+cargo test --workspace --features mock      # exercise the mockall mocks + ScriptedRunner
 cargo clippy --all-targets -- -D warnings   # lint (CI treats warnings as errors)
+cargo clippy --workspace --all-targets --features mock -- -D warnings
 cargo fmt --all --check             # format check (CI gate)
 ```
 
@@ -87,6 +101,12 @@ The convention is about *how* you add dependencies, not *which*:
 - **Commit `Cargo.lock`.** Reproducible builds — it's tracked, not ignored.
 - **Platform-specific deps** go under a cfg target table, e.g.
   `[target.'cfg(windows)'.dependencies]`, with the same "why" comment.
+- **Test-only deps go behind a feature.** `mockall` is an `optional`
+  dependency enabled only by each crate's `mock` feature
+  (`mock = ["dep:mockall", …]`) so it never compiles into production. A
+  *consumer* enables `mock` in `[dev-dependencies]` only — because Cargo unifies
+  features, listing `vcs-git` as both a normal dep and a `mock`-enabled dep in
+  one build would drag `mockall` into the release binary.
 
 ## Local-only files
 

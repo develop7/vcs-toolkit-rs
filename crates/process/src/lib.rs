@@ -30,6 +30,11 @@ mod imp;
 mod exec;
 pub use exec::{Exec, Output};
 
+mod runner;
+#[cfg(feature = "mock")]
+pub use runner::MockRunner;
+pub use runner::{JobRunner, Runner, ScriptedRunner};
+
 /// Which OS mechanism a [`Job`] is actually using to contain its processes.
 ///
 /// Surfaced so callers can tell when Linux silently fell back from a cgroup to a

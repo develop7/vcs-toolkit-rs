@@ -21,11 +21,33 @@ independently**:
 | [`crates/jj`](crates/jj) | the `jj` (Jujutsu) binary | `vcs-jj` |
 | [`crates/github`](crates/github) | the `gh` (GitHub CLI) binary | `vcs-github` |
 
-The three wrappers expose the same shape — a `run` helper that executes the
-underlying binary with arbitrary arguments, plus typed, repo-scoped commands
-that return parsed structs — and delegate process launching to `vcs-process`.
-That is their only dependency, except `vcs-github`, which adds `serde`/`serde_json`
-to deserialize `gh … --json` output.
+Each wrapper exposes an **interface trait** (`GitApi`/`JjApi`/`GitHubApi`) and a
+real client (`Git`/`Jj`/`GitHub`) with typed, repo-scoped commands that return
+parsed structs. They delegate process launching to `vcs-process` — their only
+dependency, except `vcs-github`, which adds `serde`/`serde_json` to deserialize
+`gh … --json` output.
+
+### Built for testing
+
+Consumers code against the trait and substitute a fake in their tests — two seams:
+
+```rust
+use vcs_git::{Git, GitApi};
+use std::path::Path;
+
+// Production code depends on the interface, not the concrete client:
+fn current(git: &dyn GitApi) -> std::io::Result<String> {
+    git.current_branch(Path::new("."))
+}
+
+let git = Git::new();              // real, job-backed git
+let _ = current(&git);
+```
+
+- **Mock the interface** — enable the `mock` feature; `mockall` generates
+  `MockGitApi` for stubbing whole methods (`expect_current_branch().returning(…)`).
+- **Inject a runner** — `Git::with_runner(vcs_process::ScriptedRunner::new()…)`
+  feeds canned binary output through the *real* argument-building and parsing.
 
 ## Build, test
 

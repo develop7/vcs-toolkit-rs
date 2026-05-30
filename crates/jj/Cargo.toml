@@ -10,7 +10,14 @@ readme = "README.md"
 
 [dependencies]
 # Runs `jj` inside an OS job (Windows Job Object / Linux cgroup) so the process
-# tree is killed on close — no orphaned subprocesses.
+# tree is killed on close — no orphaned subprocesses. Also the `Runner` seam.
 vcs-process.workspace = true
+# Auto-generated `MockJjApi` for consumers' tests. Test-only — enabled only via
+# the `mock` feature, never compiled into production builds.
+mockall = { version = "0.13", optional = true }
+
+[features]
+# Expose the `mockall`-generated `MockJjApi` (and pull in vcs-process's mocks).
+mock = ["dep:mockall", "vcs-process/mock"]
 
 [dev-dependencies]

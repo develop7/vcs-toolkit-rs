@@ -10,17 +10,18 @@ crates; tag releases as `vcs-github-v<version>`.
 ## [Unreleased]
 
 ### Added
-- Typed commands deserializing `gh … --json` into structs: `pr_list`/`pr_view`
-  (`PullRequest`), `issue_list` (`Issue`), `repo_view` (`Repo`), `auth_status`,
-  and raw `api`, plus an `exec()` builder preset. Adds `serde`/`serde_json`.
+- `GitHubApi` trait + `GitHub` client with typed commands deserializing
+  `gh … --json` into structs: `pr_list`/`pr_view` (`PullRequest`), `issue_list`
+  (`Issue`), `repo_view` (`Repo`), `auth_status`, and raw `api`. Adds
+  `serde`/`serde_json`.
+- **Mockable by design:** consumers code against `GitHubApi`; `GitHub::with_runner`
+  injects a fake process runner, and the `mock` feature generates `MockGitHubApi`
+  (via `mockall`).
 
 ### Changed
-- `run` now launches `gh` inside an OS job (Windows Job Object / Linux cgroup v2)
-  via `vcs-process`, so the process tree is killed on close — no orphaned
-  subprocesses.
-
-### Fixed
--
+- The API is now the `GitHub` client + `GitHubApi` trait — the original free
+  functions are gone. Commands launch `gh` inside an OS job (Windows Job Object /
+  Linux cgroup v2) via `vcs-process`, killed on close.
 
 ## [0.1.0] - 2026-05-29
 

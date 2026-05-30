@@ -10,18 +10,22 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
-- Typed, repo-scoped commands returning parsed structs: `status` (`StatusEntry`),
-  `log`/`current_branch`/`branches`/`rev_parse`, `init`/`add`/`commit`, and
-  `diff_is_empty`. New `Commit`/`Branch`/`StatusEntry` types and an `exec()`
-  builder preset for working directory, env, and stdin.
+- `GitApi` trait + `Git` client with typed, repo-scoped commands returning parsed
+  structs: `status` (`StatusEntry`), `log`/`current_branch`/`branches`/`rev_parse`,
+  `init`/`add`/`commit`, `diff_is_empty`. New `Commit`/`Branch`/`StatusEntry` types.
+- **Mockable by design:** consumers code against `GitApi`; `Git::with_runner`
+  injects a fake process runner (e.g. `vcs_process::ScriptedRunner`), and the
+  `mock` feature generates `MockGitApi` (via `mockall`) for stubbing whole methods.
 
 ### Changed
-- `run` now launches `git` inside an OS job (Windows Job Object / Linux cgroup v2)
-  via `vcs-process`, so the process tree is killed on close — no orphaned
-  subprocesses.
+- The API is now the `Git` client + `GitApi` trait — the original free functions
+  (`run`/`version`/`status`/…) are gone. Commands launch `git` inside an OS job
+  (Windows Job Object / Linux cgroup v2) via `vcs-process`, killed on close.
 
 ### Fixed
--
+- `status`/`branches` parsing no longer corrupts the first entry: output is parsed
+  raw instead of being trimmed, which had stripped leading `--porcelain` status
+  spaces and `branch` markers.
 
 ## [0.1.0] - 2026-05-29
 

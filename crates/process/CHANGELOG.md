@@ -18,5 +18,11 @@ crates; tag releases as `vcs-process-v<version>`.
   with `run()` (error on non-zero exit) and `output()` (capture the status). New
   `Output` type (`success`/`combined`/`into_result`) and free `output()` helper.
   `Child::try_wait` for non-blocking liveness checks.
+- `Runner` trait — the execution boundary, so consumers can inject a fake in
+  tests. `JobRunner` is the real (default) runner; `ScriptedRunner` is a
+  dependency-free test double mapping a command to a canned `Output`. New
+  `Output::ok`/`Output::fail` constructors and `Exec::program`/`arguments`/
+  `working_dir` accessors. With the `mock` feature, `mockall` also generates
+  `MockRunner`.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main

@@ -1,21 +1,19 @@
 //! `vcs-github` — automate GitHub from Rust through the `gh` CLI.
 //!
-//! Thin wrappers that shell out to the GitHub CLI (`gh`) and capture its output.
+//! The API is built for **mockability**: consumers depend on the [`GitHubApi`]
+//! trait and substitute a mock for the real [`GitHub`] client in their tests.
 //! Commands run inside an OS job (via [`vcs_process`]) so a `gh` subprocess is
 //! never orphaned.
 //!
-//! Three layers, from raw to typed:
-//! - [`run`] / [`version`] — the original thin string helpers.
-//! - [`exec`] — a [`vcs_process::Exec`] preset on the `gh` binary.
-//! - typed commands ([`pr_list`], [`issue_list`], [`repo_view`], …) that
-//!   deserialize `gh … --json` output into structs ([`PullRequest`], [`Issue`],
-//!   [`Repo`]). The repo-scoped ones take a `dir` (`"."` for the current one).
+//! Two test seams: mock the interface (`mock` feature → `MockGitHubApi`), or
+//! inject a [`ScriptedRunner`](vcs_process::ScriptedRunner) via
+//! [`GitHub::with_runner`] to drive the real argument-building and JSON parsing
+//! against canned output.
 
-use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 
-use vcs_process::Exec;
+use vcs_process::{Exec, JobRunner, Output, Runner};
 
 mod parse;
 pub use parse::{Issue, PullRequest, Repo};
@@ -23,100 +21,161 @@ pub use parse::{Issue, PullRequest, Repo};
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "gh";
 
-/// Run `gh <args>` and return trimmed stdout on success.
-///
-/// Fails if the process can't be spawned (e.g. `gh` not on `PATH`) or exits
-/// with a non-zero status — stderr is surfaced in the error message.
-pub fn run<I, S>(args: I) -> io::Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    vcs_process::run(BINARY, args)
+/// The GitHub operations this crate exposes — the interface consumers code
+/// against and mock in tests.
+#[cfg_attr(feature = "mock", mockall::automock)]
+pub trait GitHubApi {
+    /// Installed GitHub CLI version (`gh --version`).
+    fn version(&self) -> io::Result<String>;
+    /// Whether the user is authenticated (`gh auth status` exits zero).
+    fn auth_status(&self) -> io::Result<bool>;
+    /// The repository for `dir` (`gh repo view --json …`).
+    fn repo_view(&self, dir: &Path) -> io::Result<Repo>;
+    /// Pull requests for `dir` (`gh pr list --json …`).
+    fn pr_list(&self, dir: &Path) -> io::Result<Vec<PullRequest>>;
+    /// A single pull request by number (`gh pr view <n> --json …`).
+    fn pr_view(&self, dir: &Path, number: u64) -> io::Result<PullRequest>;
+    /// Issues for `dir` (`gh issue list --json …`).
+    fn issue_list(&self, dir: &Path) -> io::Result<Vec<Issue>>;
+    /// Raw GitHub REST/GraphQL response body (`gh api <endpoint>`).
+    fn api(&self, endpoint: &str) -> io::Result<String>;
 }
 
-/// Return the installed GitHub CLI version (`gh --version`).
-pub fn version() -> io::Result<String> {
-    run(["--version"])
+/// The real GitHub client. Generic over the [`Runner`] so tests can inject a
+/// fake process executor; `GitHub::new()` uses the real job-backed runner.
+pub struct GitHub<R: Runner = JobRunner> {
+    runner: R,
 }
 
-/// A [`vcs_process::Exec`] builder preset to the `gh` binary — set a working
-/// directory, env vars, or stdin before running.
-pub fn exec() -> Exec {
-    Exec::new(BINARY)
+impl GitHub<JobRunner> {
+    /// A client backed by the real `gh` binary.
+    pub fn new() -> Self {
+        GitHub { runner: JobRunner }
+    }
 }
 
-/// `gh` in `dir` (internal builder for the repo-scoped commands below).
-fn at(dir: impl AsRef<Path>) -> Exec {
-    Exec::new(BINARY).current_dir(dir)
+impl Default for GitHub<JobRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// Whether the user is authenticated (`gh auth status` exits zero).
-pub fn auth_status() -> io::Result<bool> {
-    Ok(Exec::new(BINARY)
-        .args(["auth", "status"])
-        .output()?
-        .success())
+impl<R: Runner> GitHub<R> {
+    /// A client that runs commands through `runner` — pass a fake in tests.
+    pub fn with_runner(runner: R) -> Self {
+        GitHub { runner }
+    }
+
+    /// Build and run `gh <args>` (in `dir` if given), returning raw [`Output`].
+    fn out(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<Output> {
+        let mut exec = Exec::new(BINARY);
+        if let Some(dir) = dir {
+            exec = exec.current_dir(dir);
+        }
+        exec = exec.args(args);
+        self.runner.run(&exec)
+    }
+
+    /// Run and return raw stdout on success, else an error carrying stderr.
+    fn stdout(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<String> {
+        let out = self.out(dir, args)?;
+        if out.success() {
+            Ok(out.stdout)
+        } else {
+            Err(io::Error::other(format!(
+                "`{BINARY}` exited with {}: {}",
+                out.status,
+                out.stderr.trim()
+            )))
+        }
+    }
 }
 
-/// The repository for `dir` (`gh repo view --json …`).
-pub fn repo_view(dir: impl AsRef<Path>) -> io::Result<Repo> {
-    let out = at(dir)
-        .args(["repo", "view", "--json", "name,nameWithOwner,description"])
-        .run()?;
-    parse::from_json(&out)
-}
+impl<R: Runner> GitHubApi for GitHub<R> {
+    fn version(&self) -> io::Result<String> {
+        Ok(self.stdout(None, &["--version"])?.trim().to_string())
+    }
 
-/// Open/closed pull requests for `dir` (`gh pr list --json …`).
-pub fn pr_list(dir: impl AsRef<Path>) -> io::Result<Vec<PullRequest>> {
-    let out = at(dir)
-        .args(["pr", "list", "--json", "number,title,state,headRefName"])
-        .run()?;
-    parse::from_json(&out)
-}
+    fn auth_status(&self) -> io::Result<bool> {
+        Ok(self.out(None, &["auth", "status"])?.success())
+    }
 
-/// A single pull request by number (`gh pr view <n> --json …`).
-pub fn pr_view(dir: impl AsRef<Path>, number: u64) -> io::Result<PullRequest> {
-    let out = at(dir)
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--json",
-            "number,title,state,headRefName",
-        ])
-        .run()?;
-    parse::from_json(&out)
-}
+    fn repo_view(&self, dir: &Path) -> io::Result<Repo> {
+        let out = self.stdout(
+            Some(dir),
+            &["repo", "view", "--json", "name,nameWithOwner,description"],
+        )?;
+        parse::from_json(&out)
+    }
 
-/// Issues for `dir` (`gh issue list --json …`).
-pub fn issue_list(dir: impl AsRef<Path>) -> io::Result<Vec<Issue>> {
-    let out = at(dir)
-        .args(["issue", "list", "--json", "number,title,state"])
-        .run()?;
-    parse::from_json(&out)
-}
+    fn pr_list(&self, dir: &Path) -> io::Result<Vec<PullRequest>> {
+        let out = self.stdout(
+            Some(dir),
+            &["pr", "list", "--json", "number,title,state,headRefName"],
+        )?;
+        parse::from_json(&out)
+    }
 
-/// Call the GitHub REST/GraphQL API and return the raw JSON body (`gh api`).
-pub fn api(endpoint: &str) -> io::Result<String> {
-    Exec::new(BINARY).args(["api", endpoint]).run()
+    fn pr_view(&self, dir: &Path, number: u64) -> io::Result<PullRequest> {
+        let n = number.to_string();
+        let out = self.stdout(
+            Some(dir),
+            &["pr", "view", &n, "--json", "number,title,state,headRefName"],
+        )?;
+        parse::from_json(&out)
+    }
+
+    fn issue_list(&self, dir: &Path) -> io::Result<Vec<Issue>> {
+        let out = self.stdout(
+            Some(dir),
+            &["issue", "list", "--json", "number,title,state"],
+        )?;
+        parse::from_json(&out)
+    }
+
+    fn api(&self, endpoint: &str) -> io::Result<String> {
+        Ok(self.stdout(None, &["api", endpoint])?.trim().to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vcs_process::{Output, ScriptedRunner};
 
     #[test]
     fn binary_name_is_gh() {
         assert_eq!(BINARY, "gh");
     }
 
-    // Requires the `gh` binary on PATH, so it's ignored by default and not
-    // exercised in CI. Run locally with `cargo test -- --ignored`.
+    // Hermetic: real pr_list() arg-building + JSON deserialization against canned
+    // output — no `gh` binary or network needed, so this runs on CI.
     #[test]
-    #[ignore = "requires the gh binary to be installed"]
-    fn version_mentions_gh() {
-        let v = version().expect("gh should be installed");
-        assert!(v.to_lowercase().contains("gh"), "unexpected output: {v}");
+    fn pr_list_parses_scripted_json() {
+        let json = r#"[{"number":7,"title":"Add X","state":"OPEN","headRefName":"feat/x"}]"#;
+        let gh = GitHub::with_runner(ScriptedRunner::new().on(["pr", "list"], Output::ok(json)));
+        let prs = gh.pr_list(Path::new(".")).expect("pr_list");
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 7);
+        assert_eq!(prs[0].head_ref_name, "feat/x");
+    }
+
+    // Hermetic: auth_status reflects the exit code without erroring.
+    #[test]
+    fn auth_status_reads_exit_code() {
+        let yes = GitHub::with_runner(ScriptedRunner::new().on(["auth"], Output::ok("")));
+        assert!(yes.auth_status().unwrap());
+        let no = GitHub::with_runner(
+            ScriptedRunner::new().on(["auth"], Output::fail(1, "not logged in")),
+        );
+        assert!(!no.auth_status().unwrap());
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn consumer_mocks_the_interface() {
+        let mut mock = MockGitHubApi::new();
+        mock.expect_auth_status().returning(|| Ok(true));
+        assert!(mock.auth_status().unwrap());
     }
 }

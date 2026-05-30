@@ -9,6 +9,13 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
+# Auto-generated mocks of the `Runner` trait (MockRunner). Test-only — pulled in
+# only when the `mock` feature is enabled, never in production builds.
+mockall = { version = "0.13", optional = true }
+
+[features]
+# Expose `mockall`-generated mocks (e.g. `MockRunner`) for consumers' tests.
+mock = ["dep:mockall"]
 
 [target.'cfg(windows)'.dependencies]
 # Win32 Job Object FFI: CreateJobObject / SetInformationJobObject /

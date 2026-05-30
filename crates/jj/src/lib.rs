@@ -1,21 +1,17 @@
 //! `vcs-jj` — automate Jujutsu (`jj`) from Rust through CLI process execution.
 //!
-//! Thin wrappers that shell out to the `jj` binary and capture its output.
-//! Commands run inside an OS job (via [`vcs_process`]) so a `jj` subprocess is
-//! never orphaned.
+//! The API is built for **mockability**: consumers depend on the [`JjApi`] trait
+//! and substitute a mock for the real [`Jj`] client in their tests. Commands run
+//! inside an OS job (via [`vcs_process`]) so a `jj` subprocess is never orphaned.
 //!
-//! Three layers, from raw to typed:
-//! - [`run`] / [`version`] — the original thin string helpers.
-//! - [`exec`] — a [`vcs_process::Exec`] preset on the `jj` binary.
-//! - typed, repo-scoped commands ([`log`], [`current_change`], [`describe`], …)
-//!   that take a `dir` and return parsed structs ([`Change`], [`Bookmark`]).
-//!   Pass `"."` to operate on the current directory.
+//! Two test seams: mock the interface (`mock` feature → `MockJjApi`), or inject
+//! a [`ScriptedRunner`](vcs_process::ScriptedRunner) via [`Jj::with_runner`] to
+//! drive the real argument-building and parsing against canned output.
 
-use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
 
-use vcs_process::Exec;
+use vcs_process::{Exec, JobRunner, Output, Runner};
 
 mod parse;
 pub use parse::{Bookmark, Change};
@@ -23,94 +19,145 @@ pub use parse::{Bookmark, Change};
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "jj";
 
-/// Run `jj <args>` and return trimmed stdout on success.
-///
-/// Fails if the process can't be spawned (e.g. `jj` not on `PATH`) or exits
-/// with a non-zero status — stderr is surfaced in the error message.
-pub fn run<I, S>(args: I) -> io::Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    vcs_process::run(BINARY, args)
+/// The jj operations this crate exposes — the interface consumers code against
+/// and mock in tests.
+#[cfg_attr(feature = "mock", mockall::automock)]
+pub trait JjApi {
+    /// Installed Jujutsu version (`jj --version`).
+    fn version(&self) -> io::Result<String>;
+    /// Working-copy status (`jj status`).
+    fn status(&self, dir: &Path) -> io::Result<String>;
+    /// Changes matching `revset`, newest first, up to `max` (`jj log`).
+    fn log(&self, dir: &Path, revset: &str, max: usize) -> io::Result<Vec<Change>>;
+    /// The working-copy change (`jj log -r @`).
+    fn current_change(&self, dir: &Path) -> io::Result<Change>;
+    /// Set the working-copy change's description (`jj describe -m`).
+    fn describe(&self, dir: &Path, message: &str) -> io::Result<()>;
+    /// Start a new change on top of the working copy (`jj new -m`).
+    fn new_change(&self, dir: &Path, message: &str) -> io::Result<()>;
+    /// Local bookmarks (`jj bookmark list`).
+    fn bookmarks(&self, dir: &Path) -> io::Result<Vec<Bookmark>>;
 }
 
-/// Return the installed Jujutsu version (`jj --version`).
-pub fn version() -> io::Result<String> {
-    run(["--version"])
+/// The real jj client. Generic over the [`Runner`] so tests can inject a fake
+/// process executor; `Jj::new()` uses the real job-backed runner.
+pub struct Jj<R: Runner = JobRunner> {
+    runner: R,
 }
 
-/// A [`vcs_process::Exec`] builder preset to the `jj` binary — set a working
-/// directory, env vars, or stdin before running.
-pub fn exec() -> Exec {
-    Exec::new(BINARY)
+impl Jj<JobRunner> {
+    /// A client backed by the real `jj` binary.
+    pub fn new() -> Self {
+        Jj { runner: JobRunner }
+    }
 }
 
-/// `jj` in `dir` (internal builder for the typed commands below).
-fn at(dir: impl AsRef<Path>) -> Exec {
-    Exec::new(BINARY).current_dir(dir)
+impl Default for Jj<JobRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// Working-copy status as jj prints it (`jj status`).
-pub fn status(dir: impl AsRef<Path>) -> io::Result<String> {
-    at(dir).arg("status").run()
+impl<R: Runner> Jj<R> {
+    /// A client that runs commands through `runner` — pass a fake in tests.
+    pub fn with_runner(runner: R) -> Self {
+        Jj { runner }
+    }
+
+    /// Run `jj <args>` in `dir`, returning **raw** stdout on success (no trimming
+    /// — separators in templated output are significant) or an error otherwise.
+    fn stdout(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<String> {
+        let mut exec = Exec::new(BINARY);
+        if let Some(dir) = dir {
+            exec = exec.current_dir(dir);
+        }
+        exec = exec.args(args);
+        let out: Output = self.runner.run(&exec)?;
+        if out.success() {
+            Ok(out.stdout)
+        } else {
+            Err(io::Error::other(format!(
+                "`{BINARY}` exited with {}: {}",
+                out.status,
+                out.stderr.trim()
+            )))
+        }
+    }
 }
 
-/// Changes matching `revset` (newest first), up to `max` (`jj log`).
-pub fn log(dir: impl AsRef<Path>, revset: &str, max: usize) -> io::Result<Vec<Change>> {
-    let out = at(dir)
-        .args([
-            "log",
-            "-r",
-            revset,
-            &format!("-n{max}"),
-            "--no-graph",
-            "-T",
-            parse::CHANGE_TEMPLATE,
-        ])
-        .run()?;
-    Ok(parse::parse_changes(&out))
-}
+impl<R: Runner> JjApi for Jj<R> {
+    fn version(&self) -> io::Result<String> {
+        Ok(self.stdout(None, &["--version"])?.trim().to_string())
+    }
 
-/// The working-copy change (`jj log -r @`).
-pub fn current_change(dir: impl AsRef<Path>) -> io::Result<Change> {
-    let mut changes = log(dir, "@", 1)?;
-    changes
-        .pop()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no working-copy change found"))
-}
+    fn status(&self, dir: &Path) -> io::Result<String> {
+        Ok(self.stdout(Some(dir), &["status"])?.trim().to_string())
+    }
 
-/// Set the description of the working-copy change (`jj describe -m`).
-pub fn describe(dir: impl AsRef<Path>, message: &str) -> io::Result<()> {
-    at(dir).args(["describe", "-m", message]).run().map(drop)
-}
+    fn log(&self, dir: &Path, revset: &str, max: usize) -> io::Result<Vec<Change>> {
+        let n = format!("-n{max}");
+        let out = self.stdout(
+            Some(dir),
+            &[
+                "log",
+                "-r",
+                revset,
+                &n,
+                "--no-graph",
+                "-T",
+                parse::CHANGE_TEMPLATE,
+            ],
+        )?;
+        Ok(parse::parse_changes(&out))
+    }
 
-/// Start a new change on top of the working copy (`jj new -m`).
-pub fn new_change(dir: impl AsRef<Path>, message: &str) -> io::Result<()> {
-    at(dir).args(["new", "-m", message]).run().map(drop)
-}
+    fn current_change(&self, dir: &Path) -> io::Result<Change> {
+        self.log(dir, "@", 1)?
+            .pop()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no working-copy change found"))
+    }
 
-/// Local bookmarks (`jj bookmark list`).
-pub fn bookmarks(dir: impl AsRef<Path>) -> io::Result<Vec<Bookmark>> {
-    let out = at(dir).args(["bookmark", "list"]).run()?;
-    Ok(parse::parse_bookmarks(&out))
+    fn describe(&self, dir: &Path, message: &str) -> io::Result<()> {
+        self.stdout(Some(dir), &["describe", "-m", message])
+            .map(drop)
+    }
+
+    fn new_change(&self, dir: &Path, message: &str) -> io::Result<()> {
+        self.stdout(Some(dir), &["new", "-m", message]).map(drop)
+    }
+
+    fn bookmarks(&self, dir: &Path) -> io::Result<Vec<Bookmark>> {
+        let out = self.stdout(Some(dir), &["bookmark", "list"])?;
+        Ok(parse::parse_bookmarks(&out))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vcs_process::{Output, ScriptedRunner};
 
     #[test]
     fn binary_name_is_jj() {
         assert_eq!(BINARY, "jj");
     }
 
-    // Requires the `jj` binary on PATH, so it's ignored by default and not
-    // exercised in CI. Run locally with `cargo test -- --ignored`.
+    // Hermetic: real log() arg-building + template parsing against canned output.
     #[test]
-    #[ignore = "requires the jj binary to be installed"]
-    fn version_mentions_jj() {
-        let v = version().expect("jj should be installed");
-        assert!(v.to_lowercase().contains("jj"), "unexpected output: {v}");
+    fn current_change_parses_scripted_output() {
+        let jj = Jj::with_runner(
+            ScriptedRunner::new().on(["log"], Output::ok("kztuxlro\t38e00654\thello jj\n")),
+        );
+        let change = jj.current_change(Path::new(".")).expect("current_change");
+        assert_eq!(change.change_id, "kztuxlro");
+        assert_eq!(change.description, "hello jj");
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn consumer_mocks_the_interface() {
+        let mut mock = MockJjApi::new();
+        mock.expect_describe().returning(|_, _| Ok(()));
+        assert!(mock.describe(Path::new("."), "msg").is_ok());
     }
 }

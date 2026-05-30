@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup component add clippy
       - run: cargo clippy --all-targets -- -D warnings
+      # The `mock` feature pulls in mockall and the generated mocks; lint it too.
+      - run: cargo clippy --workspace --all-targets --features mock -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -36,6 +38,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo build --all-targets
       - run: cargo test
+      # Exercise the mock layer: automock-generated mocks + ScriptedRunner tests.
+      - run: cargo test --workspace --features mock
 
   package:
     name: cargo package

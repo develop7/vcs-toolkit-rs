@@ -54,6 +54,44 @@ impl Output {
             )))
         }
     }
+
+    /// Build a successful `Output` carrying `stdout` — for scripting a
+    /// [`ScriptedRunner`](crate::ScriptedRunner) or a mock in tests.
+    #[cfg(any(unix, windows))]
+    pub fn ok(stdout: impl Into<String>) -> Self {
+        Output {
+            status: synthetic_status(0),
+            stdout: stdout.into(),
+            stderr: String::new(),
+        }
+    }
+
+    /// Build a failed `Output` with exit `code` and `stderr` — test/mock helper.
+    #[cfg(any(unix, windows))]
+    pub fn fail(code: i32, stderr: impl Into<String>) -> Self {
+        Output {
+            status: synthetic_status(code),
+            stdout: String::new(),
+            stderr: stderr.into(),
+        }
+    }
+}
+
+/// Construct an `ExitStatus` for `code` without spawning a process. Windows
+/// takes the code directly; Unix wants the raw wait status (exit code in bits
+/// 8–15).
+#[cfg(any(unix, windows))]
+fn synthetic_status(code: i32) -> ExitStatus {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(code as u32)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(code << 8)
+    }
 }
 
 /// Builder for a single job-backed command run.
@@ -139,6 +177,21 @@ impl Exec {
         self
     }
 
+    /// The program this run will execute.
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    /// The arguments, in order — e.g. for a [`Runner`](crate::Runner) to match on.
+    pub fn arguments(&self) -> &[OsString] {
+        &self.args
+    }
+
+    /// The working-directory override, if one was set.
+    pub fn working_dir(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
     /// Configure a [`std::process::Command`] from this builder. stdin is piped
     /// when input was supplied, otherwise nulled (see [`run`](crate::run)).
     fn build(&self) -> Command {
@@ -162,6 +215,12 @@ impl Exec {
     /// Run to completion and capture output, **without** erroring on a non-zero
     /// exit. The job is dropped before returning (kill-on-close).
     pub fn output(self) -> io::Result<Output> {
+        self.execute()
+    }
+
+    /// The actual job-backed execution. Borrows `self` so [`JobRunner`] can run a
+    /// borrowed `Exec` (the [`Runner`](crate::Runner) seam) without consuming it.
+    pub(crate) fn execute(&self) -> io::Result<Output> {
         let job = Job::new()?;
         let mut cmd = self.build();
         let mut child = job.spawn(&mut cmd)?;

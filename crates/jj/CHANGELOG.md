@@ -10,17 +10,17 @@ crates; tag releases as `vcs-jj-v<version>`.
 ## [Unreleased]
 
 ### Added
-- Typed, repo-scoped commands returning parsed structs: `log`/`current_change`
-  (`Change`), `describe`/`new_change`, `status`, and `bookmarks` (`Bookmark`),
-  plus an `exec()` builder preset for working directory, env, and stdin.
+- `JjApi` trait + `Jj` client with typed, repo-scoped commands returning parsed
+  structs: `log`/`current_change` (`Change`), `describe`/`new_change`, `status`,
+  `bookmarks` (`Bookmark`).
+- **Mockable by design:** consumers code against `JjApi`; `Jj::with_runner`
+  injects a fake process runner, and the `mock` feature generates `MockJjApi`
+  (via `mockall`).
 
 ### Changed
-- `run` now launches `jj` inside an OS job (Windows Job Object / Linux cgroup v2)
-  via `vcs-process`, so the process tree is killed on close — no orphaned
-  subprocesses.
-
-### Fixed
--
+- The API is now the `Jj` client + `JjApi` trait — the original free functions
+  are gone. Commands launch `jj` inside an OS job (Windows Job Object / Linux
+  cgroup v2) via `vcs-process`, killed on close.
 
 ## [0.1.0] - 2026-05-29
 
