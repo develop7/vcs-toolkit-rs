@@ -22,8 +22,10 @@ independently**:
 | [`crates/github`](crates/github) | the `gh` (GitHub CLI) binary | `vcs-github` |
 
 The three wrappers expose the same shape — a `run` helper that executes the
-underlying binary with arbitrary arguments, plus typed wrappers built on top —
-and delegate process launching to `vcs-process`, their only dependency.
+underlying binary with arbitrary arguments, plus typed, repo-scoped commands
+that return parsed structs — and delegate process launching to `vcs-process`.
+That is their only dependency, except `vcs-github`, which adds `serde`/`serde_json`
+to deserialize `gh … --json` output.
 
 ## Build, test
 

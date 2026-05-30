@@ -10,7 +10,9 @@ crates; tag releases as `vcs-github-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Typed commands deserializing `gh … --json` into structs: `pr_list`/`pr_view`
+  (`PullRequest`), `issue_list` (`Issue`), `repo_view` (`Repo`), `auth_status`,
+  and raw `api`, plus an `exec()` builder preset. Adds `serde`/`serde_json`.
 
 ### Changed
 - `run` now launches `gh` inside an OS job (Windows Job Object / Linux cgroup v2)

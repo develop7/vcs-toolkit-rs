@@ -10,7 +10,10 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Typed, repo-scoped commands returning parsed structs: `status` (`StatusEntry`),
+  `log`/`current_branch`/`branches`/`rev_parse`, `init`/`add`/`commit`, and
+  `diff_is_empty`. New `Commit`/`Branch`/`StatusEntry` types and an `exec()`
+  builder preset for working directory, env, and stdin.
 
 ### Changed
 - `run` now launches `git` inside an OS job (Windows Job Object / Linux cgroup v2)

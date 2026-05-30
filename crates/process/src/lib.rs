@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::io;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 // One platform module is compiled per target; each exposes the same `Job` shape
 // (`new`/`spawn`/`kill_all`/`mechanism` + a kill-on-close `Drop`).
@@ -26,6 +26,9 @@ use std::process::{Command, Stdio};
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(not(any(windows, target_os = "linux")), path = "other.rs")]
 mod imp;
+
+mod exec;
+pub use exec::{Exec, Output};
 
 /// Which OS mechanism a [`Job`] is actually using to contain its processes.
 ///
@@ -113,37 +116,83 @@ impl Child {
 /// Fails if the process can't be spawned (e.g. `binary` not on `PATH`) or exits
 /// with a non-zero status — stderr is surfaced in the error message. The job is
 /// dropped before returning, so any descendant that outlived `binary` is killed.
+///
+/// A thin shim over [`Exec`]; use the builder directly for a working directory,
+/// env vars, or stdin input.
 pub fn run<I, S>(binary: &str, args: I) -> io::Result<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let job = Job::new()?;
-    let mut cmd = Command::new(binary);
-    // Match `Command::output()` semantics: capture stdout/stderr and give the
-    // child a null stdin. Without this the child would inherit our stdin and a
-    // command that probes it (a prompt, a pager) could hang or steal input.
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    Exec::new(binary).args(args).run()
+}
 
-    let child = job.spawn(&mut cmd)?;
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(io::Error::other(format!(
-            "`{binary}` exited with {}: {}",
-            output.status,
-            stderr.trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// Run `binary <args>` inside a one-shot job and capture its [`Output`] without
+/// erroring on a non-zero exit — for commands whose exit code is meaningful.
+pub fn output<I, S>(binary: &str, args: I) -> io::Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Exec::new(binary).args(args).output()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
+
+    // --- Hermetic unit tests (no subprocess) -------------------------------
+
+    // Construct an `ExitStatus` for the given exit code without spawning
+    // anything — keeps these tests hermetic. Windows takes the code directly;
+    // Unix wants the raw wait status, where the exit code lives in bits 8–15.
+    fn fake_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code as u32)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code << 8)
+        }
+    }
+
+    #[test]
+    fn output_combined_concatenates_streams() {
+        let out = Output {
+            status: fake_status(0),
+            stdout: "out".to_string(),
+            stderr: "err".to_string(),
+        };
+        assert!(out.success());
+        assert_eq!(out.combined(), "outerr");
+    }
+
+    #[test]
+    fn output_into_result_trims_on_success() {
+        let out = Output {
+            status: fake_status(0),
+            stdout: "  value\n".to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(out.into_result().unwrap(), "value");
+    }
+
+    #[test]
+    fn output_into_result_errors_with_stderr_on_failure() {
+        let out = Output {
+            status: fake_status(1),
+            stdout: String::new(),
+            stderr: "  boom\n".to_string(),
+        };
+        let err = out.into_result().unwrap_err();
+        assert!(err.to_string().contains("boom"), "got: {err}");
+    }
+
+    // --- Subprocess tests (ignored on CI) ----------------------------------
 
     // Spawns a real subprocess, so it's ignored on CI. `cargo` is on PATH
     // wherever these tests run. Run locally with `cargo test -- --ignored`.

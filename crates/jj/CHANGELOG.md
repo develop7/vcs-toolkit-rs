@@ -10,7 +10,9 @@ crates; tag releases as `vcs-jj-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Typed, repo-scoped commands returning parsed structs: `log`/`current_change`
+  (`Change`), `describe`/`new_change`, `status`, and `bookmarks` (`Bookmark`),
+  plus an `exec()` builder preset for working directory, env, and stdin.
 
 ### Changed
 - `run` now launches `jj` inside an OS job (Windows Job Object / Linux cgroup v2)

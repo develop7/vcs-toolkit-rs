@@ -73,10 +73,11 @@ compiled as its own crate; prefer shared helpers in `tests/common/mod.rs`.
 ## Dependency management
 
 This workspace fixes **no** allow-list of crates — add whatever a crate
-genuinely needs. The three wrappers stay lean: their only dependency is
+genuinely needs. The wrappers stay lean: `vcs-git` and `vcs-jj` depend only on
 `vcs-process` (which itself pulls in just `windows-sys` on Windows and `libc` on
-Linux for the job FFI). Don't add more to a wrapper unless there's a real
-reason. The convention is about *how* you add dependencies, not *which*:
+Linux for the job FFI); `vcs-github` adds `serde`/`serde_json` to deserialize
+`gh … --json` output. Don't add more to a wrapper unless there's a real reason.
+The convention is about *how* you add dependencies, not *which*:
 
 - **Document every dependency.** Each entry in `Cargo.toml` gets an inline
   comment explaining *why* it's there. A future reader should never guess.
