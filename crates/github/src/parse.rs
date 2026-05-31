@@ -9,6 +9,7 @@ use crate::BINARY;
 
 /// A pull request (`gh pr list/view --json number,title,state,headRefName,baseRefName,url`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
 pub struct PullRequest {
     /// PR number.
     pub number: u64,
@@ -29,6 +30,7 @@ pub struct PullRequest {
 
 /// An issue (`gh issue list --json number,title,state`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
 pub struct Issue {
     /// Issue number.
     pub number: u64,
@@ -40,6 +42,7 @@ pub struct Issue {
 
 /// A repository (`gh repo view --json name,owner,description,url,isPrivate,defaultBranchRef`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Repo {
     /// Repository name.
     pub name: String,

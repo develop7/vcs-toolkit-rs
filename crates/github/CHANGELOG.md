@@ -31,6 +31,10 @@ crates; tag releases as `vcs-github-v<version>`.
   Adds `async-trait`.
 - Builds on `vcs_process::CliClient`, the shared client core (internal refactor;
   no public API change).
+- `PullRequest`/`Issue`/`Repo` are now `#[non_exhaustive]` — future fields won't
+  be breaking changes.
+- Optional `tracing` feature (forwards to `vcs-process/tracing`): a `debug` event
+  per `gh` command.
 
 ### Fixed
 - `auth_status` no longer reports "not authenticated" when `gh auth status` times

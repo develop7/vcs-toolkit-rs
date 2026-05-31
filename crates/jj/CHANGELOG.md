@@ -28,6 +28,10 @@ crates; tag releases as `vcs-jj-v<version>`.
   `vcs_process::CommandError`. Adds `async-trait`.
 - Builds on `vcs_process::CliClient`, the shared client core (internal refactor;
   no public API change).
+- `Change`/`Bookmark` are now `#[non_exhaustive]` — future fields won't be
+  breaking changes.
+- Optional `tracing` feature (forwards to `vcs-process/tracing`): a `debug` event
+  per `jj` command.
 
 ## [0.1.0] - 2026-05-29
 

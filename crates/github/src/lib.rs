@@ -11,9 +11,8 @@
 
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
-use vcs_process::{CliClient, JobRunner, Output, Result, Runner};
+use vcs_process::{Output, Result, Runner};
 
 mod parse;
 pub use parse::{Issue, PullRequest, Repo};
@@ -58,41 +57,11 @@ pub trait GitHubApi: Send + Sync {
     async fn api(&self, endpoint: &str) -> Result<String>;
 }
 
-/// The real GitHub client. Generic over the [`Runner`] so tests can inject a
-/// fake process executor; `GitHub::new()` uses the real job-backed runner.
-pub struct GitHub<R: Runner = JobRunner> {
-    core: CliClient<R>,
-}
-
-impl GitHub<JobRunner> {
-    /// A client backed by the real `gh` binary.
-    pub fn new() -> Self {
-        GitHub {
-            core: CliClient::new(BINARY),
-        }
-    }
-}
-
-impl Default for GitHub<JobRunner> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<R: Runner> GitHub<R> {
-    /// A client that runs commands through `runner` — pass a fake in tests.
-    pub fn with_runner(runner: R) -> Self {
-        GitHub {
-            core: CliClient::with_runner(BINARY, runner),
-        }
-    }
-
-    /// Kill any command that runs longer than `timeout`.
-    pub fn default_timeout(mut self, timeout: Duration) -> Self {
-        self.core = self.core.default_timeout(timeout);
-        self
-    }
-}
+vcs_process::cli_client!(
+    /// The real GitHub client. Generic over the [`Runner`] so tests can inject a
+    /// fake process executor; `GitHub::new()` uses the real job-backed runner.
+    pub struct GitHub => BINARY
+);
 
 #[async_trait::async_trait]
 impl<R: Runner> GitHubApi for GitHub<R> {

@@ -306,7 +306,44 @@ impl Exec {
 
     /// The actual job-backed execution. Borrows `self` so [`JobRunner`] can run a
     /// borrowed `Exec` (the [`Runner`](crate::Runner) seam) without consuming it.
+    ///
+    /// With the `tracing` feature this emits one `debug` event per run (program,
+    /// args, exit code, timed-out flag, elapsed ms); otherwise it's a zero-cost
+    /// passthrough to [`execute_raw`](Exec::execute_raw).
     pub(crate) async fn execute(&self) -> io::Result<Output> {
+        #[cfg(not(feature = "tracing"))]
+        {
+            self.execute_raw().await
+        }
+        #[cfg(feature = "tracing")]
+        {
+            let started = std::time::Instant::now();
+            let result = self.execute_raw().await;
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            match &result {
+                Ok(out) => tracing::debug!(
+                    target: "vcs_process",
+                    program = %self.program.to_string_lossy(),
+                    args = %self.joined_args(),
+                    code = ?out.code(),
+                    timed_out = out.timed_out(),
+                    elapsed_ms,
+                    "command finished"
+                ),
+                Err(err) => tracing::debug!(
+                    target: "vcs_process",
+                    program = %self.program.to_string_lossy(),
+                    args = %self.joined_args(),
+                    error = %err,
+                    elapsed_ms,
+                    "command could not run"
+                ),
+            }
+            result
+        }
+    }
+
+    async fn execute_raw(&self) -> io::Result<Output> {
         let job = Job::new()?;
         let mut cmd = self.build();
         let mut child = job.spawn(&mut cmd)?;

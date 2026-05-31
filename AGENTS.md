@@ -28,7 +28,9 @@ the structured `vcs_process::CommandError`; pure parsers live in each crate's
 that owns the binary name, runner, and optional `default_timeout` and provides
 the `exec`/`exec_in` builders and the `run_text`/`run_raw`/`run_unit`/`parsed`/
 `parsed_try` terminals — so a method is one line and a new wrapper is just a
-`const BINARY`, a `core` field, three constructors, and its typed methods. The
+`const BINARY`, the `vcs_process::cli_client!(pub struct X => BINARY)` macro (which
+emits the `core` field, `new`/`Default`/`with_runner`/`default_timeout`), its
+object-safe `*Api` trait, and its typed methods. The
 generic, ergonomic argument types stay on `CliClient`, never on the trait. Keep
 this shape consistent across crates and **keep the traits object-safe and
 `mockall`-friendly**

@@ -34,6 +34,8 @@ use tokio::process::Command;
 #[cfg_attr(not(any(windows, target_os = "linux")), path = "other.rs")]
 mod imp;
 
+mod macros;
+
 mod client;
 pub use client::CliClient;
 

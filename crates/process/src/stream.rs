@@ -40,6 +40,13 @@ impl Exec {
     /// # let _ = (status, stderr); Ok(()) }
     /// ```
     pub async fn stream(self) -> io::Result<Streaming> {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            target: "vcs_process",
+            program = %self.program().to_string_lossy(),
+            args = ?self.arguments(),
+            "streaming command started"
+        );
         let job = Job::new()?;
         let mut cmd = self.build();
         let mut child = job.spawn(&mut cmd)?;

@@ -17,6 +17,9 @@ tokio = { version = "1", features = ["process", "time", "io-util", "rt"] }
 async-trait = "0.1"
 # Structured `CommandError` carrying program/args/exit code/stderr/timeout.
 thiserror = "2"
+# Optional observability: a per-command tracing event (program/args/exit/duration).
+# Off by default — enabled via the `tracing` feature, zero cost otherwise.
+tracing = { version = "0.1", optional = true }
 # Auto-generated mocks of the `Runner` trait (MockRunner). Test-only — pulled in
 # only when the `mock` feature is enabled, never in production builds.
 mockall = { version = "0.13", optional = true }
@@ -24,6 +27,8 @@ mockall = { version = "0.13", optional = true }
 [features]
 # Expose `mockall`-generated mocks (e.g. `MockRunner`) for consumers' tests.
 mock = ["dep:mockall"]
+# Emit a `tracing` event per command run (program, args, exit code, duration).
+tracing = ["dep:tracing"]
 
 [target.'cfg(windows)'.dependencies]
 # Win32 Job Object FFI: CreateJobObject / SetInformationJobObject /

@@ -11,9 +11,8 @@
 
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
-use vcs_process::{CliClient, JobRunner, Output, Result, Runner};
+use vcs_process::{Output, Result, Runner};
 
 mod parse;
 pub use parse::{Bookmark, Change};
@@ -53,41 +52,11 @@ pub trait JjApi: Send + Sync {
     async fn git_push(&self, dir: &Path, bookmark: Option<String>) -> Result<()>;
 }
 
-/// The real jj client. Generic over the [`Runner`] so tests can inject a fake
-/// process executor; `Jj::new()` uses the real job-backed runner.
-pub struct Jj<R: Runner = JobRunner> {
-    core: CliClient<R>,
-}
-
-impl Jj<JobRunner> {
-    /// A client backed by the real `jj` binary.
-    pub fn new() -> Self {
-        Jj {
-            core: CliClient::new(BINARY),
-        }
-    }
-}
-
-impl Default for Jj<JobRunner> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<R: Runner> Jj<R> {
-    /// A client that runs commands through `runner` — pass a fake in tests.
-    pub fn with_runner(runner: R) -> Self {
-        Jj {
-            core: CliClient::with_runner(BINARY, runner),
-        }
-    }
-
-    /// Kill any command that runs longer than `timeout`.
-    pub fn default_timeout(mut self, timeout: Duration) -> Self {
-        self.core = self.core.default_timeout(timeout);
-        self
-    }
-}
+vcs_process::cli_client!(
+    /// The real jj client. Generic over the [`Runner`] so tests can inject a fake
+    /// process executor; `Jj::new()` uses the real job-backed runner.
+    pub struct Jj => BINARY
+);
 
 #[async_trait::async_trait]
 impl<R: Runner> JjApi for Jj<R> {

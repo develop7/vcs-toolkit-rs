@@ -20,9 +20,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use vcs_process::{CliClient, CommandError, JobRunner, Output, Result, Runner};
+use vcs_process::{CommandError, Output, Result, Runner};
 
 mod parse;
 pub use parse::{Branch, Commit, StatusEntry};
@@ -42,7 +41,7 @@ pub trait GitApi: Send + Sync {
     async fn run_raw(&self, args: &[String]) -> io::Result<Output>;
     /// Installed Git version (`git --version`).
     async fn version(&self) -> Result<String>;
-    /// Working-tree status (`git status --porcelain`).
+    /// Working-tree status (`git status --porcelain=v1 -z`).
     async fn status(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
     /// Current branch name (`git rev-parse --abbrev-ref HEAD`).
     async fn current_branch(&self, dir: &Path) -> Result<String>;
@@ -66,42 +65,11 @@ pub trait GitApi: Send + Sync {
     async fn diff_is_empty(&self, dir: &Path) -> Result<bool>;
 }
 
-/// The real Git client. Generic over the [`Runner`] so tests can inject a fake
-/// process executor; `Git::new()` uses the real job-backed runner.
-pub struct Git<R: Runner = JobRunner> {
-    core: CliClient<R>,
-}
-
-impl Git<JobRunner> {
-    /// A client backed by the real `git` binary.
-    pub fn new() -> Self {
-        Git {
-            core: CliClient::new(BINARY),
-        }
-    }
-}
-
-impl Default for Git<JobRunner> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<R: Runner> Git<R> {
-    /// A client that runs commands through `runner` — pass a fake in tests.
-    pub fn with_runner(runner: R) -> Self {
-        Git {
-            core: CliClient::with_runner(BINARY, runner),
-        }
-    }
-
-    /// Kill any command that runs longer than `timeout` (applies to all commands;
-    /// override per-call via the raw [`Exec`](vcs_process::Exec) API).
-    pub fn default_timeout(mut self, timeout: Duration) -> Self {
-        self.core = self.core.default_timeout(timeout);
-        self
-    }
-}
+vcs_process::cli_client!(
+    /// The real Git client. Generic over the [`Runner`] so tests can inject a fake
+    /// process executor; `Git::new()` uses the real job-backed runner.
+    pub struct Git => BINARY
+);
 
 #[async_trait::async_trait]
 impl<R: Runner> GitApi for Git<R> {

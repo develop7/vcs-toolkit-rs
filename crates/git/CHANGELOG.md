@@ -33,6 +33,10 @@ crates; tag releases as `vcs-git-v<version>`.
   `orig_path`, the source path for a rename/copy (`R`/`C`).
 - Builds on `vcs_process::CliClient`, the shared client core (internal refactor;
   no API change beyond `StatusEntry`).
+- `StatusEntry`/`Commit`/`Branch` are now `#[non_exhaustive]` — future fields
+  won't be breaking changes.
+- Optional `tracing` feature (forwards to `vcs-process/tracing`): a `debug` event
+  per `git` command.
 
 ### Fixed
 - `status`/`branches` parsing no longer corrupts the first entry: output is parsed

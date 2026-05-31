@@ -3,6 +3,7 @@
 
 /// One entry from `git status --porcelain=v1 -z` (`XY <path>`, NUL-delimited).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StatusEntry {
     /// Two-character status code, e.g. `" M"`, `"??"`, `"A "`, `"R "`.
     pub code: String,
@@ -15,6 +16,7 @@ pub struct StatusEntry {
 
 /// A commit, parsed from a `\x1f`-delimited `git log` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Commit {
     /// Full commit hash (`%H`).
     pub hash: String,
@@ -30,6 +32,7 @@ pub struct Commit {
 
 /// A local branch from `git branch`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Branch {
     /// Branch name.
     pub name: String,

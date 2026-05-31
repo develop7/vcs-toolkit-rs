@@ -34,6 +34,13 @@ crates; tag releases as `vcs-process-v<version>`.
   returned by `finish` alongside the exit status. New typed `Child::stdout`/
   `stderr`/`stdin` pipe accessors; the `ChildStdin`/`ChildStdout`/`ChildStderr`
   types are re-exported.
+- **Optional `tracing`** (off by default, `tracing` feature): one `debug` event per
+  command run — program, args, exit code, timed-out flag, and elapsed ms — emitted
+  at the real-process chokepoint, plus a start event for streamed commands. Zero
+  cost (no dependency, no code) when the feature is off.
+- `cli_client!` — a `#[macro_export]` macro emitting a wrapper's struct +
+  `new`/`Default`/`with_runner`/`default_timeout`, so a wrapper is just the macro,
+  its object-safe `*Api` trait, and the typed command methods.
 - `CliClient<R>` — the shared client core the wrappers build on: binary name +
   runner + default timeout, the `exec`/`exec_in` builders, and the
   `run_text`/`run_raw`/`run_unit`/`parsed`/`parsed_try` terminals. Each wrapper is

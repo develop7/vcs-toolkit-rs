@@ -3,6 +3,7 @@
 
 /// A jj change, parsed from a `\t`-delimited template row.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Change {
     /// Short change id (`change_id.short()`).
     pub change_id: String,
@@ -16,6 +17,7 @@ pub struct Change {
 
 /// A jj bookmark, parsed from `jj bookmark list` output.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Bookmark {
     /// Bookmark name.
     pub name: String,
