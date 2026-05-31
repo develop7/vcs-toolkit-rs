@@ -16,11 +16,16 @@ crates; tag releases as `vcs-jj-v<version>`.
 - **Mockable by design:** consumers code against `JjApi`; `Jj::with_runner`
   injects a fake process runner, and the `mock` feature generates `MockJjApi`
   (via `mockall`).
+- `bookmark_set`, `git_fetch`, `git_push`, and raw `run`/`run_raw` on `JjApi`.
+- `Change` gained the `empty` flag (no file modifications).
+- `Jj::default_timeout` kills any command exceeding the deadline.
 
 ### Changed
 - The API is now the `Jj` client + `JjApi` trait — the original free functions
   are gone. Commands launch `jj` inside an OS job (Windows Job Object / Linux
   cgroup v2) via `vcs-process`, killed on close.
+- **Now async (tokio):** every `JjApi` method is `async`; errors are the typed
+  `vcs_process::CommandError`. Adds `async-trait`.
 
 ## [0.1.0] - 2026-05-29
 

@@ -6,10 +6,11 @@
 
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use common::TempDir;
+use tokio::process::Command;
 use vcs_process::{Exec, Job};
 
 /// A ~30s sleeper command with output suppressed, per platform.
@@ -27,9 +28,9 @@ fn sleeper() -> Command {
     cmd
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "spawns a real subprocess"]
-fn exec_runs_in_current_dir() {
+async fn exec_runs_in_current_dir() {
     let tmp = TempDir::new("cwd");
     let segment = tmp
         .path()
@@ -47,6 +48,7 @@ fn exec_runs_in_current_dir() {
     }
     .current_dir(tmp.path())
     .run()
+    .await
     .expect("run in cwd");
 
     assert!(
@@ -55,9 +57,9 @@ fn exec_runs_in_current_dir() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "spawns a real subprocess"]
-fn exec_passes_env() {
+async fn exec_passes_env() {
     let exec = if cfg!(windows) {
         Exec::new("cmd").args(["/c", "echo %VCS_TEST_ENV%"])
     } else {
@@ -66,46 +68,33 @@ fn exec_passes_env() {
     let out = exec
         .env("VCS_TEST_ENV", "hello-env")
         .run()
+        .await
         .expect("run with env");
     assert!(out.contains("hello-env"), "got {out:?}");
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "spawns a real subprocess"]
-fn exec_feeds_stdin() {
+async fn exec_feeds_stdin() {
     // `sort` exists on both Windows and Unix and echoes a single line unchanged.
     let out = Exec::new("sort")
         .stdin("ping-pong")
         .run()
+        .await
         .expect("feed stdin to sort");
     assert_eq!(out, "ping-pong");
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "spawns a real subprocess"]
-fn output_captures_nonzero_exit() {
-    let out = if cfg!(windows) {
-        Exec::new("cmd").args(["/c", "exit 3"])
-    } else {
-        Exec::new("sh").args(["-c", "exit 3"])
-    }
-    .output()
-    .expect("output() should not error on non-zero exit");
-
-    assert!(!out.success());
-    assert_eq!(out.status.code(), Some(3));
-}
-
-#[test]
-#[ignore = "spawns a real subprocess"]
-fn exec_spawn_feeds_and_closes_stdin() {
+async fn exec_spawn_feeds_and_closes_stdin() {
     // Regression guard: spawn() must write the buffered stdin and close the pipe.
-    // Without the close, `sort` would block on stdin forever and this would hang.
     let (_job, child) = Exec::new("sort")
         .stdin("ping-pong")
         .spawn()
+        .await
         .expect("spawn sort");
-    let out = child.wait_with_output().expect("wait");
+    let out = child.wait_with_output().await.expect("wait");
     assert!(out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("ping-pong"),
@@ -113,9 +102,48 @@ fn exec_spawn_feeds_and_closes_stdin() {
     );
 }
 
-#[test]
+#[tokio::test]
+#[ignore = "spawns a real subprocess"]
+async fn output_captures_nonzero_exit() {
+    let out = if cfg!(windows) {
+        Exec::new("cmd").args(["/c", "exit 3"])
+    } else {
+        Exec::new("sh").args(["-c", "exit 3"])
+    }
+    .output()
+    .await
+    .expect("output() should not error on non-zero exit");
+
+    assert!(!out.success());
+    assert!(!out.timed_out);
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[tokio::test]
+#[ignore = "spawns a real subprocess and waits for the timeout"]
+async fn timeout_flags_and_kills() {
+    let out = Exec::new(if cfg!(windows) { "cmd" } else { "sleep" })
+        .args(if cfg!(windows) {
+            vec!["/c", "ping", "-n", "30", "127.0.0.1"]
+        } else {
+            vec!["30"]
+        })
+        .timeout(Duration::from_millis(300))
+        .output()
+        .await
+        .expect("output");
+    assert!(out.timed_out, "should be flagged timed out");
+    assert!(!out.success());
+}
+
+#[tokio::test]
 #[ignore = "spawns long-lived subprocesses and asserts kill-on-close"]
-fn job_kills_multiple_children() {
+async fn job_kills_multiple_children() {
+    // Job kill-on-close only exists on the containment platforms (the `other`
+    // path has no job to kill).
+    if cfg!(not(any(windows, target_os = "linux"))) {
+        return;
+    }
     let job = Job::new().expect("job");
     let mut a = job.spawn(&mut sleeper()).expect("spawn a");
     let mut b = job.spawn(&mut sleeper()).expect("spawn b");
@@ -134,28 +162,29 @@ fn job_kills_multiple_children() {
             start.elapsed() < Duration::from_secs(10),
             "children outlived the job"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
 // The defining stray case: a grandchild that outlives its parent must still die
-// with the job. Unix-only — `sh ... &` cleanly backgrounds a sleeper and exposes
+// with the job. Linux-only — `sh ... &` cleanly backgrounds a sleeper and exposes
 // its pid, and /proc gives a dependency-free liveness check. On Windows the Job
-// Object kills the whole tree by construction (covered by the multi-child test).
-#[cfg(unix)]
-#[test]
+// Object kills the whole tree by construction (covered by the multi-child test);
+// macOS/BSD use the no-containment `other` path, so there is nothing to assert.
+#[cfg(target_os = "linux")]
+#[tokio::test]
 #[ignore = "spawns a detached grandchild and asserts it is killed"]
-fn stray_grandchild_killed_on_drop() {
+async fn stray_grandchild_killed_on_drop() {
     let tmp = TempDir::new("grandchild");
     let pidfile = tmp.path().join("pid");
 
-    // Background a sleeper, record its pid, then let the parent shell exit.
     let script = format!("sleep 30 & echo $! > {}", pidfile.display());
     let (job, mut child) = Exec::new("sh")
         .args(["-c", &script])
         .spawn()
+        .await
         .expect("spawn parent shell");
-    child.wait().expect("parent shell exits");
+    child.wait().await.expect("parent shell exits");
 
     let pid: u32 = std::fs::read_to_string(&pidfile)
         .expect("pidfile")
@@ -172,11 +201,11 @@ fn stray_grandchild_killed_on_drop() {
             start.elapsed() < Duration::from_secs(10),
             "grandchild {pid} outlived the job"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn is_alive(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }

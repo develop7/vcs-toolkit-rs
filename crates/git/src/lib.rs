@@ -1,31 +1,28 @@
 //! `vcs-git` — automate Git from Rust through CLI process execution.
 //!
-//! The API is built for **mockability**: consumers depend on the [`GitApi`]
-//! trait (the interface) and, in their tests, substitute a mock for the real
-//! [`Git`] client. Commands run inside an OS job (via [`vcs_process`]) so a
-//! `git` subprocess is never orphaned.
+//! Async, mockable, and structured-error: consumers depend on the [`GitApi`]
+//! trait and substitute a mock for the real [`Git`] client in tests. Commands
+//! run inside an OS job (via [`vcs_process`]) so a `git` subprocess is never
+//! orphaned, and honour an optional [timeout](Git::default_timeout).
 //!
 //! ```no_run
 //! use vcs_git::{Git, GitApi};
 //! use std::path::Path;
 //!
-//! fn report(git: &dyn GitApi) -> std::io::Result<String> {
-//!     git.current_branch(Path::new("."))
-//! }
-//! report(&Git::new())?;
-//! # Ok::<(), std::io::Error>(())
+//! # async fn run(git: &dyn GitApi) -> Result<(), vcs_process::CommandError> {
+//! let branch = git.current_branch(Path::new(".")).await?;
+//! # let _ = branch; Ok(()) }
 //! ```
 //!
-//! Two test seams:
-//! - **Mock the interface** — with the `mock` feature, `mockall` generates
-//!   `MockGitApi`; stub whole methods (`expect_status().returning(...)`).
-//! - **Inject a runner** — `Git::with_runner(`[`ScriptedRunner`](vcs_process::ScriptedRunner)`)`
-//!   feeds canned `git` output through the *real* argument-building and parsing.
+//! Two test seams: enable the `mock` feature for a `mockall`-generated
+//! `MockGitApi`, or inject a fake runner with
+//! `Git::with_runner(`[`ScriptedRunner`](vcs_process::ScriptedRunner)`)`.
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use vcs_process::{Exec, JobRunner, Output, Runner};
+use vcs_process::{CommandError, Exec, JobRunner, Output, Result, Runner};
 
 mod parse;
 pub use parse::{Branch, Commit, StatusEntry};
@@ -36,40 +33,53 @@ pub const BINARY: &str = "git";
 /// The Git operations this crate exposes — the interface consumers code against
 /// and mock in tests.
 #[cfg_attr(feature = "mock", mockall::automock)]
-pub trait GitApi {
+#[async_trait::async_trait]
+pub trait GitApi: Send + Sync {
+    /// Run `git <args>` in the current directory, returning trimmed stdout
+    /// (throws on a non-zero exit). A raw escape hatch for unmodelled commands.
+    async fn run(&self, args: &[String]) -> Result<String>;
+    /// Like [`GitApi::run`] but never errors on exit code — returns the [`Output`].
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output>;
     /// Installed Git version (`git --version`).
-    fn version(&self) -> io::Result<String>;
+    async fn version(&self) -> Result<String>;
     /// Working-tree status (`git status --porcelain`).
-    fn status(&self, dir: &Path) -> io::Result<Vec<StatusEntry>>;
+    async fn status(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
     /// Current branch name (`git rev-parse --abbrev-ref HEAD`).
-    fn current_branch(&self, dir: &Path) -> io::Result<String>;
+    async fn current_branch(&self, dir: &Path) -> Result<String>;
     /// Local branches, current one flagged (`git branch`).
-    fn branches(&self, dir: &Path) -> io::Result<Vec<Branch>>;
+    async fn branches(&self, dir: &Path) -> Result<Vec<Branch>>;
     /// Latest `max` commits, newest first (`git log`).
-    fn log(&self, dir: &Path, max: usize) -> io::Result<Vec<Commit>>;
+    async fn log(&self, dir: &Path, max: usize) -> Result<Vec<Commit>>;
     /// Resolve a revision to a full hash (`git rev-parse <rev>`).
-    fn rev_parse(&self, dir: &Path, rev: &str) -> io::Result<String>;
+    async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String>;
     /// Initialise a repository (`git init`).
-    fn init(&self, dir: &Path) -> io::Result<()>;
-    /// Stage `paths` (`git add -- <paths>`). Owned `PathBuf`s keep the trait
-    /// object-safe and friendly to `mockall` (no nested-reference lifetimes).
-    fn add(&self, dir: &Path, paths: &[PathBuf]) -> io::Result<()>;
+    async fn init(&self, dir: &Path) -> Result<()>;
+    /// Stage `paths` (`git add -- <paths>`).
+    async fn add(&self, dir: &Path, paths: &[PathBuf]) -> Result<()>;
     /// Commit staged changes (`git commit -m`).
-    fn commit(&self, dir: &Path, message: &str) -> io::Result<()>;
+    async fn commit(&self, dir: &Path, message: &str) -> Result<()>;
+    /// Create a branch without switching to it (`git branch <name>`).
+    async fn create_branch(&self, dir: &Path, name: &str) -> Result<()>;
+    /// Switch to a branch or revision (`git checkout <reference>`).
+    async fn checkout(&self, dir: &Path, reference: &str) -> Result<()>;
     /// Whether the working tree has no unstaged changes (`git diff --quiet`).
-    fn diff_is_empty(&self, dir: &Path) -> io::Result<bool>;
+    async fn diff_is_empty(&self, dir: &Path) -> Result<bool>;
 }
 
 /// The real Git client. Generic over the [`Runner`] so tests can inject a fake
 /// process executor; `Git::new()` uses the real job-backed runner.
 pub struct Git<R: Runner = JobRunner> {
     runner: R,
+    timeout: Option<Duration>,
 }
 
 impl Git<JobRunner> {
     /// A client backed by the real `git` binary.
     pub fn new() -> Self {
-        Git { runner: JobRunner }
+        Git {
+            runner: JobRunner,
+            timeout: None,
+        }
     }
 }
 
@@ -82,106 +92,172 @@ impl Default for Git<JobRunner> {
 impl<R: Runner> Git<R> {
     /// A client that runs commands through `runner` — pass a fake in tests.
     pub fn with_runner(runner: R) -> Self {
-        Git { runner }
+        Git {
+            runner,
+            timeout: None,
+        }
     }
 
-    /// Build and run `git <args>` (in `dir` if given), returning raw [`Output`].
-    fn out(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<Output> {
-        let mut exec = Exec::new(BINARY);
-        if let Some(dir) = dir {
-            exec = exec.current_dir(dir);
-        }
-        exec = exec.args(args);
-        self.runner.run(&exec)
+    /// Kill any command that runs longer than `timeout` (applies to all commands;
+    /// override per-call via the raw [`Exec`] API).
+    pub fn default_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
-    /// Run and return **raw** stdout on success (no trimming — leading
-    /// whitespace is significant for `--porcelain` codes and `branch` markers),
-    /// or an `io::Error` carrying stderr on a non-zero exit.
-    fn stdout(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<String> {
-        let out = self.out(dir, args)?;
-        if out.success() {
-            Ok(out.stdout)
-        } else {
-            Err(io::Error::other(format!(
-                "`{BINARY}` exited with {}: {}",
-                out.status,
-                out.stderr.trim()
-            )))
-        }
+    fn exec(&self, args: &[&str]) -> Exec {
+        Exec::new(BINARY).maybe_timeout(self.timeout).args(args)
+    }
+
+    fn exec_in(&self, dir: &Path, args: &[&str]) -> Exec {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .current_dir(dir)
+            .args(args)
     }
 }
 
+#[async_trait::async_trait]
 impl<R: Runner> GitApi for Git<R> {
-    fn version(&self) -> io::Result<String> {
-        Ok(self.stdout(None, &["--version"])?.trim().to_string())
-    }
-
-    fn status(&self, dir: &Path) -> io::Result<Vec<StatusEntry>> {
-        let out = self.stdout(Some(dir), &["status", "--porcelain"])?;
-        Ok(parse::parse_porcelain(&out))
-    }
-
-    fn current_branch(&self, dir: &Path) -> io::Result<String> {
-        Ok(self
-            .stdout(Some(dir), &["rev-parse", "--abbrev-ref", "HEAD"])?
+    async fn run(&self, args: &[String]) -> Result<String> {
+        Ok(Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .checked_with(&self.runner)
+            .await?
+            .stdout
             .trim()
             .to_string())
     }
 
-    fn branches(&self, dir: &Path) -> io::Result<Vec<Branch>> {
-        let out = self.stdout(Some(dir), &["branch"])?;
-        Ok(parse::parse_branches(&out))
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output> {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .output_with(&self.runner)
+            .await
     }
 
-    fn log(&self, dir: &Path, max: usize) -> io::Result<Vec<Commit>> {
+    async fn version(&self) -> Result<String> {
+        Ok(self
+            .exec(&["--version"])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
+    }
+
+    async fn status(&self, dir: &Path) -> Result<Vec<StatusEntry>> {
+        let out = self
+            .exec_in(dir, &["status", "--porcelain"])
+            .checked_with(&self.runner)
+            .await?;
+        Ok(parse::parse_porcelain(&out.stdout))
+    }
+
+    async fn current_branch(&self, dir: &Path) -> Result<String> {
+        Ok(self
+            .exec_in(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
+    }
+
+    async fn branches(&self, dir: &Path) -> Result<Vec<Branch>> {
+        let out = self
+            .exec_in(dir, &["branch"])
+            .checked_with(&self.runner)
+            .await?;
+        Ok(parse::parse_branches(&out.stdout))
+    }
+
+    async fn log(&self, dir: &Path, max: usize) -> Result<Vec<Commit>> {
         let n = format!("-n{max}");
-        let out = self.stdout(Some(dir), &["log", &n, "--format=%H%x1f%an%x1f%s"])?;
-        Ok(parse::parse_log(&out))
+        let out = self
+            .exec_in(dir, &["log", &n, "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s"])
+            .checked_with(&self.runner)
+            .await?;
+        Ok(parse::parse_log(&out.stdout))
     }
 
-    fn rev_parse(&self, dir: &Path, rev: &str) -> io::Result<String> {
+    async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String> {
         Ok(self
-            .stdout(Some(dir), &["rev-parse", rev])?
+            .exec_in(dir, &["rev-parse", rev])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
             .trim()
             .to_string())
     }
 
-    fn init(&self, dir: &Path) -> io::Result<()> {
-        self.stdout(Some(dir), &["init"]).map(drop)
+    async fn init(&self, dir: &Path) -> Result<()> {
+        self.exec_in(dir, &["init"])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
     }
 
-    fn add(&self, dir: &Path, paths: &[PathBuf]) -> io::Result<()> {
-        let mut exec = Exec::new(BINARY).current_dir(dir).arg("add").arg("--");
+    async fn add(&self, dir: &Path, paths: &[PathBuf]) -> Result<()> {
+        let mut exec = Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .current_dir(dir)
+            .arg("add")
+            .arg("--");
         for path in paths {
             exec = exec.arg(path);
         }
-        let out = self.runner.run(&exec)?;
-        if out.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "`{BINARY}` exited with {}: {}",
-                out.status,
-                out.stderr.trim()
-            )))
+        exec.checked_with(&self.runner).await.map(drop)
+    }
+
+    async fn commit(&self, dir: &Path, message: &str) -> Result<()> {
+        self.exec_in(dir, &["commit", "-m", message])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
+    }
+
+    async fn create_branch(&self, dir: &Path, name: &str) -> Result<()> {
+        self.exec_in(dir, &["branch", name])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
+    }
+
+    async fn checkout(&self, dir: &Path, reference: &str) -> Result<()> {
+        self.exec_in(dir, &["checkout", reference])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
+    }
+
+    async fn diff_is_empty(&self, dir: &Path) -> Result<bool> {
+        let out = self
+            .exec_in(dir, &["diff", "--quiet"])
+            .output_with(&self.runner)
+            .await
+            .map_err(|source| CommandError::Spawn {
+                program: BINARY.to_string(),
+                source,
+            })?;
+        if out.timed_out {
+            return Err(CommandError::Timeout {
+                program: BINARY.to_string(),
+                args: "diff --quiet".to_string(),
+                timeout: self.timeout.unwrap_or_default(),
+            });
         }
-    }
-
-    fn commit(&self, dir: &Path, message: &str) -> io::Result<()> {
-        self.stdout(Some(dir), &["commit", "-m", message]).map(drop)
-    }
-
-    fn diff_is_empty(&self, dir: &Path) -> io::Result<bool> {
-        let out = self.out(Some(dir), &["diff", "--quiet"])?;
         match out.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
-            _ => Err(io::Error::other(format!(
-                "`git diff --quiet` failed ({}): {}",
-                out.status,
-                out.stderr.trim()
-            ))),
+            other => Err(CommandError::Exit {
+                program: BINARY.to_string(),
+                args: "diff --quiet".to_string(),
+                code: other.unwrap_or(-1),
+                stderr: out.stderr.trim().to_string(),
+            }),
         }
     }
 }
@@ -189,7 +265,7 @@ impl<R: Runner> GitApi for Git<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vcs_process::{Output, ScriptedRunner};
+    use vcs_process::ScriptedRunner;
 
     #[test]
     fn binary_name_is_git() {
@@ -198,38 +274,43 @@ mod tests {
 
     // Hermetic: the real status() command-building + porcelain parsing run
     // against a scripted runner — no `git` binary needed, so this runs on CI.
-    #[test]
-    fn status_parses_scripted_output() {
+    #[tokio::test]
+    async fn status_parses_scripted_output() {
         let git = Git::with_runner(
             ScriptedRunner::new().on(["status", "--porcelain"], Output::ok(" M a.rs\n?? b.rs\n")),
         );
-        let entries = git.status(Path::new(".")).expect("status");
+        let entries = git.status(Path::new(".")).await.expect("status");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].code, " M");
         assert_eq!(entries[1].path, "b.rs");
     }
 
-    // Hermetic: a non-zero exit from a scripted runner surfaces as an error.
-    #[test]
-    fn nonzero_exit_becomes_error() {
+    // A non-zero exit surfaces as a structured `CommandError::Exit`.
+    #[tokio::test]
+    async fn nonzero_exit_is_structured_error() {
         let git = Git::with_runner(
             ScriptedRunner::new().on(["status"], Output::fail(128, "not a git repository")),
         );
-        let err = git.status(Path::new(".")).unwrap_err();
-        assert!(err.to_string().contains("not a git repository"), "{err}");
+        match git.status(Path::new(".")).await.unwrap_err() {
+            CommandError::Exit { code, stderr, .. } => {
+                assert_eq!(code, 128);
+                assert!(stderr.contains("not a git repository"), "{stderr}");
+            }
+            other => panic!("expected Exit, got {other:?}"),
+        }
     }
 
-    // Demonstrates the consumer-facing mock seam: a function that depends on
-    // `&dyn GitApi` is tested with a generated mock.
+    // The consumer-facing mock seam: a function depending on `&dyn GitApi` is
+    // tested with a generated mock.
     #[cfg(feature = "mock")]
-    #[test]
-    fn consumer_mocks_the_interface() {
-        fn on_branch(git: &dyn GitApi, want: &str) -> io::Result<bool> {
-            Ok(git.current_branch(Path::new("."))? == want)
+    #[tokio::test]
+    async fn consumer_mocks_the_interface() {
+        async fn on_branch(git: &dyn GitApi, want: &str) -> bool {
+            git.current_branch(Path::new(".")).await.unwrap() == want
         }
         let mut mock = MockGitApi::new();
         mock.expect_current_branch()
             .returning(|_| Ok("main".to_string()));
-        assert!(on_branch(&mock, "main").unwrap());
+        assert!(on_branch(&mock, "main").await);
     }
 }

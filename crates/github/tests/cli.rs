@@ -6,18 +6,22 @@
 
 use vcs_github::{GitHub, GitHubApi};
 
-#[test]
+#[tokio::test]
 #[ignore = "requires the gh binary"]
-fn version_mentions_gh() {
-    let v = GitHub::new().version().expect("gh should be installed");
+async fn version_mentions_gh() {
+    let v = GitHub::new()
+        .version()
+        .await
+        .expect("gh should be installed");
     assert!(v.to_lowercase().contains("gh"), "unexpected: {v}");
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires the gh binary"]
-fn auth_status_does_not_error() {
+async fn auth_status_does_not_error() {
     // Reports the bool whether or not the user is logged in; must not error.
     let _authed = GitHub::new()
         .auth_status()
+        .await
         .expect("auth_status should not error");
 }

@@ -1,17 +1,19 @@
 //! `vcs-jj` — automate Jujutsu (`jj`) from Rust through CLI process execution.
 //!
-//! The API is built for **mockability**: consumers depend on the [`JjApi`] trait
-//! and substitute a mock for the real [`Jj`] client in their tests. Commands run
-//! inside an OS job (via [`vcs_process`]) so a `jj` subprocess is never orphaned.
+//! Async, mockable, and structured-error: consumers depend on the [`JjApi`]
+//! trait and substitute a mock for the real [`Jj`] client in tests. Commands run
+//! inside an OS job (via [`vcs_process`]) so a `jj` subprocess is never orphaned,
+//! and honour an optional [timeout](Jj::default_timeout).
 //!
-//! Two test seams: mock the interface (`mock` feature → `MockJjApi`), or inject
-//! a [`ScriptedRunner`](vcs_process::ScriptedRunner) via [`Jj::with_runner`] to
-//! drive the real argument-building and parsing against canned output.
+//! Two test seams: enable the `mock` feature for a `mockall`-generated
+//! `MockJjApi`, or inject a fake runner with
+//! `Jj::with_runner(`[`ScriptedRunner`](vcs_process::ScriptedRunner)`)`.
 
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
-use vcs_process::{Exec, JobRunner, Output, Runner};
+use vcs_process::{Exec, JobRunner, Output, Result, Runner};
 
 mod parse;
 pub use parse::{Bookmark, Change};
@@ -22,33 +24,49 @@ pub const BINARY: &str = "jj";
 /// The jj operations this crate exposes — the interface consumers code against
 /// and mock in tests.
 #[cfg_attr(feature = "mock", mockall::automock)]
-pub trait JjApi {
+#[async_trait::async_trait]
+pub trait JjApi: Send + Sync {
+    /// Run `jj <args>`, returning trimmed stdout (throws on a non-zero exit).
+    async fn run(&self, args: &[String]) -> Result<String>;
+    /// Like [`JjApi::run`] but never errors on exit code — returns the [`Output`].
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output>;
     /// Installed Jujutsu version (`jj --version`).
-    fn version(&self) -> io::Result<String>;
+    async fn version(&self) -> Result<String>;
     /// Working-copy status (`jj status`).
-    fn status(&self, dir: &Path) -> io::Result<String>;
+    async fn status(&self, dir: &Path) -> Result<String>;
     /// Changes matching `revset`, newest first, up to `max` (`jj log`).
-    fn log(&self, dir: &Path, revset: &str, max: usize) -> io::Result<Vec<Change>>;
+    async fn log(&self, dir: &Path, revset: &str, max: usize) -> Result<Vec<Change>>;
     /// The working-copy change (`jj log -r @`).
-    fn current_change(&self, dir: &Path) -> io::Result<Change>;
+    async fn current_change(&self, dir: &Path) -> Result<Change>;
     /// Set the working-copy change's description (`jj describe -m`).
-    fn describe(&self, dir: &Path, message: &str) -> io::Result<()>;
+    async fn describe(&self, dir: &Path, message: &str) -> Result<()>;
     /// Start a new change on top of the working copy (`jj new -m`).
-    fn new_change(&self, dir: &Path, message: &str) -> io::Result<()>;
+    async fn new_change(&self, dir: &Path, message: &str) -> Result<()>;
     /// Local bookmarks (`jj bookmark list`).
-    fn bookmarks(&self, dir: &Path) -> io::Result<Vec<Bookmark>>;
+    async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>>;
+    /// Point a bookmark at `revision` (`jj bookmark set <name> -r <revision>`).
+    async fn bookmark_set(&self, dir: &Path, name: &str, revision: &str) -> Result<()>;
+    /// Fetch from the git remote (`jj git fetch`).
+    async fn git_fetch(&self, dir: &Path) -> Result<()>;
+    /// Push to the git remote (`jj git push`, optionally `-b <bookmark>`). The
+    /// bookmark is owned (`Option<String>`) to keep the trait `mockall`-friendly.
+    async fn git_push(&self, dir: &Path, bookmark: Option<String>) -> Result<()>;
 }
 
 /// The real jj client. Generic over the [`Runner`] so tests can inject a fake
 /// process executor; `Jj::new()` uses the real job-backed runner.
 pub struct Jj<R: Runner = JobRunner> {
     runner: R,
+    timeout: Option<Duration>,
 }
 
 impl Jj<JobRunner> {
     /// A client backed by the real `jj` binary.
     pub fn new() -> Self {
-        Jj { runner: JobRunner }
+        Jj {
+            runner: JobRunner,
+            timeout: None,
+        }
     }
 }
 
@@ -61,81 +79,151 @@ impl Default for Jj<JobRunner> {
 impl<R: Runner> Jj<R> {
     /// A client that runs commands through `runner` — pass a fake in tests.
     pub fn with_runner(runner: R) -> Self {
-        Jj { runner }
+        Jj {
+            runner,
+            timeout: None,
+        }
     }
 
-    /// Run `jj <args>` in `dir`, returning **raw** stdout on success (no trimming
-    /// — separators in templated output are significant) or an error otherwise.
-    fn stdout(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<String> {
-        let mut exec = Exec::new(BINARY);
-        if let Some(dir) = dir {
-            exec = exec.current_dir(dir);
-        }
-        exec = exec.args(args);
-        let out: Output = self.runner.run(&exec)?;
-        if out.success() {
-            Ok(out.stdout)
-        } else {
-            Err(io::Error::other(format!(
-                "`{BINARY}` exited with {}: {}",
-                out.status,
-                out.stderr.trim()
-            )))
-        }
+    /// Kill any command that runs longer than `timeout`.
+    pub fn default_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    fn exec_in(&self, dir: &Path, args: &[&str]) -> Exec {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .current_dir(dir)
+            .args(args)
     }
 }
 
+#[async_trait::async_trait]
 impl<R: Runner> JjApi for Jj<R> {
-    fn version(&self) -> io::Result<String> {
-        Ok(self.stdout(None, &["--version"])?.trim().to_string())
+    async fn run(&self, args: &[String]) -> Result<String> {
+        Ok(Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
     }
 
-    fn status(&self, dir: &Path) -> io::Result<String> {
-        Ok(self.stdout(Some(dir), &["status"])?.trim().to_string())
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output> {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .output_with(&self.runner)
+            .await
     }
 
-    fn log(&self, dir: &Path, revset: &str, max: usize) -> io::Result<Vec<Change>> {
+    async fn version(&self) -> Result<String> {
+        Ok(Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(["--version"])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
+    }
+
+    async fn status(&self, dir: &Path) -> Result<String> {
+        Ok(self
+            .exec_in(dir, &["status"])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
+    }
+
+    async fn log(&self, dir: &Path, revset: &str, max: usize) -> Result<Vec<Change>> {
         let n = format!("-n{max}");
-        let out = self.stdout(
-            Some(dir),
-            &[
-                "log",
-                "-r",
-                revset,
-                &n,
-                "--no-graph",
-                "-T",
-                parse::CHANGE_TEMPLATE,
-            ],
-        )?;
-        Ok(parse::parse_changes(&out))
+        let out = self
+            .exec_in(
+                dir,
+                &[
+                    "log",
+                    "-r",
+                    revset,
+                    &n,
+                    "--no-graph",
+                    "-T",
+                    parse::CHANGE_TEMPLATE,
+                ],
+            )
+            .checked_with(&self.runner)
+            .await?;
+        Ok(parse::parse_changes(&out.stdout))
     }
 
-    fn current_change(&self, dir: &Path) -> io::Result<Change> {
-        self.log(dir, "@", 1)?
+    async fn current_change(&self, dir: &Path) -> Result<Change> {
+        let mut changes = self.log(dir, "@", 1).await?;
+        changes
             .pop()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no working-copy change found"))
+            .ok_or_else(|| vcs_process::CommandError::Parse {
+                program: BINARY.to_string(),
+                message: "no working-copy change found".to_string(),
+            })
     }
 
-    fn describe(&self, dir: &Path, message: &str) -> io::Result<()> {
-        self.stdout(Some(dir), &["describe", "-m", message])
+    async fn describe(&self, dir: &Path, message: &str) -> Result<()> {
+        self.exec_in(dir, &["describe", "-m", message])
+            .checked_with(&self.runner)
+            .await
             .map(drop)
     }
 
-    fn new_change(&self, dir: &Path, message: &str) -> io::Result<()> {
-        self.stdout(Some(dir), &["new", "-m", message]).map(drop)
+    async fn new_change(&self, dir: &Path, message: &str) -> Result<()> {
+        self.exec_in(dir, &["new", "-m", message])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
     }
 
-    fn bookmarks(&self, dir: &Path) -> io::Result<Vec<Bookmark>> {
-        let out = self.stdout(Some(dir), &["bookmark", "list"])?;
-        Ok(parse::parse_bookmarks(&out))
+    async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>> {
+        let out = self
+            .exec_in(dir, &["bookmark", "list"])
+            .checked_with(&self.runner)
+            .await?;
+        Ok(parse::parse_bookmarks(&out.stdout))
+    }
+
+    async fn bookmark_set(&self, dir: &Path, name: &str, revision: &str) -> Result<()> {
+        self.exec_in(dir, &["bookmark", "set", name, "-r", revision])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
+    }
+
+    async fn git_fetch(&self, dir: &Path) -> Result<()> {
+        self.exec_in(dir, &["git", "fetch"])
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
+    }
+
+    async fn git_push(&self, dir: &Path, bookmark: Option<String>) -> Result<()> {
+        let mut args = vec!["git", "push"];
+        if let Some(name) = bookmark.as_deref() {
+            args.push("-b");
+            args.push(name);
+        }
+        self.exec_in(dir, &args)
+            .checked_with(&self.runner)
+            .await
+            .map(drop)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vcs_process::{Output, ScriptedRunner};
+    use vcs_process::ScriptedRunner;
 
     #[test]
     fn binary_name_is_jj() {
@@ -143,21 +231,25 @@ mod tests {
     }
 
     // Hermetic: real log() arg-building + template parsing against canned output.
-    #[test]
-    fn current_change_parses_scripted_output() {
+    #[tokio::test]
+    async fn current_change_parses_scripted_output() {
         let jj = Jj::with_runner(
-            ScriptedRunner::new().on(["log"], Output::ok("kztuxlro\t38e00654\thello jj\n")),
+            ScriptedRunner::new().on(["log"], Output::ok("kztuxlro\t38e00654\tfalse\thello jj\n")),
         );
-        let change = jj.current_change(Path::new(".")).expect("current_change");
+        let change = jj
+            .current_change(Path::new("."))
+            .await
+            .expect("current_change");
         assert_eq!(change.change_id, "kztuxlro");
+        assert!(!change.empty);
         assert_eq!(change.description, "hello jj");
     }
 
     #[cfg(feature = "mock")]
-    #[test]
-    fn consumer_mocks_the_interface() {
+    #[tokio::test]
+    async fn consumer_mocks_the_interface() {
         let mut mock = MockJjApi::new();
         mock.expect_describe().returning(|_, _| Ok(()));
-        assert!(mock.describe(Path::new("."), "msg").is_ok());
+        assert!(mock.describe(Path::new("."), "msg").await.is_ok());
     }
 }

@@ -3,7 +3,8 @@
 //! exiting does *not* reap descendants here.
 
 use std::io;
-use std::process::Command;
+
+use tokio::process::Command;
 
 use crate::Mechanism;
 
@@ -14,7 +15,7 @@ impl Job {
         Ok(Job)
     }
 
-    pub fn spawn(&self, cmd: &mut Command) -> io::Result<std::process::Child> {
+    pub fn spawn(&self, cmd: &mut Command) -> io::Result<tokio::process::Child> {
         cmd.spawn()
     }
 

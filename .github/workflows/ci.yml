@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same ref so a new push doesn't queue behind stale CI.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -33,13 +38,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS exercises the `other.rs` (no-containment) path of vcs-process.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --all-targets
       - run: cargo test
       # Exercise the mock layer: automock-generated mocks + ScriptedRunner tests.
       - run: cargo test --workspace --features mock
+
+  audit:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Scan the dependency tree for security advisories and banned/duplicate crates.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans
 
   package:
     name: cargo package

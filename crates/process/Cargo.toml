@@ -9,6 +9,13 @@ authors.workspace = true
 readme = "README.md"
 
 [dependencies]
+# Async process spawning + timeout: tokio::process drives git/jj/gh, tokio::time
+# enforces deadlines, io-util writes stdin asynchronously.
+tokio = { version = "1", features = ["process", "time", "io-util"] }
+# `async fn` in the object-safe `Runner`/`*Api` traits (dyn + mockall friendly).
+async-trait = "0.1"
+# Structured `CommandError` carrying program/args/exit code/stderr/timeout.
+thiserror = "2"
 # Auto-generated mocks of the `Runner` trait (MockRunner). Test-only — pulled in
 # only when the `mock` feature is enabled, never in production builds.
 mockall = { version = "0.13", optional = true }
@@ -36,3 +43,5 @@ windows-sys = { version = "0.59", features = [
 libc = "0.2"
 
 [dev-dependencies]
+# `#[tokio::test]` and a runtime to drive the async tests.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

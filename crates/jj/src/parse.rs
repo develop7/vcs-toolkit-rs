@@ -8,6 +8,8 @@ pub struct Change {
     pub change_id: String,
     /// Short commit id (`commit_id.short()`).
     pub commit_id: String,
+    /// `true` when the change makes no file modifications.
+    pub empty: bool,
     /// First line of the description (empty for an undescribed change).
     pub description: String,
 }
@@ -22,7 +24,7 @@ pub struct Bookmark {
 }
 
 /// Template used by the change commands: tab-separated, one change per line.
-pub(crate) const CHANGE_TEMPLATE: &str = "change_id.short() ++ \"\\t\" ++ commit_id.short() ++ \"\\t\" ++ description.first_line() ++ \"\\n\"";
+pub(crate) const CHANGE_TEMPLATE: &str = "change_id.short() ++ \"\\t\" ++ commit_id.short() ++ \"\\t\" ++ if(empty, \"true\", \"false\") ++ \"\\t\" ++ description.first_line() ++ \"\\n\"";
 
 /// Parse rows produced by [`CHANGE_TEMPLATE`].
 pub(crate) fn parse_changes(output: &str) -> Vec<Change> {
@@ -31,10 +33,15 @@ pub(crate) fn parse_changes(output: &str) -> Vec<Change> {
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
             let mut fields = line.split('\t');
+            let change_id = fields.next()?.to_string();
+            let commit_id = fields.next()?.to_string();
+            let empty = fields.next()? == "true";
+            let description = fields.next().unwrap_or("").to_string();
             Some(Change {
-                change_id: fields.next()?.to_string(),
-                commit_id: fields.next()?.to_string(),
-                description: fields.next().unwrap_or("").to_string(),
+                change_id,
+                commit_id,
+                empty,
+                description,
             })
         })
         .collect()
@@ -71,7 +78,7 @@ mod tests {
 
     #[test]
     fn changes_split_tab_fields() {
-        let input = "kztuxlro\t38e00654\tfeat: stuff\nqpvuntsm\t6ecf997f\t\n";
+        let input = "kztuxlro\t38e00654\tfalse\tfeat: stuff\nqpvuntsm\t6ecf997f\ttrue\t\n";
         let got = parse_changes(input);
         assert_eq!(got.len(), 2);
         assert_eq!(
@@ -79,10 +86,12 @@ mod tests {
             Change {
                 change_id: "kztuxlro".into(),
                 commit_id: "38e00654".into(),
+                empty: false,
                 description: "feat: stuff".into(),
             }
         );
-        // Undescribed change → empty description.
+        // Undescribed, empty change.
+        assert!(got[1].empty);
         assert_eq!(got[1].description, "");
     }
 

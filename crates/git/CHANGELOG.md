@@ -16,11 +16,17 @@ crates; tag releases as `vcs-git-v<version>`.
 - **Mockable by design:** consumers code against `GitApi`; `Git::with_runner`
   injects a fake process runner (e.g. `vcs_process::ScriptedRunner`), and the
   `mock` feature generates `MockGitApi` (via `mockall`) for stubbing whole methods.
+- `create_branch`, `checkout`, and raw `run`/`run_raw` escape hatches on `GitApi`.
+- `Commit` gained `short_hash` and `date` (ISO-8601 `%aI`).
+- `Git::default_timeout` kills any command exceeding the deadline.
 
 ### Changed
 - The API is now the `Git` client + `GitApi` trait — the original free functions
   (`run`/`version`/`status`/…) are gone. Commands launch `git` inside an OS job
   (Windows Job Object / Linux cgroup v2) via `vcs-process`, killed on close.
+- **Now async (tokio):** every `GitApi` method is `async`. Errors are the typed
+  `vcs_process::CommandError` (exit code, stderr, …) instead of `io::Error`.
+  Adds `async-trait`.
 
 ### Fixed
 - `status`/`branches` parsing no longer corrupts the first entry: output is parsed

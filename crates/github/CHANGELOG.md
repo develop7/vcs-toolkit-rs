@@ -17,11 +17,18 @@ crates; tag releases as `vcs-github-v<version>`.
 - **Mockable by design:** consumers code against `GitHubApi`; `GitHub::with_runner`
   injects a fake process runner, and the `mock` feature generates `MockGitHubApi`
   (via `mockall`).
+- `pr_create` and raw `run`/`run_raw` on `GitHubApi`.
+- `PullRequest` gained `base_ref_name` and `url`; `Repo` now has `owner`, `url`,
+  `is_private`, and `default_branch`.
+- `GitHub::default_timeout` kills any command exceeding the deadline.
 
 ### Changed
 - The API is now the `GitHub` client + `GitHubApi` trait — the original free
   functions are gone. Commands launch `gh` inside an OS job (Windows Job Object /
   Linux cgroup v2) via `vcs-process`, killed on close.
+- **Now async (tokio):** every `GitHubApi` method is `async`; errors are the typed
+  `vcs_process::CommandError` (JSON parse failures become `CommandError::Parse`).
+  Adds `async-trait`.
 
 ## [0.1.0] - 2026-05-29
 

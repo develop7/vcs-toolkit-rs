@@ -21,11 +21,14 @@ library crates:
 
 Each wrapper exposes the same shape — an **interface trait**
 (`GitApi`/`JjApi`/`GitHubApi`) and a real client struct
-(`Git`/`Jj`/`GitHub`) generic over a `Runner`. Typed, repo-scoped methods take
-`dir: &Path` and return parsed structs; pure parsers live in each crate's
-`parse.rs`. Keep this shape consistent across crates and **keep the traits
-object-safe** (no generic methods, no nested-reference lifetimes — use
-`&[PathBuf]`, not `&[&Path]`) so `&dyn Api` and `mockall` both work.
+(`Git`/`Jj`/`GitHub`) generic over a `Runner`. Methods are **`async`** (tokio,
+via `#[async_trait]`), take `dir: &Path`, return parsed structs, and fail with
+the structured `vcs_process::CommandError`; pure parsers live in each crate's
+`parse.rs`. Each client carries an optional `default_timeout`. Keep this shape
+consistent across crates and **keep the traits object-safe and `mockall`-friendly**
+— no generic methods, no nested-reference lifetimes (use `&[PathBuf]`/`&[String]`,
+not `&[&Path]`/`&[&str]`; use `Option<String>`, not `Option<&str>`) so `&dyn Api`,
+`async-trait`, and `mockall` all work.
 
 **Mockability is a first-class requirement.** Consumers depend on the trait and,
 in tests, either enable the `mock` feature for a `mockall`-generated mock
@@ -87,11 +90,14 @@ compiled as its own crate; prefer shared helpers in `tests/common/mod.rs`.
 ## Dependency management
 
 This workspace fixes **no** allow-list of crates — add whatever a crate
-genuinely needs. The wrappers stay lean: `vcs-git` and `vcs-jj` depend only on
-`vcs-process` (which itself pulls in just `windows-sys` on Windows and `libc` on
-Linux for the job FFI); `vcs-github` adds `serde`/`serde_json` to deserialize
-`gh … --json` output. Don't add more to a wrapper unless there's a real reason.
-The convention is about *how* you add dependencies, not *which*:
+genuinely needs. `vcs-process` pulls in `tokio` (async process spawning +
+timeouts), `async-trait`, `thiserror`, plus `windows-sys` (Windows) / `libc`
+(Linux) for the job FFI. The wrappers stay lean: `vcs-git` and `vcs-jj` depend on
+`vcs-process` + `async-trait`; `vcs-github` additionally adds `serde`/`serde_json`
+to deserialize `gh … --json`. Each crate uses `tokio` (`macros`,
+`rt-multi-thread`) only as a `dev-dependency` for `#[tokio::test]`. Don't add more
+to a wrapper unless there's a real reason. The convention is about *how* you add
+dependencies, not *which*:
 
 - **Document every dependency.** Each entry in `Cargo.toml` gets an inline
   comment explaining *why* it's there. A future reader should never guess.

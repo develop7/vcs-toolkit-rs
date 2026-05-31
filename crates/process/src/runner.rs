@@ -1,5 +1,5 @@
-//! The execution boundary as a trait, so consumers can inject a fake process
-//! runner in tests instead of spawning real binaries.
+//! The execution boundary as an async trait, so consumers can inject a fake
+//! process runner in tests instead of spawning real binaries.
 //!
 //! - [`JobRunner`] is the real, job-backed runner (the default).
 //! - [`ScriptedRunner`] is a dependency-free test double: map a command to a
@@ -17,9 +17,10 @@ use crate::{Exec, Output};
 /// [`ScriptedRunner`] (or a `mockall` `MockRunner`) and exercise the real
 /// argument-building and parsing without touching git/jj/gh.
 #[cfg_attr(feature = "mock", mockall::automock)]
-pub trait Runner {
+#[async_trait::async_trait]
+pub trait Runner: Send + Sync {
     /// Execute `exec` and capture its result.
-    fn run(&self, exec: &Exec) -> io::Result<Output>;
+    async fn run(&self, exec: &Exec) -> io::Result<Output>;
 }
 
 /// The real runner: spawns the process inside a job (kill-on-close). The default
@@ -27,22 +28,16 @@ pub trait Runner {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct JobRunner;
 
+#[async_trait::async_trait]
 impl Runner for JobRunner {
-    fn run(&self, exec: &Exec) -> io::Result<Output> {
-        exec.execute()
+    async fn run(&self, exec: &Exec) -> io::Result<Output> {
+        exec.execute().await
     }
 }
 
 /// A test double mapping a command — matched by a prefix of its argument list —
 /// to a canned [`Output`]. Build canned outputs with [`Output::ok`] /
 /// [`Output::fail`].
-///
-/// ```
-/// use vcs_process::{Output, Runner, ScriptedRunner, Exec};
-/// let runner = ScriptedRunner::new().on(["status", "--porcelain"], Output::ok(" M a.rs\n"));
-/// let out = runner.run(&Exec::new("git").args(["status", "--porcelain"])).unwrap();
-/// assert_eq!(out.stdout, " M a.rs\n");
-/// ```
 #[derive(Debug, Default, Clone)]
 pub struct ScriptedRunner {
     rules: Vec<(Vec<OsString>, Output)>,
@@ -76,8 +71,9 @@ impl ScriptedRunner {
     }
 }
 
+#[async_trait::async_trait]
 impl Runner for ScriptedRunner {
-    fn run(&self, exec: &Exec) -> io::Result<Output> {
+    async fn run(&self, exec: &Exec) -> io::Result<Output> {
         let actual = exec.arguments();
         for (prefix, out) in &self.rules {
             if actual.len() >= prefix.len() && actual[..prefix.len()] == prefix[..] {

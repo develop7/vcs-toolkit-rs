@@ -24,36 +24,42 @@ fn init_repo(dir: &Path) {
     jj(&["config", "set", "--repo", "user.email", "test@example.com"]);
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires the jj binary"]
-fn describe_new_and_log_cycle() {
+async fn describe_new_and_log_cycle() {
     let tmp = TempDir::new("cycle");
     let dir = tmp.path();
     init_repo(dir);
     let jj = Jj::new();
 
-    // Fresh working copy: a change with no description.
-    let head = jj.current_change(dir).expect("current_change");
+    // Fresh working copy: an empty change with no description.
+    let head = jj.current_change(dir).await.expect("current_change");
     assert!(!head.change_id.is_empty());
-    assert!(!head.commit_id.is_empty());
+    assert!(head.empty, "fresh working copy should be empty");
     assert_eq!(head.description, "");
 
     // Describe it, then read it back.
-    jj.describe(dir, "hello jj").expect("describe");
+    jj.describe(dir, "hello jj").await.expect("describe");
     assert_eq!(
-        jj.current_change(dir).expect("current_change").description,
+        jj.current_change(dir)
+            .await
+            .expect("current_change")
+            .description,
         "hello jj"
     );
 
     // Start a new change; it becomes the working copy.
-    jj.new_change(dir, "second change").expect("new");
+    jj.new_change(dir, "second change").await.expect("new");
     assert_eq!(
-        jj.current_change(dir).expect("current_change").description,
+        jj.current_change(dir)
+            .await
+            .expect("current_change")
+            .description,
         "second change"
     );
 
     // Both changes are reachable from @.
-    let log = jj.log(dir, "::@", 10).expect("log");
+    let log = jj.log(dir, "::@", 10).await.expect("log");
     assert!(
         log.len() >= 2,
         "expected at least two changes, got {}",
@@ -62,25 +68,29 @@ fn describe_new_and_log_cycle() {
     assert!(log.iter().any(|c| c.description == "hello jj"));
 
     // status returns something without erroring.
-    jj.status(dir).expect("status");
+    jj.status(dir).await.expect("status");
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires the jj binary"]
-fn bookmarks_are_listed() {
+async fn bookmark_create_set_and_list() {
     let tmp = TempDir::new("bookmarks");
     let dir = tmp.path();
     init_repo(dir);
     let jj = Jj::new();
 
-    jj.describe(dir, "rooted").expect("describe");
+    jj.describe(dir, "rooted").await.expect("describe");
     Command::new(vcs_jj::BINARY)
         .current_dir(dir)
         .args(["bookmark", "create", "mark", "-r", "@"])
         .status()
         .expect("bookmark create");
+    // Move it via the typed API.
+    jj.bookmark_set(dir, "mark", "@")
+        .await
+        .expect("bookmark_set");
 
-    let bookmarks = jj.bookmarks(dir).expect("bookmarks");
+    let bookmarks = jj.bookmarks(dir).await.expect("bookmarks");
     assert!(
         bookmarks.iter().any(|b| b.name == "mark"),
         "expected bookmark 'mark', got {bookmarks:?}"

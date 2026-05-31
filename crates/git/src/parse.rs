@@ -16,8 +16,12 @@ pub struct StatusEntry {
 pub struct Commit {
     /// Full commit hash (`%H`).
     pub hash: String,
+    /// Abbreviated commit hash (`%h`).
+    pub short_hash: String,
     /// Author name (`%an`).
     pub author: String,
+    /// Author date, strict ISO-8601 (`%aI`), e.g. `2026-05-31T10:00:00+00:00`.
+    pub date: String,
     /// Subject line (`%s`).
     pub subject: String,
 }
@@ -44,7 +48,8 @@ pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
         .collect()
 }
 
-/// Parse `git log --format=%H%x1f%an%x1f%s` output (one commit per line).
+/// Parse `git log --format=%H%x1f%h%x1f%an%x1f%aI%x1f%s` output (one commit per
+/// line, fields separated by the ASCII unit separator).
 pub(crate) fn parse_log(output: &str) -> Vec<Commit> {
     output
         .lines()
@@ -53,7 +58,9 @@ pub(crate) fn parse_log(output: &str) -> Vec<Commit> {
             let mut fields = line.split('\u{1f}');
             Some(Commit {
                 hash: fields.next()?.to_string(),
+                short_hash: fields.next()?.to_string(),
                 author: fields.next()?.to_string(),
+                date: fields.next()?.to_string(),
                 subject: fields.next().unwrap_or("").to_string(),
             })
         })
@@ -113,14 +120,17 @@ mod tests {
 
     #[test]
     fn log_splits_unit_separated_fields() {
-        let input = "abc123\u{1f}Ada\u{1f}Add feature\ndef456\u{1f}Linus\u{1f}Fix bug\n";
+        let input = "abc123\u{1f}abc\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Add feature\n\
+                     def456\u{1f}def\u{1f}Linus\u{1f}2026-05-30T09:00:00+00:00\u{1f}Fix bug\n";
         let got = parse_log(input);
         assert_eq!(got.len(), 2);
         assert_eq!(
             got[0],
             Commit {
                 hash: "abc123".into(),
+                short_hash: "abc".into(),
                 author: "Ada".into(),
+                date: "2026-05-31T10:00:00+00:00".into(),
                 subject: "Add feature".into(),
             }
         );
@@ -129,7 +139,7 @@ mod tests {
 
     #[test]
     fn log_tolerates_empty_subject() {
-        let got = parse_log("h\u{1f}A\u{1f}\n");
+        let got = parse_log("h\u{1f}h\u{1f}A\u{1f}2026-05-31T10:00:00+00:00\u{1f}\n");
         assert_eq!(got[0].subject, "");
     }
 

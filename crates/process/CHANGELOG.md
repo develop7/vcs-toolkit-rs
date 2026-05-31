@@ -24,5 +24,17 @@ crates; tag releases as `vcs-process-v<version>`.
   `Output::ok`/`Output::fail` constructors and `Exec::program`/`arguments`/
   `working_dir` accessors. With the `mock` feature, `mockall` also generates
   `MockRunner`.
+- **Timeouts:** `Exec::timeout`/`maybe_timeout` kill the job when the deadline
+  elapses; `Output::timed_out` reports it. Inspired by the .NET sibling.
+- **Structured errors:** `CommandError` (and the `Result` alias) carries the
+  program, args, exit code, stderr, and timeout — a typed alternative to the old
+  stringly `io::Error`. `Exec::run` and the new `Exec::checked_with`/`output_with`
+  (run via an injected `Runner`) return it.
+
+### Changed
+- **Now async (tokio).** `Exec::run`/`output`/`spawn`, the `Runner` trait, and the
+  free `run`/`output` helpers are `async`; processes spawn via `tokio::process`.
+  `Child` wraps `tokio::process::Child`. Adds `tokio`, `async-trait`, `thiserror`.
+- `Output::into_result` was removed in favour of `Exec::run` / `checked_with`.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main

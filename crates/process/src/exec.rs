@@ -1,58 +1,48 @@
-//! Ergonomic command builder on top of [`Job`]. Set a working directory, env
-//! vars, or stdin input, then choose between erroring on a non-zero exit
+//! Ergonomic async command builder on top of [`Job`]. Set a working directory,
+//! env vars, stdin input, or a timeout, then choose between erroring on failure
 //! ([`Exec::run`]) or capturing the status yourself ([`Exec::output`]). Every
 //! process still runs inside a job, so kill-on-close holds.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
-use crate::{Child, Job};
+use tokio::process::Command;
+
+use crate::{Child, CommandError, Job, JobRunner, Runner};
 
 /// Captured result of a finished process.
 ///
 /// Unlike [`Exec::run`], producing an `Output` does **not** treat a non-zero
-/// exit as an error — inspect [`Output::status`] (or [`Output::success`])
-/// yourself. This is the right type for commands whose exit code is meaningful
-/// (e.g. `git diff --quiet`).
+/// exit as an error — inspect [`Output::status`] / [`Output::success`] /
+/// [`Output::timed_out`] yourself.
 #[derive(Debug, Clone)]
 pub struct Output {
-    /// Exit status of the process.
+    /// Exit status of the process. On a timeout this is a synthetic non-zero
+    /// status (the process was killed); check [`Output::timed_out`] to tell.
     pub status: ExitStatus,
     /// Captured standard output, lossily decoded as UTF-8.
     pub stdout: String,
     /// Captured standard error, lossily decoded as UTF-8.
     pub stderr: String,
+    /// `true` when the process was killed because its timeout elapsed.
+    pub timed_out: bool,
 }
 
 impl Output {
-    /// Whether the process exited successfully (zero status).
+    /// Whether the process exited successfully (zero status, not timed out).
     pub fn success(&self) -> bool {
-        self.status.success()
+        !self.timed_out && self.status.success()
     }
 
-    /// `stdout` followed by `stderr`. The streams are captured separately, so
-    /// this is concatenation, not real-time interleaving.
+    /// `stdout` followed by `stderr`. Concatenation, not real-time interleaving.
     pub fn combined(&self) -> String {
         let mut s = String::with_capacity(self.stdout.len() + self.stderr.len());
         s.push_str(&self.stdout);
         s.push_str(&self.stderr);
         s
-    }
-
-    /// Apply the [`run`](crate::run) contract: trimmed stdout on success, or an
-    /// `io::Error` carrying trimmed stderr on a non-zero exit.
-    pub fn into_result(self) -> io::Result<String> {
-        if self.status.success() {
-            Ok(self.stdout.trim().to_string())
-        } else {
-            Err(io::Error::other(format!(
-                "process exited with {}: {}",
-                self.status,
-                self.stderr.trim()
-            )))
-        }
     }
 
     /// Build a successful `Output` carrying `stdout` — for scripting a
@@ -63,6 +53,7 @@ impl Output {
             status: synthetic_status(0),
             stdout: stdout.into(),
             stderr: String::new(),
+            timed_out: false,
         }
     }
 
@@ -73,13 +64,34 @@ impl Output {
             status: synthetic_status(code),
             stdout: String::new(),
             stderr: stderr.into(),
+            timed_out: false,
+        }
+    }
+
+    fn from_std(out: std::process::Output) -> Self {
+        Output {
+            status: out.status,
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            timed_out: false,
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn timed_out() -> Self {
+        Output {
+            // 124 is the conventional "timed out" exit code (cf. GNU `timeout`).
+            status: synthetic_status(124),
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
         }
     }
 }
 
 /// Construct an `ExitStatus` for `code` without spawning a process. Windows
 /// takes the code directly; Unix wants the raw wait status (exit code in bits
-/// 8–15).
+/// 8–15). Available on every process-capable target (Unix incl. macOS/BSD, Windows).
 #[cfg(any(unix, windows))]
 fn synthetic_status(code: i32) -> ExitStatus {
     #[cfg(windows)]
@@ -97,11 +109,13 @@ fn synthetic_status(code: i32) -> ExitStatus {
 /// Builder for a single job-backed command run.
 ///
 /// ```no_run
+/// # async fn example() -> Result<(), vcs_process::CommandError> {
 /// let out = vcs_process::Exec::new("git")
 ///     .args(["status", "--porcelain"])
 ///     .current_dir("/path/to/repo")
-///     .run()?;
-/// # Ok::<(), std::io::Error>(())
+///     .run()
+///     .await?;
+/// # Ok(()) }
 /// ```
 pub struct Exec {
     program: OsString,
@@ -109,6 +123,7 @@ pub struct Exec {
     cwd: Option<PathBuf>,
     envs: Vec<(OsString, OsString)>,
     stdin: Option<Vec<u8>>,
+    timeout: Option<Duration>,
 }
 
 impl Exec {
@@ -120,6 +135,7 @@ impl Exec {
             cwd: None,
             envs: Vec::new(),
             stdin: None,
+            timeout: None,
         }
     }
 
@@ -169,11 +185,21 @@ impl Exec {
 
     /// Feed `bytes` to the child's stdin (then close it, sending EOF).
     ///
-    /// Intended for modest inputs (a commit message, a small patch): the bytes
-    /// are written before the output is drained, so an input large enough to
-    /// fill the OS pipe buffer could deadlock. Use [`Exec::spawn`] for streaming.
+    /// Intended for modest inputs (a commit message, a small patch).
     pub fn stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.stdin = Some(bytes.into());
+        self
+    }
+
+    /// Kill the process (and its job) if it runs longer than `timeout`.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Apply an optional timeout (e.g. a client default). `None` leaves it unset.
+    pub fn maybe_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -192,7 +218,15 @@ impl Exec {
         self.cwd.as_deref()
     }
 
-    /// Configure a [`std::process::Command`] from this builder. stdin is piped
+    fn joined_args(&self) -> String {
+        self.args
+            .iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Configure a [`tokio::process::Command`] from this builder. stdin is piped
     /// when input was supplied, otherwise nulled (see [`run`](crate::run)).
     fn build(&self) -> Command {
         let mut cmd = Command::new(&self.program);
@@ -209,67 +243,109 @@ impl Exec {
         } else {
             Stdio::null()
         });
+        // Kill the direct child if its `Child` is dropped without being awaited —
+        // e.g. when a timeout cancels the wait future. The job kills the whole
+        // tree on Windows/Linux; this guarantees at least the child dies on every
+        // platform (incl. the no-containment `other` path) and that `Exec::spawn`
+        // never leaks an abandoned process.
+        cmd.kill_on_drop(true);
         cmd
     }
 
     /// Run to completion and capture output, **without** erroring on a non-zero
-    /// exit. The job is dropped before returning (kill-on-close).
-    pub fn output(self) -> io::Result<Output> {
-        self.execute()
+    /// exit. On timeout the job is killed and `Output::timed_out` is set. The job
+    /// is dropped before returning (kill-on-close).
+    pub async fn output(self) -> io::Result<Output> {
+        self.execute().await
     }
 
     /// The actual job-backed execution. Borrows `self` so [`JobRunner`] can run a
     /// borrowed `Exec` (the [`Runner`](crate::Runner) seam) without consuming it.
-    pub(crate) fn execute(&self) -> io::Result<Output> {
+    pub(crate) async fn execute(&self) -> io::Result<Output> {
         let job = Job::new()?;
         let mut cmd = self.build();
         let mut child = job.spawn(&mut cmd)?;
 
-        // Take and drop the handle so the child sees EOF before we drain it.
-        if let Some(input) = &self.stdin
-            && let Some(mut sink) = child.inner_mut().stdin.take()
-        {
-            sink.write_all(input)?;
-        }
+        // Feed and close any buffered stdin (so the child sees EOF) and then
+        // drain its output. The timeout, when set, covers this whole interaction
+        // — including a stdin write that could otherwise block on a child that
+        // never reads it.
+        let drive = async {
+            if let Some(input) = &self.stdin
+                && let Some(mut sink) = child.inner_mut().stdin.take()
+            {
+                use tokio::io::AsyncWriteExt;
+                sink.write_all(input).await?;
+                sink.shutdown().await?;
+            }
+            child.wait_with_output().await
+        };
 
-        let out = child.wait_with_output()?;
-        Ok(Output {
-            status: out.status,
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+        match self.timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, drive).await {
+                Ok(result) => Ok(Output::from_std(result?)),
+                Err(_elapsed) => {
+                    // Deadline hit: kill the whole job, report a timed-out result.
+                    let _ = job.kill_all();
+                    Ok(Output::timed_out())
+                }
+            },
+            None => Ok(Output::from_std(drive.await?)),
+        }
     }
 
-    /// Run to completion, returning trimmed stdout on success or an `io::Error`
-    /// carrying stderr on a non-zero exit (the [`run`](crate::run) contract).
-    pub fn run(self) -> io::Result<String> {
-        let program = self.program.clone();
-        let out = self.output()?;
-        if out.status.success() {
-            Ok(out.stdout.trim().to_string())
-        } else {
-            Err(io::Error::other(format!(
-                "`{}` exited with {}: {}",
-                program.to_string_lossy(),
-                out.status,
-                out.stderr.trim()
-            )))
+    /// Capture [`Output`] using an injected `runner` (the [`Runner`] seam),
+    /// **without** erroring on a non-zero exit.
+    pub async fn output_with<R: Runner + ?Sized>(self, runner: &R) -> io::Result<Output> {
+        runner.run(&self).await
+    }
+
+    /// Run via an injected `runner`, returning the successful [`Output`] or a
+    /// [`CommandError`] on a non-zero exit, timeout, or spawn failure. This is the
+    /// mapping the wrapper crates build their typed commands on.
+    pub async fn checked_with<R: Runner + ?Sized>(self, runner: &R) -> crate::Result<Output> {
+        let program = self.program.to_string_lossy().into_owned();
+        match runner.run(&self).await {
+            Err(source) => Err(CommandError::Spawn { program, source }),
+            Ok(out) if out.timed_out => Err(CommandError::Timeout {
+                program,
+                args: self.joined_args(),
+                timeout: self.timeout.unwrap_or_default(),
+            }),
+            Ok(out) if out.success() => Ok(out),
+            Ok(out) => Err(CommandError::Exit {
+                program,
+                args: self.joined_args(),
+                code: out.status.code().unwrap_or(-1),
+                stderr: out.stderr.trim().to_string(),
+            }),
         }
+    }
+
+    /// Run to completion, returning trimmed stdout on success or a
+    /// [`CommandError`] on a non-zero exit, timeout, or spawn failure.
+    pub async fn run(self) -> crate::Result<String> {
+        Ok(self
+            .checked_with(&JobRunner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
     }
 
     /// Spawn into a fresh job and hand back both, for streaming or long-running
-    /// processes. Any buffered [`stdin`](Exec::stdin) input is written and the
-    /// pipe closed before returning (same modest-size caveat as `stdin`); if you
-    /// gave none, the child's stdin is null.
-    pub fn spawn(self) -> io::Result<(Job, Child)> {
+    /// processes. Any buffered [`stdin`](Exec::stdin) input is written and closed
+    /// before returning; the timeout does **not** apply here (you drive the wait).
+    pub async fn spawn(self) -> io::Result<(Job, Child)> {
         let job = Job::new()?;
         let mut cmd = self.build();
         let mut child = job.spawn(&mut cmd)?;
-        // Feed and close any buffered stdin before handing the child back.
         if let Some(input) = &self.stdin
             && let Some(mut sink) = child.inner_mut().stdin.take()
         {
-            sink.write_all(input)?;
+            use tokio::io::AsyncWriteExt;
+            sink.write_all(input).await?;
+            sink.shutdown().await?;
         }
         Ok((job, child))
     }

@@ -3,9 +3,8 @@
 //! [Job Object]: https://learn.microsoft.com/windows/win32/procthread/job-objects
 
 use std::io;
-use std::os::windows::io::AsRawHandle;
-use std::process::Command;
 
+use tokio::process::Command;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -54,20 +53,22 @@ impl Job {
         Ok(job)
     }
 
-    pub fn spawn(&self, cmd: &mut Command) -> io::Result<std::process::Child> {
+    pub fn spawn(&self, cmd: &mut Command) -> io::Result<tokio::process::Child> {
         // Spawn first, then assign. There's a small window between spawn and
         // assignment in which the child could spawn its own children outside the
         // job; acceptable for v1 (git/jj/gh don't fork that fast). Hardening via
         // CREATE_SUSPENDED + ResumeThread is a follow-up.
-        let child = cmd.spawn()?;
-        // SAFETY: the child handle stays valid until `child` is dropped, well
-        // after this call returns.
-        let ok = unsafe { AssignProcessToJobObject(self.handle, child.as_raw_handle() as HANDLE) };
+        let mut child = cmd.spawn()?;
+        let handle = child.raw_handle().ok_or_else(|| {
+            io::Error::other("child exited before it could be assigned to the job")
+        })?;
+        // SAFETY: the raw handle is valid until `child` is dropped, well after
+        // this call returns.
+        let ok = unsafe { AssignProcessToJobObject(self.handle, handle as HANDLE) };
         if ok == 0 {
             let err = io::Error::last_os_error();
             // Don't leak a child we failed to contain.
-            let mut child = child;
-            let _ = child.kill();
+            let _ = child.start_kill();
             return Err(err);
         }
         Ok(child)

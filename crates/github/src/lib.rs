@@ -1,19 +1,19 @@
 //! `vcs-github` — automate GitHub from Rust through the `gh` CLI.
 //!
-//! The API is built for **mockability**: consumers depend on the [`GitHubApi`]
-//! trait and substitute a mock for the real [`GitHub`] client in their tests.
-//! Commands run inside an OS job (via [`vcs_process`]) so a `gh` subprocess is
-//! never orphaned.
+//! Async, mockable, and structured-error: consumers depend on the [`GitHubApi`]
+//! trait and substitute a mock for the real [`GitHub`] client in tests. Commands
+//! run inside an OS job (via [`vcs_process`]) so a `gh` subprocess is never
+//! orphaned, and honour an optional [timeout](GitHub::default_timeout).
 //!
-//! Two test seams: mock the interface (`mock` feature → `MockGitHubApi`), or
-//! inject a [`ScriptedRunner`](vcs_process::ScriptedRunner) via
-//! [`GitHub::with_runner`] to drive the real argument-building and JSON parsing
-//! against canned output.
+//! Two test seams: enable the `mock` feature for a `mockall`-generated
+//! `MockGitHubApi`, or inject a fake runner with
+//! `GitHub::with_runner(`[`ScriptedRunner`](vcs_process::ScriptedRunner)`)`.
 
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
-use vcs_process::{Exec, JobRunner, Output, Runner};
+use vcs_process::{CommandError, Exec, JobRunner, Output, Result, Runner};
 
 mod parse;
 pub use parse::{Issue, PullRequest, Repo};
@@ -21,36 +21,57 @@ pub use parse::{Issue, PullRequest, Repo};
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "gh";
 
+const PR_FIELDS: &str = "number,title,state,headRefName,baseRefName,url";
+const REPO_FIELDS: &str = "name,owner,description,url,isPrivate,defaultBranchRef";
+
 /// The GitHub operations this crate exposes — the interface consumers code
 /// against and mock in tests.
 #[cfg_attr(feature = "mock", mockall::automock)]
-pub trait GitHubApi {
+#[async_trait::async_trait]
+pub trait GitHubApi: Send + Sync {
+    /// Run `gh <args>`, returning trimmed stdout (throws on a non-zero exit).
+    async fn run(&self, args: &[String]) -> Result<String>;
+    /// Like [`GitHubApi::run`] but never errors on exit code — returns [`Output`].
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output>;
     /// Installed GitHub CLI version (`gh --version`).
-    fn version(&self) -> io::Result<String>;
+    async fn version(&self) -> Result<String>;
     /// Whether the user is authenticated (`gh auth status` exits zero).
-    fn auth_status(&self) -> io::Result<bool>;
+    async fn auth_status(&self) -> Result<bool>;
     /// The repository for `dir` (`gh repo view --json …`).
-    fn repo_view(&self, dir: &Path) -> io::Result<Repo>;
+    async fn repo_view(&self, dir: &Path) -> Result<Repo>;
     /// Pull requests for `dir` (`gh pr list --json …`).
-    fn pr_list(&self, dir: &Path) -> io::Result<Vec<PullRequest>>;
+    async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>>;
     /// A single pull request by number (`gh pr view <n> --json …`).
-    fn pr_view(&self, dir: &Path, number: u64) -> io::Result<PullRequest>;
+    async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest>;
     /// Issues for `dir` (`gh issue list --json …`).
-    fn issue_list(&self, dir: &Path) -> io::Result<Vec<Issue>>;
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>>;
+    /// Open a pull request, returning its URL (`gh pr create`). `base` is owned
+    /// (`Option<String>`) to keep the trait `mockall`-friendly.
+    async fn pr_create(
+        &self,
+        dir: &Path,
+        title: &str,
+        body: &str,
+        base: Option<String>,
+    ) -> Result<String>;
     /// Raw GitHub REST/GraphQL response body (`gh api <endpoint>`).
-    fn api(&self, endpoint: &str) -> io::Result<String>;
+    async fn api(&self, endpoint: &str) -> Result<String>;
 }
 
 /// The real GitHub client. Generic over the [`Runner`] so tests can inject a
 /// fake process executor; `GitHub::new()` uses the real job-backed runner.
 pub struct GitHub<R: Runner = JobRunner> {
     runner: R,
+    timeout: Option<Duration>,
 }
 
 impl GitHub<JobRunner> {
     /// A client backed by the real `gh` binary.
     pub fn new() -> Self {
-        GitHub { runner: JobRunner }
+        GitHub {
+            runner: JobRunner,
+            timeout: None,
+        }
     }
 }
 
@@ -63,85 +84,142 @@ impl Default for GitHub<JobRunner> {
 impl<R: Runner> GitHub<R> {
     /// A client that runs commands through `runner` — pass a fake in tests.
     pub fn with_runner(runner: R) -> Self {
-        GitHub { runner }
+        GitHub {
+            runner,
+            timeout: None,
+        }
     }
 
-    /// Build and run `gh <args>` (in `dir` if given), returning raw [`Output`].
-    fn out(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<Output> {
-        let mut exec = Exec::new(BINARY);
-        if let Some(dir) = dir {
-            exec = exec.current_dir(dir);
-        }
-        exec = exec.args(args);
-        self.runner.run(&exec)
+    /// Kill any command that runs longer than `timeout`.
+    pub fn default_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
-    /// Run and return raw stdout on success, else an error carrying stderr.
-    fn stdout(&self, dir: Option<&Path>, args: &[&str]) -> io::Result<String> {
-        let out = self.out(dir, args)?;
-        if out.success() {
-            Ok(out.stdout)
-        } else {
-            Err(io::Error::other(format!(
-                "`{BINARY}` exited with {}: {}",
-                out.status,
-                out.stderr.trim()
-            )))
-        }
+    fn exec(&self, args: &[&str]) -> Exec {
+        Exec::new(BINARY).maybe_timeout(self.timeout).args(args)
+    }
+
+    fn exec_in(&self, dir: &Path, args: &[&str]) -> Exec {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .current_dir(dir)
+            .args(args)
     }
 }
 
+#[async_trait::async_trait]
 impl<R: Runner> GitHubApi for GitHub<R> {
-    fn version(&self) -> io::Result<String> {
-        Ok(self.stdout(None, &["--version"])?.trim().to_string())
+    async fn run(&self, args: &[String]) -> Result<String> {
+        Ok(Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
     }
 
-    fn auth_status(&self) -> io::Result<bool> {
-        Ok(self.out(None, &["auth", "status"])?.success())
+    async fn run_raw(&self, args: &[String]) -> io::Result<Output> {
+        Exec::new(BINARY)
+            .maybe_timeout(self.timeout)
+            .args(args)
+            .output_with(&self.runner)
+            .await
     }
 
-    fn repo_view(&self, dir: &Path) -> io::Result<Repo> {
-        let out = self.stdout(
-            Some(dir),
-            &["repo", "view", "--json", "name,nameWithOwner,description"],
-        )?;
-        parse::from_json(&out)
+    async fn version(&self) -> Result<String> {
+        Ok(self
+            .exec(&["--version"])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
     }
 
-    fn pr_list(&self, dir: &Path) -> io::Result<Vec<PullRequest>> {
-        let out = self.stdout(
-            Some(dir),
-            &["pr", "list", "--json", "number,title,state,headRefName"],
-        )?;
-        parse::from_json(&out)
+    async fn auth_status(&self) -> Result<bool> {
+        let out = self
+            .exec(&["auth", "status"])
+            .output_with(&self.runner)
+            .await
+            .map_err(|source| CommandError::Spawn {
+                program: BINARY.to_string(),
+                source,
+            })?;
+        Ok(out.success())
     }
 
-    fn pr_view(&self, dir: &Path, number: u64) -> io::Result<PullRequest> {
+    async fn repo_view(&self, dir: &Path) -> Result<Repo> {
+        let out = self
+            .exec_in(dir, &["repo", "view", "--json", REPO_FIELDS])
+            .checked_with(&self.runner)
+            .await?;
+        parse::parse_repo(&out.stdout)
+    }
+
+    async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>> {
+        let out = self
+            .exec_in(dir, &["pr", "list", "--json", PR_FIELDS])
+            .checked_with(&self.runner)
+            .await?;
+        parse::from_json(&out.stdout)
+    }
+
+    async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest> {
         let n = number.to_string();
-        let out = self.stdout(
-            Some(dir),
-            &["pr", "view", &n, "--json", "number,title,state,headRefName"],
-        )?;
-        parse::from_json(&out)
+        let out = self
+            .exec_in(dir, &["pr", "view", &n, "--json", PR_FIELDS])
+            .checked_with(&self.runner)
+            .await?;
+        parse::from_json(&out.stdout)
     }
 
-    fn issue_list(&self, dir: &Path) -> io::Result<Vec<Issue>> {
-        let out = self.stdout(
-            Some(dir),
-            &["issue", "list", "--json", "number,title,state"],
-        )?;
-        parse::from_json(&out)
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>> {
+        let out = self
+            .exec_in(dir, &["issue", "list", "--json", "number,title,state"])
+            .checked_with(&self.runner)
+            .await?;
+        parse::from_json(&out.stdout)
     }
 
-    fn api(&self, endpoint: &str) -> io::Result<String> {
-        Ok(self.stdout(None, &["api", endpoint])?.trim().to_string())
+    async fn pr_create(
+        &self,
+        dir: &Path,
+        title: &str,
+        body: &str,
+        base: Option<String>,
+    ) -> Result<String> {
+        let mut args = vec!["pr", "create", "--title", title, "--body", body];
+        if let Some(base) = base.as_deref() {
+            args.push("--base");
+            args.push(base);
+        }
+        Ok(self
+            .exec_in(dir, &args)
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
+    }
+
+    async fn api(&self, endpoint: &str) -> Result<String> {
+        Ok(self
+            .exec(&["api", endpoint])
+            .checked_with(&self.runner)
+            .await?
+            .stdout
+            .trim()
+            .to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vcs_process::{Output, ScriptedRunner};
+    use vcs_process::ScriptedRunner;
 
     #[test]
     fn binary_name_is_gh() {
@@ -150,32 +228,32 @@ mod tests {
 
     // Hermetic: real pr_list() arg-building + JSON deserialization against canned
     // output — no `gh` binary or network needed, so this runs on CI.
-    #[test]
-    fn pr_list_parses_scripted_json() {
-        let json = r#"[{"number":7,"title":"Add X","state":"OPEN","headRefName":"feat/x"}]"#;
+    #[tokio::test]
+    async fn pr_list_parses_scripted_json() {
+        let json = r#"[{"number":7,"title":"Add X","state":"OPEN","headRefName":"feat/x","baseRefName":"main","url":"u"}]"#;
         let gh = GitHub::with_runner(ScriptedRunner::new().on(["pr", "list"], Output::ok(json)));
-        let prs = gh.pr_list(Path::new(".")).expect("pr_list");
+        let prs = gh.pr_list(Path::new(".")).await.expect("pr_list");
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 7);
-        assert_eq!(prs[0].head_ref_name, "feat/x");
+        assert_eq!(prs[0].base_ref_name, "main");
     }
 
     // Hermetic: auth_status reflects the exit code without erroring.
-    #[test]
-    fn auth_status_reads_exit_code() {
+    #[tokio::test]
+    async fn auth_status_reads_exit_code() {
         let yes = GitHub::with_runner(ScriptedRunner::new().on(["auth"], Output::ok("")));
-        assert!(yes.auth_status().unwrap());
+        assert!(yes.auth_status().await.unwrap());
         let no = GitHub::with_runner(
             ScriptedRunner::new().on(["auth"], Output::fail(1, "not logged in")),
         );
-        assert!(!no.auth_status().unwrap());
+        assert!(!no.auth_status().await.unwrap());
     }
 
     #[cfg(feature = "mock")]
-    #[test]
-    fn consumer_mocks_the_interface() {
+    #[tokio::test]
+    async fn consumer_mocks_the_interface() {
         let mut mock = MockGitHubApi::new();
         mock.expect_auth_status().returning(|| Ok(true));
-        assert!(mock.auth_status().unwrap());
+        assert!(mock.auth_status().await.unwrap());
     }
 }

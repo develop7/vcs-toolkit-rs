@@ -5,9 +5,10 @@ process execution. Rather than reimplementing each tool's protocol, these crates
 shell out to the official binaries (`git`, `jj`, `gh`) and capture their output —
 thin, predictable wrappers you can compose into automation.
 
-Every command runs inside an OS **job** (a Windows Job Object or a Linux
-cgroup v2) so the whole process tree dies with the parent — no orphaned
-subprocesses. That shared mechanism lives in `vcs-process`.
+Every command is **async** (tokio) and runs inside an OS **job** (a Windows Job
+Object or a Linux cgroup v2) so the whole process tree dies with the parent — no
+orphaned subprocesses. That shared mechanism lives in `vcs-process`, which also
+provides timeouts and the structured `CommandError`.
 
 ## Crates
 
@@ -22,10 +23,10 @@ independently**:
 | [`crates/github`](crates/github) | the `gh` (GitHub CLI) binary | `vcs-github` |
 
 Each wrapper exposes an **interface trait** (`GitApi`/`JjApi`/`GitHubApi`) and a
-real client (`Git`/`Jj`/`GitHub`) with typed, repo-scoped commands that return
-parsed structs. They delegate process launching to `vcs-process` — their only
-dependency, except `vcs-github`, which adds `serde`/`serde_json` to deserialize
-`gh … --json` output.
+real client (`Git`/`Jj`/`GitHub`) with typed, repo-scoped async commands that
+return parsed structs and fail with the structured `CommandError`. They delegate
+process launching to `vcs-process` and depend on `async-trait`; `vcs-github`
+additionally adds `serde`/`serde_json` to deserialize `gh … --json` output.
 
 ### Built for testing
 
@@ -36,12 +37,12 @@ use vcs_git::{Git, GitApi};
 use std::path::Path;
 
 // Production code depends on the interface, not the concrete client:
-fn current(git: &dyn GitApi) -> std::io::Result<String> {
-    git.current_branch(Path::new("."))
+async fn current(git: &dyn GitApi) -> Result<String, vcs_process::CommandError> {
+    git.current_branch(Path::new(".")).await
 }
 
 let git = Git::new();              // real, job-backed git
-let _ = current(&git);
+// current(&git).await ...
 ```
 
 - **Mock the interface** — enable the `mock` feature; `mockall` generates

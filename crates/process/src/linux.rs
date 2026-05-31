@@ -9,9 +9,10 @@ use std::io;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use tokio::process::Command;
 
 use crate::Mechanism;
 
@@ -42,7 +43,7 @@ impl Job {
         Ok(Job { backend })
     }
 
-    pub fn spawn(&self, cmd: &mut Command) -> io::Result<std::process::Child> {
+    pub fn spawn(&self, cmd: &mut Command) -> io::Result<tokio::process::Child> {
         match &self.backend {
             Backend::Cgroup(cg) => {
                 let procs = CString::new(cg.path.join("cgroup.procs").into_os_string().into_vec())
@@ -52,19 +53,23 @@ impl Job {
                 // Join the cgroup in the forked child *before* exec, so there is
                 // no window in which the child (or its children) escape the
                 // cgroup. The closure only makes async-signal-safe libc calls.
+                // The unix `pre_exec` hook lives on the wrapped std Command.
                 // SAFETY: see `write_self_pid`.
                 unsafe {
-                    cmd.pre_exec(move || write_self_pid(procs.as_c_str()));
+                    cmd.as_std_mut()
+                        .pre_exec(move || write_self_pid(procs.as_c_str()));
                 }
                 cmd.spawn()
             }
             Backend::ProcessGroup(pgids) => {
                 // Own process group per child → killpg reaps it and its
                 // descendants. setpgid(0, 0): the child becomes group leader.
-                cmd.process_group(0);
+                cmd.as_std_mut().process_group(0);
                 let child = cmd.spawn()?;
-                if let Ok(mut g) = pgids.lock() {
-                    g.push(child.id() as i32);
+                if let Some(pid) = child.id()
+                    && let Ok(mut g) = pgids.lock()
+                {
+                    g.push(pid as i32);
                 }
                 Ok(child)
             }
