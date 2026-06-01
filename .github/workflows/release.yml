@@ -23,6 +23,9 @@ name: Release
 # treated as success).
 
 on:
+  # Manual trigger only. The "Run workflow" button shows on this workflow's own
+  # page (Actions → Release, top-right) — GitHub renders it only because this
+  # file, carrying `workflow_dispatch`, lives on the default branch.
   workflow_dispatch:
     inputs:
       crate:
