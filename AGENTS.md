@@ -135,29 +135,37 @@ committed.
 
 Each crate releases **independently** — they do not share a version.
 
-- **The crate's `Cargo.toml` `version` is the single source of truth.** Bump it
-  with the release; never let the manifest, the tag, and the published artifact
-  drift apart.
+- **The crate's `Cargo.toml` `version` is the single source of truth.** The
+  release workflow bumps it (you never type a version); never let the manifest,
+  the tag, and the published artifact drift apart.
 - **Each crate has its own `CHANGELOG.md`** following
   [Keep a Changelog](https://keepachangelog.com/) +
   [Semantic Versioning](https://semver.org/). Curate the `[Unreleased]` section
   as you work — manual bullets always win over the `git-cliff` (`cliff.toml`)
-  auto-fill, which buckets by commit-subject prefix
+  auto-fill, which (only when `[Unreleased]` has no real bullets) buckets commits
+  *touching that crate's directory* by subject prefix
   (`feat`→Added, `fix`→Fixed, `remove`→Removed, `perf`/`refactor`/`ci`/…→Changed,
   `docs`/`chore`/`test`→skipped).
 - **Tag per crate** as `<crate>-v<version>` (e.g. `vcs-git-v0.2.0`) so each
-  crate's history and compare links stay independent, then
-  `cargo publish -p <crate>`.
+  crate's history and compare links stay independent.
 - **No in-workspace publish order.** The wrappers depend on the already-published
   external `processkit` crate (by version), so each wrapper publishes
   independently — there is no "publish X first" ordering within this repo. If a
   wrapper needs a newer `processkit`, bump the `[workspace.dependencies]` req and
   ensure that `processkit` version is live on crates.io first.
-- **Release workflow.** `.github/workflows/release.yml` (`workflow_dispatch`)
-  bumps a chosen crate, promotes its `[Unreleased]` heading to the new version +
-  date (preserving the curated bullets), tags, and runs `cargo publish` (needs
-  the `CRATES_IO_TOKEN` secret). The final publish stays a deliberate,
-  human-triggered action.
+- **Release workflow.** `.github/workflows/release.yml` (`workflow_dispatch`,
+  needs the `CRATES_IO_TOKEN` secret) is the only way to release. Pick **which
+  crate** (`vcs-git`/`vcs-jj`/`vcs-github`, or **`all`**) and a **bump**
+  (`patch`/`minor`/`major`) — the version is **never typed by hand**. For each
+  selected crate it derives the next version from that crate's current
+  `Cargo.toml` (a crate's **first release** — no `<crate>-v*` tag yet — ships the
+  current version as-is, ignoring the bump), bumps it, auto-fills/promotes the
+  changelog, then **publishes to crates.io before tagging** (so a failed publish
+  strands nothing; an already-uploaded version counts as success), tags
+  `<crate>-v<version>`, and creates a GitHub Release from the curated notes.
+  `all` does every crate in one commit + atomic push, each bumped by the same
+  chosen type from its own version. The publish stays a deliberate, human-triggered
+  action.
 
 ## Version control workflow
 

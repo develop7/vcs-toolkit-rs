@@ -45,10 +45,4 @@ crates; tag releases as `vcs-git-v<version>`.
   raw instead of being trimmed, which had stripped leading `--porcelain` status
   spaces and `branch` markers.
 
-## [0.1.0] - 2026-05-29
-
-### Added
-- Initial skeleton: `run` CLI-execution helper and `version()` over the `git` binary.
-
-[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.1.0...HEAD
-[0.1.0]: https://github.com/ZelAnton/vcs-toolkit-rs/releases/tag/vcs-git-v0.1.0
+[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main

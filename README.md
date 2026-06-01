@@ -263,11 +263,19 @@ suite on Linux/Windows/macOS, `cargo-deny`, and a `cargo package` gate.
 
 ## Publishing
 
-Each crate releases on its own cadence. Bump the `version` in that crate's
-`Cargo.toml` (the single source of truth), update its `CHANGELOG.md`, tag as
-`<crate>-v<version>` (e.g. `vcs-git-v0.2.0`), then `cargo publish -p <crate>`.
-The `Release` GitHub Action (`workflow_dispatch`) automates the bump, changelog
-promotion, tag, and publish for a chosen crate.
+Releases go through the **`Release` GitHub Action** (`workflow_dispatch`) — you
+never type a version. Click *Run workflow* and pick:
+
+- **Crate** — `vcs-git`, `vcs-jj`, `vcs-github`, or **`all`** (release every crate
+  in one run).
+- **Bump** — `patch` / `minor` / `major`.
+
+For each selected crate it reads the current version from that crate's
+`Cargo.toml`, computes the next one (a crate's **first release** — no
+`<crate>-v*` tag yet — ships the current version as-is, ignoring the bump),
+promotes its `CHANGELOG.md`, **publishes to crates.io before tagging**
+`<crate>-v<version>`, and opens a GitHub Release from the curated notes. `all`
+does them in a single commit + atomic push.
 
 The wrappers depend on the already-published
 [`processkit`](https://crates.io/crates/processkit) crate, so there is **no

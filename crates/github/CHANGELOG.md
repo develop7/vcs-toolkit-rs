@@ -43,10 +43,4 @@ crates; tag releases as `vcs-github-v<version>`.
   out — a timeout surfaces as `processkit::Error::Timeout` (via `CliClient::code`,
   backed by processkit 0.3's first-class timeout error).
 
-## [0.1.0] - 2026-05-29
-
-### Added
-- Initial skeleton: `run` CLI-execution helper and `version()` over the `gh` binary.
-
-[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-github-v0.1.0...HEAD
-[0.1.0]: https://github.com/ZelAnton/vcs-toolkit-rs/releases/tag/vcs-github-v0.1.0
+[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main

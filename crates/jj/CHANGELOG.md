@@ -35,10 +35,4 @@ crates; tag releases as `vcs-jj-v<version>`.
 - Optional `tracing` feature (forwards to `processkit/tracing`): a `debug` event
   per `jj` command.
 
-## [0.1.0] - 2026-05-29
-
-### Added
-- Initial skeleton: `run` CLI-execution helper and `version()` over the `jj` binary.
-
-[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-jj-v0.1.0...HEAD
-[0.1.0]: https://github.com/ZelAnton/vcs-toolkit-rs/releases/tag/vcs-jj-v0.1.0
+[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main
