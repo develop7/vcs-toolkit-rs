@@ -68,10 +68,10 @@ Add the wrapper(s) you need. Every method is `async`, so call them from a tokio
 runtime:
 
 ```rust
+use processkit::Error;
 use std::path::Path;
 use std::time::Duration;
 use vcs_git::{Git, GitApi};
-use processkit::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -79,11 +79,15 @@ async fn main() -> Result<(), Error> {
     let git = Git::new().default_timeout(Duration::from_secs(10));
     let repo = Path::new(".");
 
-    let branch = git.current_branch(repo).await?;        // String
-    let status = git.status(repo).await?;                // Vec<StatusEntry>
-    let log    = git.log(repo, 5).await?;                // Vec<Commit>, newest first
+    let branch = git.current_branch(repo).await?; // String
+    let status = git.status(repo).await?; // Vec<StatusEntry>
+    let log = git.log(repo, 5).await?; // Vec<Commit>, newest first
 
-    println!("on {branch}: {} change(s), HEAD = {}", status.len(), log[0].short_hash);
+    println!(
+        "on {branch}: {} change(s), HEAD = {}",
+        status.len(),
+        log[0].short_hash
+    );
 
     // Distinguish failure modes structurally instead of matching on strings.
     match git.checkout(repo, "does-not-exist").await {
@@ -91,7 +95,9 @@ async fn main() -> Result<(), Error> {
             eprintln!("git exited {code}: {stderr}");
         }
         Err(Error::Timeout { .. }) => eprintln!("git timed out"),
-        other => { other?; }
+        other => {
+            other?;
+        }
     }
     Ok(())
 }
@@ -101,19 +107,20 @@ async fn main() -> Result<(), Error> {
 
 ```rust
 use std::path::Path;
-use vcs_jj::{Jj, JjApi};
 use vcs_github::{GitHub, GitHubApi};
+use vcs_jj::{Jj, JjApi};
 
 # async fn demo() -> Result<(), processkit::Error> {
-let jj = Jj::new();
-let head = jj.current_change(Path::new(".")).await?;      // Change
-jj.describe(Path::new("."), "wip: refactor").await?;
+    let jj = Jj::new();
+    let head = jj.current_change(Path::new(".")).await?; // Change
+    jj.describe(Path::new("."), "wip: refactor").await?;
 
-let gh = GitHub::new();
-if gh.auth_status().await? {                              // bool, never errors on exit code
-    let prs = gh.pr_list(Path::new(".")).await?;          // Vec<PullRequest>
-    let _ = prs;
-}
+    let gh = GitHub::new();
+    if gh.auth_status().await? {
+        // bool, never errors on exit code
+        let prs = gh.pr_list(Path::new(".")).await?; // Vec<PullRequest>
+        let _ = prs;
+    }
 # Ok(()) }
 ```
 
@@ -138,51 +145,51 @@ that aren't modelled yet, plus `version()`.
 **Stage everything changed and commit (git):**
 
 ```rust
-use vcs_git::{Git, GitApi};
 use std::path::{Path, PathBuf};
+use vcs_git::{Git, GitApi};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
-let git = Git::new();
-let paths: Vec<PathBuf> = git
-    .status(repo)
-    .await?
-    .into_iter()
-    .map(|e| PathBuf::from(e.path))
-    .collect();
-if !paths.is_empty() {
-    git.add(repo, &paths).await?;
-    git.commit(repo, "chore: snapshot").await?;
-}
+    let git = Git::new();
+    let paths: Vec<PathBuf> = git
+        .status(repo)
+        .await?
+        .into_iter()
+        .map(|e| PathBuf::from(e.path))
+        .collect();
+    if !paths.is_empty() {
+        git.add(repo, &paths).await?;
+        git.commit(repo, "chore: snapshot").await?;
+    }
 # Ok(()) }
 ```
 
 **Describe the working copy and push a bookmark (jj):**
 
 ```rust
-use vcs_jj::{Jj, JjApi};
 use std::path::Path;
+use vcs_jj::{Jj, JjApi};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
-let jj = Jj::new();
-jj.describe(repo, "feat: parser").await?;
-jj.git_fetch(repo).await?;
-jj.bookmark_set(repo, "main", "@").await?;
-jj.git_push(repo, Some("main".to_string())).await?;
+    let jj = Jj::new();
+    jj.describe(repo, "feat: parser").await?;
+    jj.git_fetch(repo).await?;
+    jj.bookmark_set(repo, "main", "@").await?;
+    jj.git_push(repo, Some("main".to_string())).await?;
 # Ok(()) }
 ```
 
 **Open a PR only when authenticated (github):**
 
 ```rust
-use vcs_github::{GitHub, GitHubApi};
 use std::path::Path;
+use vcs_github::{GitHub, GitHubApi};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
-let gh = GitHub::new();
-if gh.auth_status().await? {
-    let url = gh.pr_create(repo, "My change", "Body", None).await?;
-    println!("opened {url}");
-}
+    let gh = GitHub::new();
+    if gh.auth_status().await? {
+        let url = gh.pr_create(repo, "My change", "Body", None).await?;
+        println!("opened {url}");
+    }
 # Ok(()) }
 ```
 
@@ -191,11 +198,13 @@ if gh.auth_status().await? {
 ```rust
 # use vcs_git::{Git, GitApi};
 # async fn demo(git: &Git) -> Result<(), processkit::Error> {
-// `run` returns trimmed stdout (errors on non-zero); `run_raw` returns the full
-// `processkit::ProcessResult<String>` without erroring on a non-zero exit.
-let sha = git.run(&["rev-parse".into(), "HEAD".into()]).await?;
-let res = git.run_raw(&["status".into(), "--porcelain".into()]).await?;
-println!("{sha} — exit {}", res.exit_code());
+    // `run` returns trimmed stdout (errors on non-zero); `run_raw` returns the full
+    // `processkit::ProcessResult<String>` without erroring on a non-zero exit.
+    let sha = git.run(&["rev-parse".into(), "HEAD".into()]).await?;
+    let res = git
+        .run_raw(&["status".into(), "--porcelain".into()])
+        .await?;
+    println!("{sha} — exit {}", res.exit_code());
 # Ok(()) }
 ```
 
@@ -205,15 +214,15 @@ Consumers code against the trait and substitute a fake in their tests — two se
 neither of which needs the real binary, a temp repo, or the network:
 
 ```rust
-use vcs_git::{Git, GitApi};
 use std::path::Path;
+use vcs_git::{Git, GitApi};
 
 // Production code depends on the interface, not the concrete client:
 async fn current(git: &dyn GitApi) -> Result<String, processkit::Error> {
     git.current_branch(Path::new(".")).await
 }
 
-let git = Git::new();              // real, job-backed git
+let git = Git::new(); // real, job-backed git
 // current(&git).await ...
 ```
 
@@ -228,16 +237,14 @@ let git = Git::new();              // real, job-backed git
   args, cwd, env, and even that a flag is *absent*:
 
   ```rust
-  use vcs_git::{Git, GitApi};
   use processkit::{Reply, ScriptedRunner};
   use std::path::Path;
+  use vcs_git::{Git, GitApi};
 
   # async fn demo() {
-  let git = Git::with_runner(
-      ScriptedRunner::new().on(["status"], Reply::ok(" M src/lib.rs\0")),
-  );
-  let entries = git.status(Path::new(".")).await.unwrap();
-  assert_eq!(entries[0].code, " M");
+      let git = Git::with_runner(ScriptedRunner::new().on(["status"], Reply::ok(" M src/lib.rs\0")));
+      let entries = git.status(Path::new(".")).await.unwrap();
+      assert_eq!(entries[0].code, " M");
   # }
   ```
 

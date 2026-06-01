@@ -13,37 +13,37 @@ optional timeout.
 Inside an async context (every method is `async`):
 
 ```rust
-use vcs_git::{Git, GitApi};
 use std::path::Path;
+use vcs_git::{Git, GitApi};
 
 let git = Git::new();
 let repo = Path::new(".");
 
-let branch = git.current_branch(repo).await?;   // String, e.g. "main"
-let status = git.status(repo).await?;           // Vec<StatusEntry>
-let log    = git.log(repo, 10).await?;          // Vec<Commit>, newest first
+let branch = git.current_branch(repo).await?; // String, e.g. "main"
+let status = git.status(repo).await?; // Vec<StatusEntry>
+let log = git.log(repo, 10).await?; // Vec<Commit>, newest first
 ```
 
 ### Stage, commit, inspect
 
 ```rust
-use vcs_git::{Git, GitApi};
 use std::path::{Path, PathBuf};
+use vcs_git::{Git, GitApi};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
-let git = Git::new();
+    let git = Git::new();
 
-git.add(repo, &[PathBuf::from("src/lib.rs")]).await?;   // `git add -- src/lib.rs`
-git.commit(repo, "feat: tidy lib").await?;              // `git commit -m …`
+    git.add(repo, &[PathBuf::from("src/lib.rs")]).await?; // `git add -- src/lib.rs`
+    git.commit(repo, "feat: tidy lib").await?; // `git commit -m …`
 
-// `diff_is_empty` is the exit-code answer of `git diff --quiet`:
-if !git.diff_is_empty(repo).await? {
-    println!("working tree still has unstaged changes");
-}
+    // `diff_is_empty` is the exit-code answer of `git diff --quiet`:
+    if !git.diff_is_empty(repo).await? {
+        println!("working tree still has unstaged changes");
+    }
 
-for c in git.log(repo, 5).await? {
-    println!("{} {} — {} <{}>", c.short_hash, c.subject, c.author, c.date);
-}
+    for c in git.log(repo, 5).await? {
+        println!("{} {} — {} <{}>", c.short_hash, c.subject, c.author, c.date);
+    }
 # Ok(()) }
 ```
 
@@ -52,30 +52,32 @@ for c in git.log(repo, 5).await? {
 `status` runs `git status --porcelain=v1 -z`, so a rename carries both paths:
 
 ```rust
-# use vcs_git::{Git, GitApi};
 # use std::path::Path;
+# use vcs_git::{Git, GitApi};
 # async fn demo(git: &Git, repo: &Path) -> Result<(), processkit::Error> {
-for entry in git.status(repo).await? {
-    match entry.orig_path {
-        Some(from) => println!("rename {from} -> {}", entry.path),
-        None => println!("{} {}", entry.code, entry.path),
+    for entry in git.status(repo).await? {
+        match entry.orig_path {
+            Some(from) => println!("rename {from} -> {}", entry.path),
+            None => println!("{} {}", entry.code, entry.path),
+        }
     }
-}
 # Ok(()) }
 ```
 
 ### Distinguish failures structurally
 
 ```rust
-# use vcs_git::{Git, GitApi};
 # use std::path::Path;
+# use vcs_git::{Git, GitApi};
 # async fn demo(git: &Git, repo: &Path) {
-match git.checkout(repo, "nope").await {
-    Ok(()) => {}
-    Err(processkit::Error::Exit { code, stderr, .. }) => eprintln!("git exited {code}: {stderr}"),
-    Err(processkit::Error::Timeout { .. }) => eprintln!("timed out"),
-    Err(e) => eprintln!("{e}"),
-}
+    match git.checkout(repo, "nope").await {
+        Ok(()) => {}
+        Err(processkit::Error::Exit { code, stderr, .. }) => {
+            eprintln!("git exited {code}: {stderr}")
+        }
+        Err(processkit::Error::Timeout { .. }) => eprintln!("timed out"),
+        Err(e) => eprintln!("{e}"),
+    }
 # }
 ```
 
@@ -84,15 +86,13 @@ the `mock` feature for a `mockall`-generated `MockGitApi`, or inject a fake
 process runner with `Git::with_runner(processkit::ScriptedRunner::new()…)`:
 
 ```rust
-use vcs_git::{Git, GitApi};
 use processkit::{Reply, ScriptedRunner};
 use std::path::Path;
+use vcs_git::{Git, GitApi};
 
 # async fn demo() {
-let git = Git::with_runner(
-    ScriptedRunner::new().on(["rev-parse"], Reply::ok("feature\n")),
-);
-assert_eq!(git.current_branch(Path::new(".")).await.unwrap(), "feature");
+    let git = Git::with_runner(ScriptedRunner::new().on(["rev-parse"], Reply::ok("feature\n")));
+    assert_eq!(git.current_branch(Path::new(".")).await.unwrap(), "feature");
 # }
 ```
 

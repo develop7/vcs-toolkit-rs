@@ -13,35 +13,40 @@ return the structured `Error`, and honour an optional timeout.
 Inside an async context (every method is `async`):
 
 ```rust
-use vcs_github::{GitHub, GitHubApi};
 use std::path::Path;
+use vcs_github::{GitHub, GitHubApi};
 
 let gh = GitHub::new();
-let prs = gh.pr_list(Path::new(".")).await?;   // Vec<PullRequest>
-let authed = gh.auth_status().await?;          // bool — true when `gh auth status` exits 0
+let prs = gh.pr_list(Path::new(".")).await?; // Vec<PullRequest>
+let authed = gh.auth_status().await?; // bool — true when `gh auth status` exits 0
 ```
 
 ### Inspect the repo and open a PR
 
 ```rust
-use vcs_github::{GitHub, GitHubApi};
 use std::path::Path;
+use vcs_github::{GitHub, GitHubApi};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
-let gh = GitHub::new();
+    let gh = GitHub::new();
 
-let r = gh.repo_view(repo).await?;             // Repo { owner, name, default_branch, is_private, … }
-println!("{}/{} (default: {})", r.owner, r.name, r.default_branch);
+    let r = gh.repo_view(repo).await?; // Repo { owner, name, default_branch, is_private, … }
+    println!("{}/{} (default: {})", r.owner, r.name, r.default_branch);
 
-// Open a PR against an explicit base; returns the new PR's URL.
-let url = gh
-    .pr_create(repo, "Add streaming", "Implements …", Some("main".to_string()))
-    .await?;
-println!("opened {url}");
+    // Open a PR against an explicit base; returns the new PR's URL.
+    let url = gh
+        .pr_create(
+            repo,
+            "Add streaming",
+            "Implements …",
+            Some("main".to_string()),
+        )
+        .await?;
+    println!("opened {url}");
 
-for issue in gh.issue_list(repo).await? {
-    println!("#{} [{}] {}", issue.number, issue.state, issue.title);
-}
+    for issue in gh.issue_list(repo).await? {
+        println!("#{} [{}] {}", issue.number, issue.state, issue.title);
+    }
 # Ok(()) }
 ```
 
@@ -55,13 +60,13 @@ silent `false`:
 # use vcs_github::{GitHub, GitHubApi};
 use std::time::Duration;
 # async fn demo() -> Result<(), processkit::Error> {
-let gh = GitHub::new().default_timeout(Duration::from_secs(5));
-match gh.auth_status().await {
-    Ok(true) => println!("authenticated"),
-    Ok(false) => println!("not logged in (run `gh auth login`)"),
-    Err(processkit::Error::Timeout { .. }) => eprintln!("gh timed out"),
-    Err(e) => eprintln!("{e}"),
-}
+    let gh = GitHub::new().default_timeout(Duration::from_secs(5));
+    match gh.auth_status().await {
+        Ok(true) => println!("authenticated"),
+        Ok(false) => println!("not logged in (run `gh auth login`)"),
+        Err(processkit::Error::Timeout { .. }) => eprintln!("gh timed out"),
+        Err(e) => eprintln!("{e}"),
+    }
 # Ok(()) }
 ```
 
@@ -70,14 +75,14 @@ the `mock` feature for a `mockall`-generated `MockGitHubApi`, or inject a fake
 process runner with `GitHub::with_runner(processkit::ScriptedRunner::new()…)`:
 
 ```rust
-use vcs_github::{GitHub, GitHubApi};
 use processkit::{Reply, ScriptedRunner};
 use std::path::Path;
+use vcs_github::{GitHub, GitHubApi};
 
 # async fn demo() {
-let json = r#"[{"number":7,"title":"Add X","state":"OPEN"}]"#;
-let gh = GitHub::with_runner(ScriptedRunner::new().on(["pr", "list"], Reply::ok(json)));
-assert_eq!(gh.pr_list(Path::new(".")).await.unwrap()[0].number, 7);
+    let json = r#"[{"number":7,"title":"Add X","state":"OPEN"}]"#;
+    let gh = GitHub::with_runner(ScriptedRunner::new().on(["pr", "list"], Reply::ok(json)));
+    assert_eq!(gh.pr_list(Path::new(".")).await.unwrap()[0].number, 7);
 # }
 ```
 
