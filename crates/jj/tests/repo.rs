@@ -67,8 +67,10 @@ async fn describe_new_and_log_cycle() {
     );
     assert!(log.iter().any(|c| c.description == "hello jj"));
 
-    // status returns something without erroring.
-    jj.status(dir).await.expect("status");
+    // status_text returns something without erroring; parsed status of a fresh
+    // (empty) working copy is an empty change list.
+    jj.status_text(dir).await.expect("status_text");
+    assert!(jj.status(dir).await.expect("status").is_empty());
 
     // A freshly described, unconflicted working copy reports no conflict
     // (delegates to the `conflict` template on `@`).

@@ -134,8 +134,12 @@ pub trait JjApi: Send + Sync {
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>>;
     /// Installed Jujutsu version (`jj --version`).
     async fn version(&self) -> Result<String>;
-    /// Working-copy status (`jj status`).
-    async fn status(&self, dir: &Path) -> Result<String>;
+    /// Parsed working-copy changes — the files changed in `@`
+    /// (`jj diff -r @ --summary`), mirroring `vcs_git` `status`.
+    async fn status(&self, dir: &Path) -> Result<Vec<ChangedPath>>;
+    /// Raw `jj status` text (human-readable) — the unparsed counterpart of
+    /// [`status`](JjApi::status), mirroring `vcs_git` `status_text`.
+    async fn status_text(&self, dir: &Path) -> Result<String>;
     /// Changes matching `revset`, newest first, up to `max` (`jj log`).
     async fn log(&self, dir: &Path, revset: &str, max: usize) -> Result<Vec<Change>>;
     /// The working-copy change (`jj log -r @`).
@@ -284,7 +288,18 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         self.core.text(self.core.command(["--version"])).await
     }
 
-    async fn status(&self, dir: &Path) -> Result<String> {
+    async fn status(&self, dir: &Path) -> Result<Vec<ChangedPath>> {
+        // `diff -r @ --summary` is the machine-stable form of the working-copy
+        // changes that `jj status` renders for humans: one `<letter> <path>` line.
+        self.core
+            .parse(
+                self.core.command_in(dir, ["diff", "-r", "@", "--summary"]),
+                parse::parse_diff_summary,
+            )
+            .await
+    }
+
+    async fn status_text(&self, dir: &Path) -> Result<String> {
         self.core.text(self.core.command_in(dir, ["status"])).await
     }
 
@@ -701,6 +716,60 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     }
 }
 
+// --- Error classification ----------------------------------------------------
+
+/// Lower-case substrings marking a transient (retryable) network/fetch failure.
+/// `jj git fetch` surfaces the underlying git transport error.
+const TRANSIENT_FETCH_MARKERS: &[&str] = &[
+    "could not resolve host",
+    "couldn't resolve host",
+    "temporary failure in name resolution",
+    "connection timed out",
+    "connection refused",
+    "operation timed out",
+    "timed out",
+    "network is unreachable",
+    "failed to connect",
+    "could not read from remote repository",
+    "the remote end hung up",
+    "early eof",
+    "rpc failed",
+];
+
+/// Whether a failed `git_fetch`/`git_fetch_branch` looks transient (DNS, timeout,
+/// dropped connection) and is worth retrying. Mirrors `vcs_git`'s classifier.
+pub fn is_transient_fetch_error(err: &Error) -> bool {
+    // A processkit-level timeout carries no captured output but is inherently
+    // transient; treat it as retryable too.
+    if matches!(err, Error::Timeout { .. }) {
+        return true;
+    }
+    let Error::Exit { stdout, stderr, .. } = err else {
+        return false;
+    };
+    let out = stdout.to_ascii_lowercase();
+    let errt = stderr.to_ascii_lowercase();
+    TRANSIENT_FETCH_MARKERS
+        .iter()
+        .any(|m| out.contains(m) || errt.contains(m))
+}
+
+impl<R: ProcessRunner> Jj<R> {
+    /// Run `jj <args>` over string slices — `jj.run_args(&["log", "-r", "@"])`
+    /// without allocating a `Vec<String>`. Inherent (not on the object-safe
+    /// trait), so it can take `&[&str]`; forwards to the same path as
+    /// [`JjApi::run`].
+    pub async fn run_args(&self, args: &[&str]) -> Result<String> {
+        self.core.text(self.core.command(args)).await
+    }
+
+    /// Like [`run_args`](Jj::run_args) but never errors on a non-zero exit
+    /// (mirrors [`JjApi::run_raw`]).
+    pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
+        self.core.capture(self.core.command(args)).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,6 +893,63 @@ mod tests {
                 "lib"
             ]
         );
+    }
+
+    // Parsed status() is backed by `diff -r @ --summary`, not `jj status`.
+    #[tokio::test]
+    async fn status_parses_diff_summary() {
+        let jj = Jj::with_runner(ScriptedRunner::new().on(
+            ["diff", "-r", "@", "--summary"],
+            Reply::ok("M a.rs\nA b.rs\n"),
+        ));
+        let entries = jj.status(Path::new(".")).await.expect("status");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, 'M');
+        assert_eq!(entries[1].path, "b.rs");
+    }
+
+    #[tokio::test]
+    async fn status_text_is_raw_jj_status() {
+        let jj = Jj::with_runner(
+            ScriptedRunner::new().on(["status"], Reply::ok("Working copy changes:\n")),
+        );
+        assert!(
+            jj.status_text(Path::new("."))
+                .await
+                .expect("status_text")
+                .contains("Working copy changes")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_args_forwards_str_slices() {
+        let jj = Jj::with_runner(ScriptedRunner::new().on(["root"], Reply::ok("/r\n")));
+        assert_eq!(jj.run_args(&["root"]).await.unwrap(), "/r");
+    }
+
+    #[test]
+    fn classifies_transient_fetch() {
+        let dns = Error::Exit {
+            program: "jj".into(),
+            code: 1,
+            stdout: String::new(),
+            stderr: "Error: Could not resolve host: example.com".into(),
+        };
+        assert!(is_transient_fetch_error(&dns));
+        let other = Error::Exit {
+            program: "jj".into(),
+            code: 1,
+            stdout: String::new(),
+            stderr: "Error: No such revision".into(),
+        };
+        assert!(!is_transient_fetch_error(&other));
+
+        // A processkit timeout (no captured output) is transient too.
+        let timeout = Error::Timeout {
+            program: "jj".into(),
+            timeout: std::time::Duration::from_secs(10),
+        };
+        assert!(is_transient_fetch_error(&timeout));
     }
 
     #[tokio::test]

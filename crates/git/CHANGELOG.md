@@ -20,8 +20,18 @@ crates; tag releases as `vcs-git-v<version>`.
   `commit_paths` (partial `commit --only`, with optional `--amend`),
   `last_commit_message`, `is_unborn`, `log_range`, and `stash_push`/`stash_pop`.
   `WorktreeAdd` gains a `no_checkout()` builder (`worktree add --no-checkout`).
+- Error classifiers `is_merge_conflict`, `is_nothing_to_commit`, and
+  `is_transient_fetch_error` — inspect both captured streams of an `Error::Exit`
+  (git writes `CONFLICT (…)` to stdout, `Automatic merge failed` to stderr) so
+  callers stop string-scraping. Enabled by processkit 0.5's `Error::Exit.stdout`.
+- `status_text` — raw `git status --porcelain=v1` text, the unparsed counterpart
+  of `status`, mirroring `vcs_jj`.
+- Inherent `Git::run_args` / `run_raw_args` taking `&[&str]`, so callers needn't
+  allocate a `Vec<String>` for the `run` escape hatch.
 
 ### Changed
+- Renamed `diff_shortstat` → `diff_stat` to match `vcs_jj::JjApi::diff_stat`
+  (both return `DiffStat`).
 - Bumped `processkit` to 0.5 and absorbed its breaking changes: exit-code probes
   now read `ProcessResult::code() -> Option<i32>` (the removed `exit_code() -> i32`
   with its `-1` timeout sentinel is gone), and synthetic `Error::Exit` values carry

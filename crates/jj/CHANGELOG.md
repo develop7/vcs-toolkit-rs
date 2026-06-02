@@ -20,9 +20,16 @@ crates; tag releases as `vcs-jj-v<version>`.
   `file:"…"`): `commit_paths`, `squash_paths`, and `sparse_set` (`sparse set
   --clear --add …`). `WorkspaceAdd` gains a `sparse(SparseMode)` builder
   (`workspace add --sparse-patterns copy|full|empty`).
+- `status_text` — the raw `jj status` text (the previous `status` return), and
+  `is_transient_fetch_error` classifier mirroring `vcs_git`.
+- Inherent `Jj::run_args` / `run_raw_args` taking `&[&str]`, so callers needn't
+  allocate a `Vec<String>` for the `run` escape hatch.
 
 ### Changed
-- Bumped `processkit` to 0.5. No change to this crate's public API.
+- `status` now returns parsed `Vec<ChangedPath>` (backed by `diff -r @ --summary`)
+  instead of the raw `jj status` string, mirroring `vcs_git::GitApi::status`. The
+  raw text moved to the new `status_text`.
+- Bumped `processkit` to 0.5. No change to the rest of this crate's public API.
 
 ### Fixed
 -

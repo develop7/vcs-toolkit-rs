@@ -117,6 +117,9 @@ pub trait GitApi: Send + Sync {
     async fn version(&self) -> Result<String>;
     /// Working-tree status (`git status --porcelain=v1 -z`).
     async fn status(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
+    /// Raw porcelain status text (`git status --porcelain=v1`) — the unparsed
+    /// counterpart of [`status`](GitApi::status), mirroring `vcs_jj` `status_text`.
+    async fn status_text(&self, dir: &Path) -> Result<String>;
     /// Current branch name (`git rev-parse --abbrev-ref HEAD`).
     async fn current_branch(&self, dir: &Path) -> Result<String>;
     /// Local branches, current one flagged (`git branch`).
@@ -191,8 +194,9 @@ pub trait GitApi: Send + Sync {
     async fn rev_list_count(&self, dir: &Path, range: &str) -> Result<usize>;
     /// Whether a diff range is empty (`diff --quiet <range>`).
     async fn diff_range_is_empty(&self, dir: &Path, range: &str) -> Result<bool>;
-    /// Aggregate change stats for a range (`diff --shortstat <range>`).
-    async fn diff_shortstat(&self, dir: &Path, range: &str) -> Result<DiffStat>;
+    /// Aggregate change stats for a range (`diff --shortstat <range>`). Named to
+    /// match `vcs_jj::JjApi::diff_stat`.
+    async fn diff_stat(&self, dir: &Path, range: &str) -> Result<DiffStat>;
     /// Raw git-format unified diff text for `spec`
     /// (`diff <spec> --no-color --no-ext-diff -M`) — stable machine output.
     async fn diff_text(&self, dir: &Path, spec: DiffSpec) -> Result<String>;
@@ -297,6 +301,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
                     .command_in(dir, ["status", "--porcelain=v1", "-z"]),
                 parse::parse_porcelain,
             )
+            .await
+    }
+
+    async fn status_text(&self, dir: &Path) -> Result<String> {
+        self.core
+            .text(self.core.command_in(dir, ["status", "--porcelain=v1"]))
             .await
     }
 
@@ -614,7 +624,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         }
     }
 
-    async fn diff_shortstat(&self, dir: &Path, range: &str) -> Result<DiffStat> {
+    async fn diff_stat(&self, dir: &Path, range: &str) -> Result<DiffStat> {
         self.core
             .parse(
                 self.core.command_in(dir, ["diff", "--shortstat", range]),
@@ -838,7 +848,78 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 }
 
+// --- Error classification ----------------------------------------------------
+//
+// git writes load-bearing diagnostics to *either* stream on failure — `CONFLICT
+// (content): …` to stdout, `Automatic merge failed …` to stderr — so these probe
+// both fields of `Error::Exit` (the `stdout` field is new in processkit 0.5).
+// Consumers call these instead of re-implementing the string-scraping themselves.
+
+/// Lower-case substrings marking a merge that stopped on conflicts.
+const CONFLICT_MARKERS: &[&str] = &["conflict (", "automatic merge failed"];
+/// Lower-case substrings marking a commit that found nothing to record.
+const NOTHING_TO_COMMIT_MARKERS: &[&str] = &["nothing to commit", "nothing added to commit"];
+/// Lower-case substrings marking a transient (retryable) network/fetch failure.
+const TRANSIENT_FETCH_MARKERS: &[&str] = &[
+    "could not resolve host",
+    "couldn't resolve host",
+    "temporary failure in name resolution",
+    "connection timed out",
+    "connection refused",
+    "operation timed out",
+    "timed out",
+    "network is unreachable",
+    "failed to connect",
+    "could not read from remote repository",
+    "the remote end hung up",
+    "early eof",
+    "rpc failed",
+];
+
+/// Whether `err` is an `Error::Exit` whose captured output contains any marker.
+fn exit_output_matches(err: &Error, markers: &[&str]) -> bool {
+    let Error::Exit { stdout, stderr, .. } = err else {
+        return false;
+    };
+    let out = stdout.to_ascii_lowercase();
+    let errt = stderr.to_ascii_lowercase();
+    markers.iter().any(|m| out.contains(m) || errt.contains(m))
+}
+
+/// Whether a failed `merge`/`merge_commit` stopped on a merge conflict.
+pub fn is_merge_conflict(err: &Error) -> bool {
+    exit_output_matches(err, CONFLICT_MARKERS)
+}
+
+/// Whether a failed `commit`/`commit_paths` reported nothing to commit (a clean
+/// tree), as opposed to a real error.
+pub fn is_nothing_to_commit(err: &Error) -> bool {
+    exit_output_matches(err, NOTHING_TO_COMMIT_MARKERS)
+}
+
+/// Whether a failed `fetch`/`fetch_remote_branch`/`remote_branch_exists` looks
+/// transient (DNS, timeout, dropped connection) and is worth retrying.
+pub fn is_transient_fetch_error(err: &Error) -> bool {
+    // A processkit-level timeout (a `.timeout()`-bounded run that expired) carries
+    // no captured output but is inherently transient; treat it as retryable too.
+    matches!(err, Error::Timeout { .. }) || exit_output_matches(err, TRANSIENT_FETCH_MARKERS)
+}
+
 impl<R: ProcessRunner> Git<R> {
+    /// Run `git <args>` over string slices — `git.run_args(&["status", "-s"])`
+    /// without allocating a `Vec<String>`. Inherent (not on the object-safe
+    /// trait), so it can take `&[&str]`; forwards to the same path as
+    /// [`GitApi::run`].
+    pub async fn run_args(&self, args: &[&str]) -> Result<String> {
+        self.core.text(self.core.command(args)).await
+    }
+
+    /// Like [`run_args`](Git::run_args) but never errors on a non-zero exit
+    /// (mirrors [`GitApi::run_raw`]).
+    pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
+        self.core.capture(self.core.command(args)).await
+    }
+
     /// `git_dir` resolved to an absolute path — `rev-parse --git-dir` may report
     /// it relative to `dir` (e.g. `.git`), which the filesystem probes need joined.
     async fn resolved_git_dir(&self, dir: &Path) -> Result<PathBuf> {
@@ -1167,19 +1248,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn diff_shortstat_parses_counts() {
+    async fn diff_stat_parses_counts() {
         let git = Git::with_runner(ScriptedRunner::new().on(
             ["diff", "--shortstat"],
             Reply::ok(" 2 files changed, 5 insertions(+), 1 deletion(-)\n"),
         ));
-        let stat = git
-            .diff_shortstat(Path::new("."), "main..HEAD")
-            .await
-            .unwrap();
+        let stat = git.diff_stat(Path::new("."), "main..HEAD").await.unwrap();
         assert_eq!(
             (stat.files_changed, stat.insertions, stat.deletions),
             (2, 5, 1)
         );
+    }
+
+    #[tokio::test]
+    async fn status_text_returns_raw_porcelain() {
+        let git = Git::with_runner(ScriptedRunner::new().on(
+            ["status", "--porcelain=v1"],
+            Reply::ok(" M a.rs\n?? b.rs\n"),
+        ));
+        let text = git.status_text(Path::new(".")).await.expect("status_text");
+        assert!(text.contains(" M a.rs") && text.contains("?? b.rs"));
+    }
+
+    #[tokio::test]
+    async fn run_args_forwards_str_slices() {
+        let git = Git::with_runner(ScriptedRunner::new().on(["status", "-s"], Reply::ok("ok\n")));
+        assert_eq!(git.run_args(&["status", "-s"]).await.unwrap(), "ok");
+    }
+
+    // Conflict markers live on stdout (`CONFLICT (…)`) or stderr (`Automatic
+    // merge failed`); either should classify. A plain error must not.
+    #[test]
+    fn classifies_merge_conflict() {
+        let on_stdout = Error::Exit {
+            program: "git".into(),
+            code: 1,
+            stdout: "CONFLICT (content): Merge conflict in a.rs".into(),
+            stderr: String::new(),
+        };
+        let on_stderr = Error::Exit {
+            program: "git".into(),
+            code: 1,
+            stdout: String::new(),
+            stderr: "Automatic merge failed; fix conflicts and then commit".into(),
+        };
+        let unrelated = Error::Exit {
+            program: "git".into(),
+            code: 128,
+            stdout: String::new(),
+            stderr: "fatal: not a git repository".into(),
+        };
+        assert!(is_merge_conflict(&on_stdout));
+        assert!(is_merge_conflict(&on_stderr));
+        assert!(!is_merge_conflict(&unrelated));
+        assert!(!is_nothing_to_commit(&on_stdout));
+    }
+
+    #[test]
+    fn classifies_nothing_to_commit_and_transient_fetch() {
+        let nothing = Error::Exit {
+            program: "git".into(),
+            code: 1,
+            stdout: "nothing to commit, working tree clean".into(),
+            stderr: String::new(),
+        };
+        assert!(is_nothing_to_commit(&nothing));
+
+        let dns = Error::Exit {
+            program: "git".into(),
+            code: 128,
+            stdout: String::new(),
+            stderr: "fatal: unable to access 'https://x/': Could not resolve host: x".into(),
+        };
+        assert!(is_transient_fetch_error(&dns));
+        assert!(!is_transient_fetch_error(&nothing));
+
+        // A processkit timeout (no captured output) is transient too.
+        let timeout = Error::Timeout {
+            program: "git".into(),
+            timeout: Duration::from_secs(10),
+        };
+        assert!(is_transient_fetch_error(&timeout));
     }
 
     #[tokio::test]

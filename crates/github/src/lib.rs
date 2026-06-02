@@ -154,6 +154,22 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     }
 }
 
+impl<R: ProcessRunner> GitHub<R> {
+    /// Run `gh <args>` over string slices — `gh.run_args(&["pr", "list"])`
+    /// without allocating a `Vec<String>`. Inherent (not on the object-safe
+    /// trait), so it can take `&[&str]`; forwards to the same path as
+    /// [`GitHubApi::run`].
+    pub async fn run_args(&self, args: &[&str]) -> Result<String> {
+        self.core.text(self.core.command(args)).await
+    }
+
+    /// Like [`run_args`](GitHub::run_args) but never errors on a non-zero exit
+    /// (mirrors [`GitHubApi::run_raw`]).
+    pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
+        self.core.capture(self.core.command(args)).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +178,12 @@ mod tests {
     #[test]
     fn binary_name_is_gh() {
         assert_eq!(BINARY, "gh");
+    }
+
+    #[tokio::test]
+    async fn run_args_forwards_str_slices() {
+        let gh = GitHub::with_runner(ScriptedRunner::new().on(["api", "user"], Reply::ok("ok\n")));
+        assert_eq!(gh.run_args(&["api", "user"]).await.unwrap(), "ok");
     }
 
     // Hermetic: real pr_list() arg-building + JSON deserialization against canned

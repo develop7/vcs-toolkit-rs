@@ -10,7 +10,8 @@ crates; tag releases as `vcs-github-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Inherent `GitHub::run_args` / `run_raw_args` taking `&[&str]`, so callers
+  needn't allocate a `Vec<String>` for the `run` escape hatch.
 
 ### Changed
 - Bumped `processkit` to 0.5. No change to this crate's public API.
