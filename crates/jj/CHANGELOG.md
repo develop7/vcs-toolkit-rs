@@ -10,7 +10,12 @@ crates; tag releases as `vcs-jj-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Typed diff: `diff_text(dir, DiffSpec)` returns the raw git-format unified diff
+  (`diff -r <spec> --git`), and `diff(dir, DiffSpec)` returns a parsed
+  `Vec<FileDiff>` (change kind, path, rename old-path, and `@@` hunks with
+  per-line `DiffLine`s). The pure parser `parse::parse_diff` is public for
+  parsing externally-obtained diff text. `DiffSpec::WorkingTree` diffs `@`;
+  `DiffSpec::Rev(_)` diffs a revset.
 
 ### Changed
 - Bumped `processkit` to 0.5. No change to this crate's public API.

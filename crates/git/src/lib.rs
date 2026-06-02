@@ -28,10 +28,25 @@ use processkit::ProcessRunner;
 pub use processkit::{Error, ProcessResult, Result};
 
 mod parse;
-pub use parse::{Branch, Commit, DiffStat, StatusEntry, Worktree};
+pub use parse::{
+    Branch, ChangeKind, Commit, DiffLine, DiffStat, FileDiff, Hunk, StatusEntry, Worktree,
+};
 
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "git";
+
+/// What a [`GitApi::diff`] / [`GitApi::diff_text`] call compares.
+///
+/// `#[non_exhaustive]` so more comparison shapes can be added later.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum DiffSpec {
+    /// All tracked working-tree changes vs the last commit (`git diff HEAD`),
+    /// staged or not, excluding untracked files.
+    WorkingTree,
+    /// A specific revision or range, e.g. `main..HEAD` or `HEAD~1` (`git diff <rev>`).
+    Rev(String),
+}
 
 /// Options for [`GitApi::worktree_add`] (`git worktree add`).
 ///
@@ -147,6 +162,11 @@ pub trait GitApi: Send + Sync {
     async fn diff_range_is_empty(&self, dir: &Path, range: &str) -> Result<bool>;
     /// Aggregate change stats for a range (`diff --shortstat <range>`).
     async fn diff_shortstat(&self, dir: &Path, range: &str) -> Result<DiffStat>;
+    /// Raw git-format unified diff text for `spec`
+    /// (`diff <spec> --no-color --no-ext-diff -M`) — stable machine output.
+    async fn diff_text(&self, dir: &Path, spec: DiffSpec) -> Result<String>;
+    /// Parsed per-file unified diff for `spec`, layered on [`diff_text`](GitApi::diff_text).
+    async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>>;
 
     // --- In-progress state ---------------------------------------------------
 
@@ -493,6 +513,27 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .await
     }
 
+    async fn diff_text(&self, dir: &Path, spec: DiffSpec) -> Result<String> {
+        // The target is a single positional arg: `HEAD` for the working tree, or
+        // the caller's revision/range. `-M` enables rename detection; `--no-color`
+        // / `--no-ext-diff` keep the output stable and machine-parseable.
+        let target = match spec {
+            DiffSpec::WorkingTree => "HEAD".to_string(),
+            DiffSpec::Rev(rev) => rev,
+        };
+        self.core
+            .text(self.core.command_in(
+                dir,
+                ["diff", target.as_str(), "--no-color", "--no-ext-diff", "-M"],
+            ))
+            .await
+    }
+
+    async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>> {
+        let text = self.diff_text(dir, spec).await?;
+        Ok(parse::parse_diff(&text))
+    }
+
     async fn staged_is_empty(&self, dir: &Path) -> Result<bool> {
         match self
             .core
@@ -796,6 +837,36 @@ mod tests {
             rec.only_call().args_str(),
             ["worktree", "remove", "--force", "/wt"]
         );
+    }
+
+    // `diff_text` for the working tree must build `diff HEAD` plus the stable
+    // machine-output flags, in order.
+    #[tokio::test]
+    async fn diff_text_builds_working_tree_args() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.diff_text(Path::new("."), DiffSpec::WorkingTree)
+            .await
+            .expect("diff_text");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["diff", "HEAD", "--no-color", "--no-ext-diff", "-M"]
+        );
+    }
+
+    // Hermetic: real diff() arg-building (`Rev`) + the ported parser against
+    // canned git-format output.
+    #[tokio::test]
+    async fn diff_parses_scripted_output() {
+        let out = "diff --git a/m b/m\n--- a/m\n+++ b/m\n@@ -1 +1 @@\n-a\n+b\n";
+        let git = Git::with_runner(ScriptedRunner::new().on(["diff"], Reply::ok(out)));
+        let files = git
+            .diff(Path::new("."), DiffSpec::Rev("HEAD~1".into()))
+            .await
+            .expect("diff");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "m");
+        assert_eq!(files[0].change, ChangeKind::Modified);
     }
 
     #[tokio::test]

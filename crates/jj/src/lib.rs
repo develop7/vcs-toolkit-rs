@@ -17,10 +17,24 @@ use processkit::ProcessRunner;
 pub use processkit::{Error, ProcessResult, Result};
 
 mod parse;
-pub use parse::{Bookmark, Change, ChangedPath, DiffStat, Workspace};
+pub use parse::{
+    Bookmark, Change, ChangeKind, ChangedPath, DiffLine, DiffStat, FileDiff, Hunk, Workspace,
+};
 
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "jj";
+
+/// What a [`JjApi::diff`] / [`JjApi::diff_text`] call compares.
+///
+/// `#[non_exhaustive]` so more comparison shapes can be added later.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum DiffSpec {
+    /// The working-copy change's diff (`jj diff -r @`).
+    WorkingTree,
+    /// A specific revset, e.g. `@-` or `main..@` (`jj diff -r <revset>`).
+    Rev(String),
+}
 
 /// Options for [`JjApi::workspace_add`] (`jj workspace add`).
 ///
@@ -121,6 +135,11 @@ pub trait JjApi: Send + Sync {
     async fn diff_summary(&self, dir: &Path, from: &str, to: &str) -> Result<Vec<ChangedPath>>;
     /// Aggregate change stats for a revset (`diff -r <revset> --stat`).
     async fn diff_stat(&self, dir: &Path, revset: &str) -> Result<DiffStat>;
+    /// Raw git-format unified diff text for `spec` (`diff -r <spec> --git`) —
+    /// stable machine output.
+    async fn diff_text(&self, dir: &Path, spec: DiffSpec) -> Result<String>;
+    /// Parsed per-file unified diff for `spec`, layered on [`diff_text`](JjApi::diff_text).
+    async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>>;
     /// Count commits in a revset (`log -r <revset> --no-graph`, one id per line).
     async fn commit_count(&self, dir: &Path, revset: &str) -> Result<usize>;
     /// Whether the commit a revset resolves to has a conflict.
@@ -373,6 +392,26 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
                 parse::parse_diff_stat,
             )
             .await
+    }
+
+    async fn diff_text(&self, dir: &Path, spec: DiffSpec) -> Result<String> {
+        // `@` selects the working-copy change; otherwise the caller's revset.
+        // `--git` emits stable git-format output the shared parser understands.
+        let revset = match spec {
+            DiffSpec::WorkingTree => "@".to_string(),
+            DiffSpec::Rev(rev) => rev,
+        };
+        self.core
+            .text(
+                self.core
+                    .command_in(dir, ["diff", "-r", revset.as_str(), "--git"]),
+            )
+            .await
+    }
+
+    async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>> {
+        let text = self.diff_text(dir, spec).await?;
+        Ok(parse::parse_diff(&text))
     }
 
     async fn commit_count(&self, dir: &Path, revset: &str) -> Result<usize> {
@@ -681,6 +720,32 @@ mod tests {
     async fn git_push_without_bookmark_is_bare() {
         let jj = Jj::with_runner(ScriptedRunner::new().on(["git", "push"], Reply::ok("")));
         jj.git_push(Path::new("."), None).await.expect("bare push");
+    }
+
+    // `diff_text` for the working copy must build `diff -r @ --git`.
+    #[tokio::test]
+    async fn diff_text_builds_working_copy_args() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+        jj.diff_text(Path::new("."), DiffSpec::WorkingTree)
+            .await
+            .expect("diff_text");
+        assert_eq!(rec.only_call().args_str(), ["diff", "-r", "@", "--git"]);
+    }
+
+    // Hermetic: real diff() arg-building (`Rev`) + the ported parser against
+    // canned git-format output.
+    #[tokio::test]
+    async fn diff_parses_scripted_output() {
+        let out = "diff --git a/m b/m\n--- a/m\n+++ b/m\n@@ -1 +1 @@\n-a\n+b\n";
+        let jj = Jj::with_runner(ScriptedRunner::new().on(["diff"], Reply::ok(out)));
+        let files = jj
+            .diff(Path::new("."), DiffSpec::Rev("@-".into()))
+            .await
+            .expect("diff");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "m");
+        assert_eq!(files[0].change, ChangeKind::Modified);
     }
 
     #[cfg(feature = "mock")]

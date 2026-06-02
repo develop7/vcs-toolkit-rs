@@ -10,7 +10,12 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Typed diff: `diff_text(dir, DiffSpec)` returns the raw git-format unified diff
+  (`diff <spec> --no-color --no-ext-diff -M`), and `diff(dir, DiffSpec)` returns
+  a parsed `Vec<FileDiff>` (change kind, path, rename old-path, and `@@` hunks
+  with per-line `DiffLine`s). The pure parser `parse::parse_diff` is public for
+  parsing externally-obtained diff text. `DiffSpec::WorkingTree` diffs the working
+  tree vs `HEAD`; `DiffSpec::Rev(_)` diffs a revision/range.
 
 ### Changed
 - Bumped `processkit` to 0.5 and absorbed its breaking changes: exit-code probes

@@ -72,6 +72,66 @@ pub struct DiffStat {
     pub deletions: usize,
 }
 
+/// How a file changed in a unified diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ChangeKind {
+    /// A new file (`new file mode …`).
+    Added,
+    /// An existing file's contents changed.
+    Modified,
+    /// The file was removed (`deleted file mode …`).
+    Deleted,
+    /// The file was renamed (`rename from …` / `rename to …`).
+    Renamed,
+}
+
+/// One line inside a [`Hunk`], tagged by its role. The stored text excludes the
+/// leading ` `/`+`/`-` marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DiffLine {
+    /// Unchanged context line (leading ` `).
+    Context(String),
+    /// Added line (leading `+`).
+    Added(String),
+    /// Removed line (leading `-`).
+    Removed(String),
+}
+
+/// A single `@@ … @@` hunk within a [`FileDiff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Hunk {
+    /// Start line in the old file (the `-<start>` of the `@@` header).
+    pub old_start: usize,
+    /// Line count in the old file (defaults to 1 when the `,<count>` is omitted).
+    pub old_lines: usize,
+    /// Start line in the new file (the `+<start>` of the `@@` header).
+    pub new_start: usize,
+    /// Line count in the new file (defaults to 1 when the `,<count>` is omitted).
+    pub new_lines: usize,
+    /// Text after the closing `@@` (the function/section heading); empty when none.
+    pub section: String,
+    /// The hunk body, one entry per `+`/`-`/` ` line.
+    pub lines: Vec<DiffLine>,
+}
+
+/// One file's entry in a parsed git-format unified diff (`git diff` or
+/// `jj diff --git`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FileDiff {
+    /// How the file changed.
+    pub change: ChangeKind,
+    /// The file's path — the *new* path for a rename — forward-slash normalised.
+    pub path: String,
+    /// For a rename, the original path (forward-slash normalised); `None` otherwise.
+    pub old_path: Option<String>,
+    /// The `@@` hunks; empty for a binary file or a pure rename with no edits.
+    pub hunks: Vec<Hunk>,
+}
+
 /// Parse `git status --porcelain=v1 -z` output: NUL-delimited records, raw
 /// (unquoted) paths. A rename/copy entry is followed by its source path as the
 /// next NUL record (e.g. `R  new\0old\0`).
@@ -231,6 +291,145 @@ pub(crate) fn parse_shortstat(output: &str) -> DiffStat {
     stat
 }
 
+/// Parse a git-format unified diff into one [`FileDiff`] per file. Works on
+/// `git diff` and `jj diff --git` output alike. Public so a consumer can parse
+/// diff text it obtained by other means.
+///
+/// Paths are read from the unambiguous single-path lines (`+++ b/…`, `--- a/…`,
+/// `rename to …`) rather than the space-ambiguous `diff --git a/… b/…` header,
+/// and normalised to forward slashes. Ported from the `vcs-flow-commit` parser.
+pub fn parse_diff(diff: &str) -> Vec<FileDiff> {
+    diff_sections(diff).filter_map(parse_section).collect()
+}
+
+/// Slice a git-format diff into per-file sections (each starts at `diff --git`).
+fn diff_sections(full: &str) -> impl Iterator<Item = &str> {
+    let mut bounds = Vec::new();
+    let mut idx = 0;
+    for line in full.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            bounds.push(idx);
+        }
+        idx += line.len();
+    }
+    let ends = bounds
+        .iter()
+        .skip(1)
+        .copied()
+        .chain(std::iter::once(full.len()));
+    bounds
+        .clone()
+        .into_iter()
+        .zip(ends)
+        .map(move |(s, e)| &full[s..e])
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// Determine the [`FileDiff`] for one `diff --git` section: change kind and path
+/// from the header lines, plus every `@@` hunk and its body.
+fn parse_section(section: &str) -> Option<FileDiff> {
+    let mut kind = ChangeKind::Modified;
+    let mut new_path = None;
+    let mut minus_path = None;
+    let mut rename_to = None;
+    let mut rename_from = None;
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut current: Option<Hunk> = None;
+
+    for line in section.lines() {
+        if let Some(hunk) = parse_hunk_header(line) {
+            if let Some(done) = current.replace(hunk) {
+                hunks.push(done);
+            }
+            continue;
+        }
+        if let Some(hunk) = current.as_mut() {
+            // Inside a hunk body: classify by the leading marker. `\ No newline at
+            // end of file` annotations and any stray blank line are dropped.
+            match line.as_bytes().first() {
+                Some(b' ') => hunk.lines.push(DiffLine::Context(line[1..].to_string())),
+                Some(b'+') => hunk.lines.push(DiffLine::Added(line[1..].to_string())),
+                Some(b'-') => hunk.lines.push(DiffLine::Removed(line[1..].to_string())),
+                _ => {}
+            }
+            continue;
+        }
+        // Header region (before the first `@@`).
+        if line.starts_with("new file") {
+            kind = ChangeKind::Added;
+        } else if line.starts_with("deleted file") {
+            kind = ChangeKind::Deleted;
+        } else if let Some(p) = line.strip_prefix("rename to ") {
+            rename_to = Some(p.trim_end().to_string());
+        } else if let Some(p) = line.strip_prefix("rename from ") {
+            rename_from = Some(p.trim_end().to_string());
+        } else if let Some(p) = line.strip_prefix("+++ b/") {
+            new_path = Some(p.trim_end().to_string());
+        } else if let Some(p) = line.strip_prefix("--- a/") {
+            minus_path = Some(p.trim_end().to_string());
+        }
+    }
+    if let Some(done) = current.take() {
+        hunks.push(done);
+    }
+
+    let normalize = |p: String| p.replace('\\', "/");
+    // A rename keeps its old path so a caller can record the deletion too.
+    let old_path = if rename_to.is_some() {
+        kind = ChangeKind::Renamed;
+        rename_from.map(normalize)
+    } else {
+        None
+    };
+    let path = rename_to
+        .or(new_path)
+        .or(minus_path)
+        .or_else(|| header_b_path(section))?;
+    Some(FileDiff {
+        change: kind,
+        path: normalize(path),
+        old_path,
+        hunks,
+    })
+}
+
+/// Parse a hunk header `@@ -<os>[,<ol>] +<ns>[,<nl>] @@[ <section>]` into an empty
+/// [`Hunk`]; `None` for any other line.
+fn parse_hunk_header(line: &str) -> Option<Hunk> {
+    let rest = line.strip_prefix("@@ ")?;
+    let (ranges, section) = rest.split_once(" @@")?;
+    let mut parts = ranges.split_whitespace();
+    let (old_start, old_lines) = parse_hunk_range(parts.next()?.strip_prefix('-')?);
+    let (new_start, new_lines) = parse_hunk_range(parts.next()?.strip_prefix('+')?);
+    Some(Hunk {
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        section: section.strip_prefix(' ').unwrap_or(section).to_string(),
+        lines: Vec::new(),
+    })
+}
+
+/// Parse a `<start>[,<count>]` hunk range; an omitted count means 1 line.
+fn parse_hunk_range(range: &str) -> (usize, usize) {
+    match range.split_once(',') {
+        Some((start, count)) => (start.parse().unwrap_or(0), count.parse().unwrap_or(0)),
+        None => (range.parse().unwrap_or(0), 1),
+    }
+}
+
+/// Fallback path extraction for sections with no `+++`/`---`/`rename` lines
+/// (e.g. binary files): the `b/<new>` of the `diff --git` header. Ambiguous only
+/// when a path contains the literal `" b/"`, which binary-with-spaces makes rare.
+fn header_b_path(section: &str) -> Option<String> {
+    let first = section.lines().next()?;
+    let s = first.strip_prefix("diff --git ")?;
+    let idx = s.find(" b/")?;
+    Some(s[idx + 1..].strip_prefix("b/").unwrap_or("").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +571,84 @@ mod tests {
         assert_eq!(only_ins.insertions, 2);
         assert_eq!(only_ins.deletions, 0);
         assert_eq!(parse_shortstat(""), DiffStat::default());
+    }
+
+    #[test]
+    fn diff_covers_add_modify_delete_rename() {
+        // Add (new), modify (mod), delete (gone), and a directory-changing rename
+        // (old/f -> new/f). Ported from the vcs-flow section-parser test.
+        let full = concat!(
+            "diff --git a/new b/new\n",
+            "new file mode 100644\n--- /dev/null\n+++ b/new\n@@ -0,0 +1 @@\n+n\n",
+            "diff --git a/mod b/mod\n",
+            "--- a/mod\n+++ b/mod\n@@ -1 +1 @@\n-a\n+b\n",
+            "diff --git a/gone b/gone\n",
+            "deleted file mode 100644\n--- a/gone\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
+            "diff --git a/old/f.txt b/new/f.txt\n",
+            "similarity index 100%\nrename from old/f.txt\nrename to new/f.txt\n",
+        );
+        let files = parse_diff(full);
+        let kinds: Vec<_> = files.iter().map(|f| (f.path.as_str(), f.change)).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("new", ChangeKind::Added),
+                ("mod", ChangeKind::Modified),
+                ("gone", ChangeKind::Deleted),
+                ("new/f.txt", ChangeKind::Renamed),
+            ]
+        );
+        // The rename carries its old path so the deletion is recorded too.
+        let rename = files
+            .iter()
+            .find(|f| f.change == ChangeKind::Renamed)
+            .unwrap();
+        assert_eq!(rename.old_path.as_deref(), Some("old/f.txt"));
+    }
+
+    #[test]
+    fn diff_handles_space_paths() {
+        // git appends a trailing tab to `+++`/`---` paths containing spaces; the
+        // path must survive intact (the `diff --git` header is ambiguous here).
+        let full = "diff --git a/a b/c.txt b/a b/c.txt\n--- a/a b/c.txt\t\n+++ b/a b/c.txt\t\n@@ -1 +1 @@\n-x\n+y\n";
+        let files = parse_diff(full);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a b/c.txt");
+    }
+
+    #[test]
+    fn diff_parses_hunk_ranges_and_body() {
+        let full = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@ fn main()\n ctx\n-old\n+new\n+added\n";
+        let files = parse_diff(full);
+        assert_eq!(files.len(), 1);
+        let hunk = &files[0].hunks[0];
+        assert_eq!(
+            (
+                hunk.old_start,
+                hunk.old_lines,
+                hunk.new_start,
+                hunk.new_lines
+            ),
+            (1, 2, 1, 3)
+        );
+        assert_eq!(hunk.section, "fn main()");
+        assert_eq!(
+            hunk.lines,
+            vec![
+                DiffLine::Context("ctx".into()),
+                DiffLine::Removed("old".into()),
+                DiffLine::Added("new".into()),
+                DiffLine::Added("added".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_omitted_count_defaults_to_one() {
+        // `@@ -3 +3 @@` (no `,count`) means a single line on each side.
+        let full = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -3 +3 @@\n-a\n+b\n";
+        let hunk = &parse_diff(full)[0].hunks[0];
+        assert_eq!((hunk.old_start, hunk.old_lines), (3, 1));
+        assert_eq!((hunk.new_start, hunk.new_lines), (3, 1));
     }
 }
