@@ -327,6 +327,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             other => Err(Error::Exit {
                 program: BINARY.to_string(),
                 code: other,
+                stdout: String::new(),
                 stderr: String::new(),
             }),
         }
@@ -370,7 +371,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
                     .command_in(dir, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]),
             )
             .await?;
-        if res.exit_code() == 0 {
+        if res.code() == Some(0) {
             // "refs/remotes/origin/main" → "main"; strip the whole ref prefix so a
             // slashed default branch (e.g. "release/v2") survives intact.
             let out = res.stdout().trim();
@@ -399,6 +400,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             other => Err(Error::Exit {
                 program: BINARY.to_string(),
                 code: other,
+                stdout: String::new(),
                 stderr: String::new(),
             }),
         }
@@ -416,7 +418,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .env("GIT_TERMINAL_PROMPT", "0")
             .timeout(Duration::from_secs(10));
         let res = self.core.capture(cmd).await?;
-        Ok(res.exit_code() == 0 && !res.stdout().trim().is_empty())
+        Ok(res.code() == Some(0) && !res.stdout().trim().is_empty())
     }
 
     async fn remote_url(&self, dir: &Path, remote: &str) -> Result<String> {
@@ -476,6 +478,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             other => Err(Error::Exit {
                 program: BINARY.to_string(),
                 code: other,
+                stdout: String::new(),
                 stderr: String::new(),
             }),
         }
@@ -501,6 +504,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             other => Err(Error::Exit {
                 program: BINARY.to_string(),
                 code: other,
+                stdout: String::new(),
                 stderr: String::new(),
             }),
         }

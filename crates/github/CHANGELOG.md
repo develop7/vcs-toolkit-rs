@@ -13,7 +13,7 @@ crates; tag releases as `vcs-github-v<version>`.
 -
 
 ### Changed
--
+- Bumped `processkit` to 0.5. No change to this crate's public API.
 
 ### Fixed
 -

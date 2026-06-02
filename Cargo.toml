@@ -27,4 +27,4 @@ authors = ["Anton Zhelezniakou"]
 # `cli_client!` macro, structured `Error`, and the `ScriptedRunner`/`RecordingRunner`
 # test seams the wrappers build on. Was the internal `vcs-process` crate; now the
 # published `processkit`.
-processkit = "0.4"
+processkit = "0.5"

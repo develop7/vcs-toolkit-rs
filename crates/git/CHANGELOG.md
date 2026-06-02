@@ -13,7 +13,10 @@ crates; tag releases as `vcs-git-v<version>`.
 -
 
 ### Changed
--
+- Bumped `processkit` to 0.5 and absorbed its breaking changes: exit-code probes
+  now read `ProcessResult::code() -> Option<i32>` (the removed `exit_code() -> i32`
+  with its `-1` timeout sentinel is gone), and synthetic `Error::Exit` values carry
+  the new `stdout` field. No change to this crate's public API.
 
 ### Fixed
 - `remote_head_branch` now keeps a slashed default-branch name intact (e.g.
