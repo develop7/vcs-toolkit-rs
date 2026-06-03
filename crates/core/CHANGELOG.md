@@ -10,6 +10,17 @@ crates; tag releases as `vcs-core-v<version>`.
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [0.1.0] - 2026-06-03
+
+### Added
 - Initial release: a unified facade over `vcs-git` and `vcs-jj`.
 - `detect(dir) -> Option<Located>` — walk up to find a `.git`/`.jj` repository
   (jj wins when colocated), returning `BackendKind` + root.
@@ -27,3 +38,4 @@ crates; tag releases as `vcs-core-v<version>`.
   can reach the raw clients and their types without a separate dependency.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-core-v0.1.0...HEAD
+[0.1.0]: https://github.com/ZelAnton/vcs-toolkit-rs/releases/tag/vcs-core-v0.1.0

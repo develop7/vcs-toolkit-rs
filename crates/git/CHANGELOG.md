@@ -18,6 +18,55 @@ crates; tag releases as `vcs-git-v<version>`.
 ### Fixed
 -
 
+## [0.3.1] - 2026-06-03
+
+### Added
+
+- feat(diff): typed diff (raw + parsed) for git and jj
+- feat(git,jj): fill Phase 1 API gaps
+- feat: Step B + 1d + 1e — error classifiers, status/diff_stat consistency, &[&str] ergonomics
+
+
+### Changed
+
+- review: fix potential issues across vcs-git/vcs-jj expansion
+- deps: bump processkit 0.4 -> 0.5; absorb breaking API changes
+- Release: vcs-git v0.3.0, vcs-jj v0.3.0, vcs-github v0.3.0
+
+
+### Changed
+
+- Release: vcs-git v0.2.1, vcs-jj v0.2.1, vcs-github v0.2.1
+
+
+### Added
+
+- feat(git,jj): expand clients with worktree/workspace, discovery, diff, merge ops for agent-workspace
+
+
+### Changed
+
+- Release: vcs-git v0.2.0, vcs-jj v0.2.0, vcs-github v0.2.0
+
+
+### Added
+
+- feat(process): job-backed spawn (JobObject/cgroup) + publish setup
+- feat: typed command wrappers, exec options, integration tests
+- feat: mockable trait-based API + Runner injection
+- feat: async (tokio) API, timeouts, structured errors, richer models
+- feat: non_exhaustive result structs, optional tracing, cli_client! macro
+
+
+### Changed
+
+- Scaffold vcs-toolkit-rs workspace from rust-repo-template
+- review: harden whole solution, fix potential issues
+- refactor: portable Output model, CliClient core, richer test seam, -z git parsing
+- refactor: replace internal vcs-process with external processkit 0.3
+- ci: release workflow picks major/minor/patch with auto-increment (+ all-crates, first-release)
+- Release: vcs-git v0.1.0, vcs-jj v0.1.0, vcs-github v0.1.0
+
 ## [0.3.0] - 2026-06-02
 
 ### Added
@@ -119,7 +168,8 @@ crates; tag releases as `vcs-git-v<version>`.
   raw instead of being trimmed, which had stripped leading `--porcelain` status
   spaces and `branch` markers.
 
-[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.3.0...HEAD
+[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.3.1...HEAD
+[0.3.1]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.3.0...vcs-git-v0.3.1
 [0.3.0]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.2.1...vcs-git-v0.3.0
 [0.2.1]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.2.0...vcs-git-v0.2.1
 [0.2.0]: https://github.com/ZelAnton/vcs-toolkit-rs/compare/vcs-git-v0.1.0...vcs-git-v0.2.0
