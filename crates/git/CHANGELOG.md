@@ -26,6 +26,11 @@ crates; tag releases as `vcs-git-v<version>`.
   bare `foo` could tail-match `bar/foo`.
 - `fetch` now runs with `GIT_TERMINAL_PROMPT=0`, matching the other remote ops, so
   a credentials-needing remote fails fast instead of blocking on a prompt.
+- Bumped `processkit` to 0.6. `fetch` / `fetch_remote_branch` now retry transient
+  failures (3 attempts, 500 ms backoff) — the retry that consumers hand-rolled.
+- The exit-code predicates (`diff_is_empty`, `diff_range_is_empty`,
+  `staged_is_empty`, `branch_exists`, `is_unborn`) use processkit's `probe()` — no
+  API change, but an unexpected exit code now carries the real captured output.
 
 ### Fixed
 -

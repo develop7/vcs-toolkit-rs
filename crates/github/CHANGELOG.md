@@ -13,7 +13,8 @@ crates; tag releases as `vcs-github-v<version>`.
 -
 
 ### Changed
--
+- Bumped `processkit` to 0.6; `auth_status` uses processkit's `probe()` (exit `0`/`1`
+  → bool, anything else → error). No API change.
 
 ### Fixed
 -

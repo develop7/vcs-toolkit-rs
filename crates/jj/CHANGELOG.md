@@ -21,6 +21,8 @@ crates; tag releases as `vcs-jj-v<version>`.
 ### Changed
 - `squash_into` and `squash_paths` gained a `use_destination_message: bool`
   (`--use-destination-message`) — *breaking* for these two signatures.
+- Bumped `processkit` to 0.6. `git_fetch` / `git_fetch_branch` now retry transient
+  failures (3 attempts, 500 ms backoff).
 
 ### Fixed
 -

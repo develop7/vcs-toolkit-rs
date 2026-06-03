@@ -496,44 +496,23 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn is_unborn(&self, dir: &Path) -> Result<bool> {
         // `rev-parse --verify -q HEAD` resolves HEAD quietly: 0 = a commit exists
-        // (not unborn), 1 = no commit yet (unborn). Anything else (e.g. 128, not a
-        // repo) is a real failure surfaced as `Error::Exit`.
-        match self
+        // (not unborn), 1 = no commit yet (unborn). `probe` maps those to a bool
+        // and surfaces anything else (e.g. 128, not a repo) as `Error::Exit`.
+        Ok(!self
             .core
-            .code(
+            .probe(
                 self.core
                     .command_in(dir, ["rev-parse", "--verify", "-q", "HEAD"]),
             )
-            .await?
-        {
-            0 => Ok(false),
-            1 => Ok(true),
-            other => Err(Error::Exit {
-                program: BINARY.to_string(),
-                code: other,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
-        }
+            .await?)
     }
 
     async fn diff_is_empty(&self, dir: &Path) -> Result<bool> {
-        // `git diff --quiet` is an exit-code answer: 0 = clean, 1 = dirty.
-        // `code` still surfaces spawn/timeout/signal failures for us.
-        match self
-            .core
-            .code(self.core.command_in(dir, ["diff", "--quiet"]))
-            .await?
-        {
-            0 => Ok(true),
-            1 => Ok(false),
-            other => Err(Error::Exit {
-                program: BINARY.to_string(),
-                code: other,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
-        }
+        // `git diff --quiet` is an exit-code answer: 0 = clean (empty), 1 = dirty;
+        // `probe` errors on any other code / timeout / signal.
+        self.core
+            .probe(self.core.command_in(dir, ["diff", "--quiet"]))
+            .await
     }
 
     async fn common_dir(&self, dir: &Path) -> Result<PathBuf> {
@@ -590,23 +569,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn branch_exists(&self, dir: &Path, name: &str) -> Result<bool> {
         let refname = format!("refs/heads/{name}");
-        match self
-            .core
-            .code(
+        // `show-ref --verify --quiet` is an exit-code answer: 0 = exists, 1 = not.
+        self.core
+            .probe(
                 self.core
                     .command_in(dir, ["show-ref", "--verify", "--quiet", refname.as_str()]),
             )
-            .await?
-        {
-            0 => Ok(true),
-            1 => Ok(false),
-            other => Err(Error::Exit {
-                program: BINARY.to_string(),
-                code: other,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
-        }
+            .await
     }
 
     async fn remote_branch_exists(&self, dir: &Path, name: &str) -> Result<bool> {
@@ -712,20 +681,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn diff_range_is_empty(&self, dir: &Path, range: &str) -> Result<bool> {
-        match self
-            .core
-            .code(self.core.command_in(dir, ["diff", "--quiet", range]))
-            .await?
-        {
-            0 => Ok(true),
-            1 => Ok(false),
-            other => Err(Error::Exit {
-                program: BINARY.to_string(),
-                code: other,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
-        }
+        // `diff --quiet <range>`: 0 = empty range, 1 = has changes.
+        self.core
+            .probe(self.core.command_in(dir, ["diff", "--quiet", range]))
+            .await
     }
 
     async fn diff_stat(&self, dir: &Path, range: &str) -> Result<DiffStat> {
@@ -759,20 +718,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn staged_is_empty(&self, dir: &Path) -> Result<bool> {
-        match self
-            .core
-            .code(self.core.command_in(dir, ["diff", "--cached", "--quiet"]))
-            .await?
-        {
-            0 => Ok(true),
-            1 => Ok(false),
-            other => Err(Error::Exit {
-                program: BINARY.to_string(),
-                code: other,
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
-        }
+        // `diff --cached --quiet`: 0 = nothing staged, 1 = staged changes.
+        self.core
+            .probe(self.core.command_in(dir, ["diff", "--cached", "--quiet"]))
+            .await
     }
 
     async fn is_rebase_in_progress(&self, dir: &Path) -> Result<bool> {
@@ -792,10 +741,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // `GIT_TERMINAL_PROMPT=0` so a remote needing credentials fails fast
         // rather than blocking on an interactive prompt — matching the other
         // remote ops (`fetch_remote_branch`, `push`, `remote_branch_exists`).
+        // Fetch is idempotent, so `retry` replays it on a transient failure
+        // (DNS/timeout/dropped connection); a non-transient error fails at once.
         let cmd = self
             .core
             .command_in(dir, ["fetch", "--quiet"])
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
     }
 
@@ -804,7 +756,8 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         let cmd = self
             .core
             .command_in(dir, ["fetch", "--quiet", "origin", refspec.as_str()])
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
     }
 
@@ -985,6 +938,11 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 // (content): …` to stdout, `Automatic merge failed …` to stderr — so these probe
 // both fields of `Error::Exit` (the `stdout` field is new in processkit 0.5).
 // Consumers call these instead of re-implementing the string-scraping themselves.
+
+/// Total attempts for a transient-retried `fetch` (1 try + 2 retries).
+const FETCH_ATTEMPTS: u32 = 3;
+/// Fixed backoff between fetch retries.
+const FETCH_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Lower-case substrings marking a merge that stopped on conflicts.
 const CONFLICT_MARKERS: &[&str] = &["conflict (", "automatic merge failed"];
@@ -1638,6 +1596,27 @@ mod tests {
             k.to_str() == Some("GIT_TERMINAL_PROMPT")
                 && v.as_deref().and_then(|o| o.to_str()) == Some("0")
         }));
+    }
+
+    // A transient failure (DNS/network) is retried up to FETCH_ATTEMPTS times.
+    #[tokio::test]
+    async fn fetch_retries_transient_failures() {
+        let rec = RecordingRunner::replying(Reply::fail(
+            128,
+            "fatal: unable to access: Could not resolve host: example.com",
+        ));
+        let git = Git::with_runner(&rec);
+        assert!(git.fetch(Path::new("/r")).await.is_err());
+        assert_eq!(rec.calls().len(), FETCH_ATTEMPTS as usize);
+    }
+
+    // A non-transient failure fails fast — no retry.
+    #[tokio::test]
+    async fn fetch_does_not_retry_permanent_failures() {
+        let rec = RecordingRunner::replying(Reply::fail(1, "fatal: couldn't find remote ref"));
+        let git = Git::with_runner(&rec);
+        assert!(git.fetch(Path::new("/r")).await.is_err());
+        assert_eq!(rec.calls().len(), 1);
     }
 
     #[tokio::test]

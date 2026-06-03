@@ -10,6 +10,7 @@
 //! `Jj::with_runner(`[`ScriptedRunner`](processkit::ScriptedRunner)`)`.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use processkit::ProcessRunner;
 // Re-export the processkit types in this crate's public API (also brings
@@ -411,9 +412,13 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     }
 
     async fn git_fetch(&self, dir: &Path) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["git", "fetch"]))
-            .await
+        // Idempotent → `retry` replays it on a transient (network) failure.
+        let cmd = self.core.command_in(dir, ["git", "fetch"]).retry(
+            FETCH_ATTEMPTS,
+            FETCH_BACKOFF,
+            is_transient_fetch_error,
+        );
+        self.core.unit(cmd).await
     }
 
     async fn git_push(&self, dir: &Path, bookmark: Option<String>) -> Result<()> {
@@ -699,12 +704,11 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     }
 
     async fn git_fetch_branch(&self, dir: &Path, branch: &str) -> Result<()> {
-        self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["git", "fetch", "--remote", "origin", "-b", branch]),
-            )
-            .await
+        let cmd = self
+            .core
+            .command_in(dir, ["git", "fetch", "--remote", "origin", "-b", branch])
+            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
+        self.core.unit(cmd).await
     }
 
     async fn git_import(&self, dir: &Path) -> Result<()> {
@@ -785,6 +789,11 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
 }
 
 // --- Error classification ----------------------------------------------------
+
+/// Total attempts for a transient-retried fetch (1 try + 2 retries).
+const FETCH_ATTEMPTS: u32 = 3;
+/// Fixed backoff between fetch retries.
+const FETCH_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Lower-case substrings marking a transient (retryable) network/fetch failure.
 /// `jj git fetch` surfaces the underlying git transport error.
@@ -1265,6 +1274,15 @@ mod tests {
     async fn git_push_without_bookmark_is_bare() {
         let jj = Jj::with_runner(ScriptedRunner::new().on(["git", "push"], Reply::ok("")));
         jj.git_push(Path::new("."), None).await.expect("bare push");
+    }
+
+    // `git_fetch` retries a transient (network) failure up to FETCH_ATTEMPTS times.
+    #[tokio::test]
+    async fn git_fetch_retries_transient_failures() {
+        let rec = RecordingRunner::replying(Reply::fail(1, "Error: Could not resolve host: x"));
+        let jj = Jj::with_runner(&rec);
+        assert!(jj.git_fetch(Path::new(".")).await.is_err());
+        assert_eq!(rec.calls().len(), FETCH_ATTEMPTS as usize);
     }
 
     // `diff_text` for the working copy must build `diff -r @ --git`.

@@ -18,6 +18,7 @@ crates; tag releases as `vcs-core-v<version>`.
 - Requires `vcs-git` / `vcs-jj` **0.4** (for the new `blocking` helpers). Bump the
   path-dep `version` to `"0.4"` only **after** those crates are published at 0.4 —
   see the release note below.
+- Bumped `processkit` to 0.6 (no code change).
 
 ### Fixed
 -

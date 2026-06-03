@@ -94,15 +94,11 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     }
 
     async fn auth_status(&self) -> Result<bool> {
-        // `gh auth status` exits 0 when authenticated, non-zero when not — an
-        // exit-code answer. `code` reports the bool but still errors on a spawn
-        // failure or timeout (processkit surfaces a timeout as `Error::Timeout`),
-        // rather than silently reporting "not authenticated".
-        Ok(self
-            .core
-            .code(self.core.command(["auth", "status"]))
-            .await?
-            == 0)
+        // `gh auth status` exits 0 when authenticated, 1 when not — an exit-code
+        // answer. `probe` reads it as a bool but still errors on a spawn failure,
+        // timeout (`Error::Timeout`), or any unexpected exit code, rather than
+        // silently reporting "not authenticated".
+        self.core.probe(self.core.command(["auth", "status"])).await
     }
 
     async fn repo_view(&self, dir: &Path) -> Result<Repo> {
