@@ -10,10 +10,14 @@ crates; tag releases as `vcs-core-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- `Repo::cleanup_worktree_blocking(path)` — synchronous, best-effort worktree
+  removal for a `Drop` guard that can't `.await` (git: `worktree remove --force`;
+  jj: resolve the workspace name by path, delete the dir, `workspace forget`).
 
 ### Changed
--
+- Requires `vcs-git` / `vcs-jj` **0.4** (for the new `blocking` helpers). Bump the
+  path-dep `version` to `"0.4"` only **after** those crates are published at 0.4 —
+  see the release note below.
 
 ### Fixed
 -

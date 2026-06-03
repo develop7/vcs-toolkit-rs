@@ -25,7 +25,21 @@ pub struct Bookmark {
     pub target: String,
 }
 
-/// A workspace from `jj workspace list` (rendered with [`WORKSPACE_TEMPLATE`]).
+/// A bookmark from `jj bookmark list -a` — local *or* remote-tracking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BookmarkRef {
+    /// Bookmark name.
+    pub name: String,
+    /// The remote it lives on (e.g. `origin`/`git`); `None` for a local bookmark.
+    pub remote: Option<String>,
+    /// Short id of the commit it points at (empty for a conflicted bookmark).
+    pub target: String,
+    /// Whether this remote-tracking bookmark is tracked (`false` for locals).
+    pub tracked: bool,
+}
+
+/// A workspace from `jj workspace list` (rendered with `WORKSPACE_TEMPLATE`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Workspace {
@@ -117,6 +131,9 @@ pub struct FileDiff {
     pub old_path: Option<String>,
     /// The `@@` hunks; empty for a binary file or a pure rename with no edits.
     pub hunks: Vec<Hunk>,
+    /// The verbatim diff section for this file (the `diff --git …` block through
+    /// to the next file), for callers that display the raw text.
+    pub raw: String,
 }
 
 /// Template used by the change commands: tab-separated, one change per line.
@@ -128,6 +145,10 @@ pub(crate) const WORKSPACE_TEMPLATE: &str = "name ++ \"\\t\" ++ target.commit_id
 /// `jj log -T` template rendering a commit's local bookmark names, comma-joined.
 /// Drives `current_bookmark`/`trunk`.
 pub(crate) const BOOKMARKS_TEMPLATE: &str = "local_bookmarks.map(|b| b.name()).join(\",\")";
+
+/// `jj bookmark list -a -T` template: `name\t<remote>\t<tracked 1/0>\t<commit>`,
+/// one row per local *and* remote-tracking bookmark.
+pub(crate) const BOOKMARK_ALL_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\t\" ++ if(tracked, \"1\", \"0\") ++ \"\\t\" ++ if(normal_target, normal_target.commit_id().short(), \"\") ++ \"\\n\"";
 
 /// `jj log -T` template: `"1"` when the commit has a conflict, else `"0"`.
 pub(crate) const CONFLICT_TEMPLATE: &str = "if(conflict, \"1\", \"0\")";
@@ -177,6 +198,28 @@ pub(crate) fn parse_bookmarks(output: &str) -> Vec<Bookmark> {
             Some(Bookmark {
                 name: name.trim().to_string(),
                 target,
+            })
+        })
+        .collect()
+}
+
+/// Parse rows produced by [`BOOKMARK_ALL_TEMPLATE`]:
+/// `name\t<remote>\t<tracked 1/0>\t<commit>` per local/remote bookmark.
+pub(crate) fn parse_bookmarks_all(output: &str) -> Vec<BookmarkRef> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.to_string();
+            let remote = fields.next().unwrap_or("");
+            let tracked = fields.next() == Some("1");
+            let target = fields.next().unwrap_or("").to_string();
+            Some(BookmarkRef {
+                name,
+                remote: (!remote.is_empty()).then(|| remote.to_string()),
+                target,
+                tracked,
             })
         })
         .collect()
@@ -356,6 +399,7 @@ fn parse_section(section: &str) -> Option<FileDiff> {
         path: normalize(path),
         old_path,
         hunks,
+        raw: section.to_string(),
     })
 }
 
@@ -515,6 +559,7 @@ mod tests {
         let full = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@ fn main()\n ctx\n-old\n+new\n+added\n";
         let files = parse_diff(full);
         assert_eq!(files.len(), 1);
+        assert_eq!(files[0].raw, full);
         let hunk = &files[0].hunks[0];
         assert_eq!(
             (

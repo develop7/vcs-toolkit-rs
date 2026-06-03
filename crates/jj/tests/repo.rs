@@ -105,6 +105,21 @@ async fn bookmark_create_set_and_list() {
         bookmarks.iter().any(|b| b.name == "mark"),
         "expected bookmark 'mark', got {bookmarks:?}"
     );
+
+    // `bookmarks_all` exercises the real `bookmark list -a -T` template end-to-end
+    // (the hermetic test only feeds canned output). A local `mark` plus its
+    // colocated `mark@git` remote-tracking entry are both reported.
+    let all = jj.bookmarks_all(dir).await.expect("bookmarks_all");
+    assert!(
+        all.iter()
+            .any(|b| b.name == "mark" && b.remote.is_none()),
+        "expected local 'mark', got {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|b| b.name == "mark" && b.remote.as_deref() == Some("git")),
+        "expected remote-tracking 'mark@git', got {all:?}"
+    );
 }
 
 // Add a workspace, see it in the listing alongside `default`, then forget it —

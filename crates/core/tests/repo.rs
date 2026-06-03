@@ -103,3 +103,42 @@ async fn open_detects_jj_and_reports_changes() {
         "expected new.txt added, got {changes:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires the git binary"]
+async fn git_create_then_blocking_cleanup() {
+    let tmp = TempDir::new("git-cleanup");
+    let dir = tmp.path();
+    init_repo(dir);
+    let repo = Repo::open(dir).expect("open");
+
+    let wt = tmp.path().join("wt");
+    repo.create_worktree(&wt, "feat", "HEAD")
+        .await
+        .expect("create_worktree");
+    assert!(wt.join("seed.txt").exists(), "worktree populated");
+
+    // Synchronous cleanup (the Drop-time path) removes it.
+    repo.cleanup_worktree_blocking(&wt).expect("cleanup");
+    assert!(!wt.exists(), "worktree removed");
+}
+
+#[tokio::test]
+#[ignore = "requires the jj binary"]
+async fn jj_create_then_blocking_cleanup() {
+    let tmp = TempDir::new("jj-cleanup");
+    let dir = tmp.path();
+    init_jj_repo(dir);
+    let repo = Repo::open(dir).expect("open");
+
+    let ws = tmp.path().join("ws");
+    repo.create_worktree(&ws, "feat", "@")
+        .await
+        .expect("create_worktree");
+    assert!(ws.exists(), "workspace dir created");
+
+    // Synchronous cleanup resolves the workspace name by path, deletes the dir,
+    // and forgets it.
+    repo.cleanup_worktree_blocking(&ws).expect("cleanup");
+    assert!(!ws.exists(), "workspace dir removed");
+}

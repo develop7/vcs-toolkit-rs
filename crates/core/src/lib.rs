@@ -327,6 +327,31 @@ impl<R: ProcessRunner> Repo<R> {
             Backend::Jj(j) => jj_backend::remove_worktree(j, &self.cwd, path, force).await,
         }
     }
+
+    /// **Synchronous** worktree cleanup for a context that cannot `.await` —
+    /// chiefly a `Drop` guard. Force-removes the worktree at `path` (git:
+    /// `worktree remove --force`; jj: resolve the workspace name by `path`, delete
+    /// the directory, then `workspace forget`). Best-effort and short-lived: it
+    /// shells out directly (no job-containment); a jj `path` that matches no
+    /// workspace is a no-op (`Ok`).
+    pub fn cleanup_worktree_blocking(&self, path: &Path) -> Result<()> {
+        match &self.backend {
+            Backend::Git(_) => {
+                vcs_git::blocking::worktree_remove(&self.cwd, path, true).map_err(Error::Io)
+            }
+            Backend::Jj(_) => {
+                match vcs_jj::blocking::workspace_name_for_path(&self.cwd, path) {
+                    Some(name) => {
+                        // Delete the on-disk dir first (jj `forget` leaves it), then
+                        // drop jj's record of the workspace.
+                        let _ = std::fs::remove_dir_all(path);
+                        vcs_jj::blocking::workspace_forget(&self.cwd, &name).map_err(Error::Io)
+                    }
+                    None => Ok(()),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

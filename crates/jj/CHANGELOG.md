@@ -10,10 +10,17 @@ crates; tag releases as `vcs-jj-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- Revision-scoped variants of the `@`-only ops: `describe_rev(revset, msg)` and
+  `rebase_branch(branch, dest)` (`rebase -b … -d …`).
+- Remote-tracking bookmarks: `bookmarks_all` (`bookmark list -a`, new `BookmarkRef`
+  with name/remote/target/tracked) and `bookmark_track(name, remote)`.
+- `FileDiff.raw` — the verbatim per-file diff section.
+- Sync `blocking::workspace_forget` and `blocking::workspace_name_for_path`
+  (resolve a workspace name by path) for `Drop`-time cleanup that can't `.await`.
 
 ### Changed
--
+- `squash_into` and `squash_paths` gained a `use_destination_message: bool`
+  (`--use-destination-message`) — *breaking* for these two signatures.
 
 ### Fixed
 -

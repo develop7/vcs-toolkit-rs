@@ -130,6 +130,9 @@ pub struct FileDiff {
     pub old_path: Option<String>,
     /// The `@@` hunks; empty for a binary file or a pure rename with no edits.
     pub hunks: Vec<Hunk>,
+    /// The verbatim diff section for this file (the `diff --git …` block through
+    /// to the next file), for callers that display the raw text.
+    pub raw: String,
 }
 
 /// Parse `git status --porcelain=v1 -z` output: NUL-delimited records, raw
@@ -291,6 +294,21 @@ pub(crate) fn parse_shortstat(output: &str) -> DiffStat {
     stat
 }
 
+/// Parse `git ls-remote --heads <remote>` output — `<sha>\trefs/heads/<name>`
+/// per line — into the bare branch names.
+pub(crate) fn parse_ls_remote_heads(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (_sha, refname) = line.split_once('\t')?;
+            refname
+                .trim()
+                .strip_prefix("refs/heads/")
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 /// Parse a git-format unified diff into one [`FileDiff`] per file. Works on
 /// `git diff` and `jj diff --git` output alike. Public so a consumer can parse
 /// diff text it obtained by other means.
@@ -391,6 +409,7 @@ fn parse_section(section: &str) -> Option<FileDiff> {
         path: normalize(path),
         old_path,
         hunks,
+        raw: section.to_string(),
     })
 }
 
@@ -621,6 +640,8 @@ mod tests {
         let full = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@ fn main()\n ctx\n-old\n+new\n+added\n";
         let files = parse_diff(full);
         assert_eq!(files.len(), 1);
+        // The verbatim section is preserved for display.
+        assert_eq!(files[0].raw, full);
         let hunk = &files[0].hunks[0];
         assert_eq!(
             (

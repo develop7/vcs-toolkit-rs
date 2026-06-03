@@ -10,10 +10,20 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- `push(dir, GitPush)` (git had no push): a `GitPush` builder — `branch(name)` /
+  `refspec(local, remote_branch)`, `.remote(_)`, `.set_upstream()`.
+- `upstream` (`@{u}`, `None` when unset), `set_upstream`, and `remote_branches`
+  (`ls-remote --heads`) — the remote-tracking surface vcs-flow hand-rolled.
+- `FileDiff.raw` — the verbatim per-file diff section, so a consumer can show the
+  raw text without re-parsing.
+- Sync `blocking::worktree_remove` for `Drop`-time cleanup that can't `.await`.
 
 ### Changed
--
+- `merge_commit` with no message now passes `--no-edit`, and `rebase` /
+  `rebase_continue` force a no-op editor (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`), so
+  a headless caller never hangs on `$EDITOR`.
+- `remote_branch_exists` now queries the fully-qualified `refs/heads/<name>` — a
+  bare `foo` could tail-match `bar/foo`.
 
 ### Fixed
 -

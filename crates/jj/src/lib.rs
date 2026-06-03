@@ -18,7 +18,8 @@ pub use processkit::{Error, ProcessResult, Result};
 
 mod parse;
 pub use parse::{
-    Bookmark, Change, ChangeKind, ChangedPath, DiffLine, DiffStat, FileDiff, Hunk, Workspace,
+    Bookmark, BookmarkRef, Change, ChangeKind, ChangedPath, DiffLine, DiffStat, FileDiff, Hunk,
+    Workspace,
 };
 
 /// Name of the underlying CLI binary this crate drives.
@@ -146,10 +147,16 @@ pub trait JjApi: Send + Sync {
     async fn current_change(&self, dir: &Path) -> Result<Change>;
     /// Set the working-copy change's description (`jj describe -m`).
     async fn describe(&self, dir: &Path, message: &str) -> Result<()>;
+    /// Set the description of an arbitrary revision (`jj describe -r <revset> -m`).
+    async fn describe_rev(&self, dir: &Path, revset: &str, message: &str) -> Result<()>;
     /// Start a new change on top of the working copy (`jj new -m`).
     async fn new_change(&self, dir: &Path, message: &str) -> Result<()>;
     /// Local bookmarks (`jj bookmark list`).
     async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>>;
+    /// Local *and* remote-tracking bookmarks (`jj bookmark list -a`).
+    async fn bookmarks_all(&self, dir: &Path) -> Result<Vec<BookmarkRef>>;
+    /// Track a remote bookmark (`jj bookmark track <name>@<remote>`).
+    async fn bookmark_track(&self, dir: &Path, name: &str, remote: &str) -> Result<()>;
     /// Point a bookmark at `revision` (`jj bookmark set <name> -r <revision>`).
     async fn bookmark_set(&self, dir: &Path, name: &str, revision: &str) -> Result<()>;
     /// Fetch from the git remote (`jj git fetch`).
@@ -216,23 +223,33 @@ pub trait JjApi: Send + Sync {
 
     // --- Mutations -----------------------------------------------------------
 
-    /// Rebase onto a destination (`rebase -d <onto>`).
+    /// Rebase the working copy onto a destination (`rebase -d <onto>`).
     async fn rebase(&self, dir: &Path, onto: &str) -> Result<()>;
+    /// Rebase a whole branch onto a destination (`rebase -b <branch> -d <dest>`).
+    async fn rebase_branch(&self, dir: &Path, branch: &str, dest: &str) -> Result<()>;
     /// Move the working copy to a revision (`edit <rev>`).
     async fn edit(&self, dir: &Path, revset: &str) -> Result<()>;
-    /// Squash the working copy into a revision (`squash --into <rev>`).
-    async fn squash_into(&self, dir: &Path, into: &str) -> Result<()>;
+    /// Squash the working copy into a revision (`squash --into <rev>`). When
+    /// `use_destination_message`, keep the destination's description
+    /// (`--use-destination-message`) instead of combining the two.
+    async fn squash_into(
+        &self,
+        dir: &Path,
+        into: &str,
+        use_destination_message: bool,
+    ) -> Result<()>;
     /// Finalise a commit from exactly these filesets (`commit -m <message>
     /// <filesets>`); the rest stay in the new working-copy change.
     async fn commit_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()>;
     /// Squash exactly these filesets from one revision into another
-    /// (`squash --from <from> --into <into> <filesets>`).
+    /// (`squash --from <from> --into <into> [--use-destination-message] <filesets>`).
     async fn squash_paths(
         &self,
         dir: &Path,
         from: &str,
         into: &str,
         filesets: &[JjFileset],
+        use_destination_message: bool,
     ) -> Result<()>;
     /// Set the working copy's sparse patterns to exactly `patterns`
     /// (`sparse set --clear --add <p>…`); an empty list clears the working copy.
@@ -338,6 +355,15 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             .await
     }
 
+    async fn describe_rev(&self, dir: &Path, revset: &str, message: &str) -> Result<()> {
+        self.core
+            .unit(
+                self.core
+                    .command_in(dir, ["describe", "-r", revset, "-m", message]),
+            )
+            .await
+    }
+
     async fn new_change(&self, dir: &Path, message: &str) -> Result<()> {
         self.core
             .unit(self.core.command_in(dir, ["new", "-m", message]))
@@ -349,6 +375,28 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             .parse(
                 self.core.command_in(dir, ["bookmark", "list"]),
                 parse::parse_bookmarks,
+            )
+            .await
+    }
+
+    async fn bookmarks_all(&self, dir: &Path) -> Result<Vec<BookmarkRef>> {
+        self.core
+            .parse(
+                self.core.command_in(
+                    dir,
+                    ["bookmark", "list", "-a", "-T", parse::BOOKMARK_ALL_TEMPLATE],
+                ),
+                parse::parse_bookmarks_all,
+            )
+            .await
+    }
+
+    async fn bookmark_track(&self, dir: &Path, name: &str, remote: &str) -> Result<()> {
+        let target = format!("{name}@{remote}");
+        self.core
+            .unit(
+                self.core
+                    .command_in(dir, ["bookmark", "track", target.as_str()]),
             )
             .await
     }
@@ -571,16 +619,32 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             .await
     }
 
+    async fn rebase_branch(&self, dir: &Path, branch: &str, dest: &str) -> Result<()> {
+        self.core
+            .unit(
+                self.core
+                    .command_in(dir, ["rebase", "-b", branch, "-d", dest]),
+            )
+            .await
+    }
+
     async fn edit(&self, dir: &Path, revset: &str) -> Result<()> {
         self.core
             .unit(self.core.command_in(dir, ["edit", revset]))
             .await
     }
 
-    async fn squash_into(&self, dir: &Path, into: &str) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["squash", "--into", into]))
-            .await
+    async fn squash_into(
+        &self,
+        dir: &Path,
+        into: &str,
+        use_destination_message: bool,
+    ) -> Result<()> {
+        let mut command = self.core.command_in(dir, ["squash", "--into", into]);
+        if use_destination_message {
+            command = command.arg("--use-destination-message");
+        }
+        self.core.unit(command).await
     }
 
     async fn commit_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()> {
@@ -595,6 +659,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         from: &str,
         into: &str,
         filesets: &[JjFileset],
+        use_destination_message: bool,
     ) -> Result<()> {
         let mut args: Vec<String> = vec![
             "squash".into(),
@@ -603,6 +668,9 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             "--into".into(),
             into.into(),
         ];
+        if use_destination_message {
+            args.push("--use-destination-message".into());
+        }
         args.extend(filesets.iter().map(|f| f.as_str().to_string()));
         self.core.unit(self.core.command_in(dir, args)).await
     }
@@ -770,6 +838,82 @@ impl<R: ProcessRunner> Jj<R> {
     }
 }
 
+/// Synchronous, best-effort helpers for contexts that cannot `.await` — chiefly
+/// a `Drop` guard. They shell out through `std::process` directly (no async, no
+/// job-containment), so reserve them for short-lived cleanup.
+pub mod blocking {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Forget a workspace synchronously (`jj workspace forget <name>`).
+    pub fn workspace_forget(dir: &Path, name: &str) -> std::io::Result<()> {
+        let status = Command::new(super::BINARY)
+            .current_dir(dir)
+            .args(["workspace", "forget", name])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "`jj workspace forget` exited with {status}"
+            )))
+        }
+    }
+
+    /// Resolve the workspace *name* whose root matches `path`, synchronously —
+    /// for `Drop`, which can't `.await` the typed `workspace_list`/`workspace_root`.
+    /// Lists workspaces (`workspace list -T name`), then matches each
+    /// `workspace root --name <n>` against `path` (canonicalised, Windows
+    /// verbatim-prefix stripped). `None` when jj is missing or nothing matches —
+    /// the caller then skips the forget rather than guessing.
+    pub fn workspace_name_for_path(dir: &Path, path: &Path) -> Option<String> {
+        let target = normalize(path);
+        let out = Command::new(super::BINARY)
+            .current_dir(dir)
+            .args(["workspace", "list", "-T", "name ++ \"\\n\""])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        for name in String::from_utf8_lossy(&out.stdout).lines() {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let root = Command::new(super::BINARY)
+                .current_dir(dir)
+                .args(["workspace", "root", "--name", name])
+                .output();
+            if let Ok(r) = root
+                && r.status.success()
+            {
+                let p = PathBuf::from(String::from_utf8_lossy(&r.stdout).trim().to_string());
+                if normalize(&p) == target || p == target || p == path {
+                    return Some(name.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Canonicalise + strip the Windows verbatim prefix (`\\?\…`, which
+    /// `canonicalize` adds but jj never emits) for stable path comparison.
+    fn normalize(p: &Path) -> PathBuf {
+        let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        #[cfg(windows)]
+        {
+            let s = canonical.to_string_lossy();
+            if let Some(rest) = s.strip_prefix(r"\\?\")
+                && !rest.starts_with("UNC\\")
+            {
+                return PathBuf::from(rest.to_string());
+            }
+        }
+        canonical
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -865,13 +1009,93 @@ mod tests {
     async fn squash_paths_builds_from_into_filesets() {
         let rec = RecordingRunner::replying(Reply::ok(""));
         let jj = Jj::with_runner(&rec);
-        jj.squash_paths(Path::new("."), "@", "feat", &[JjFileset::path("a.rs")])
-            .await
-            .expect("squash_paths");
+        jj.squash_paths(
+            Path::new("."),
+            "@",
+            "feat",
+            &[JjFileset::path("a.rs")],
+            false,
+        )
+        .await
+        .expect("squash_paths");
         assert_eq!(
             rec.only_call().args_str(),
             ["squash", "--from", "@", "--into", "feat", "file:\"a.rs\""]
         );
+    }
+
+    #[tokio::test]
+    async fn squash_paths_keeps_destination_message() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+        jj.squash_paths(
+            Path::new("."),
+            "@",
+            "feat",
+            &[JjFileset::path("a.rs")],
+            true,
+        )
+        .await
+        .expect("squash_paths");
+        assert_eq!(
+            rec.only_call().args_str(),
+            [
+                "squash",
+                "--from",
+                "@",
+                "--into",
+                "feat",
+                "--use-destination-message",
+                "file:\"a.rs\""
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn jj_new_revision_scoped_ops_build_args() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+        jj.describe_rev(Path::new("."), "feat", "msg")
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["describe", "-r", "feat", "-m", "msg"]
+        );
+
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+        jj.rebase_branch(Path::new("."), "feat", "main")
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["rebase", "-b", "feat", "-d", "main"]
+        );
+
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+        jj.bookmark_track(Path::new("."), "feat", "origin")
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["bookmark", "track", "feat@origin"]
+        );
+    }
+
+    #[tokio::test]
+    async fn bookmarks_all_parses_local_and_remote() {
+        let jj = Jj::with_runner(ScriptedRunner::new().on(
+            ["bookmark", "list"],
+            Reply::ok("main\t\t0\tabc123\nmain\torigin\t1\tabc123\n"),
+        ));
+        let refs = jj.bookmarks_all(Path::new(".")).await.unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name, "main");
+        assert!(refs[0].remote.is_none() && !refs[0].tracked);
+        assert_eq!(refs[1].remote.as_deref(), Some("origin"));
+        assert!(refs[1].tracked);
     }
 
     #[tokio::test]

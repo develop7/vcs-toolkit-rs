@@ -102,6 +102,54 @@ impl WorktreeAdd {
     }
 }
 
+/// Options for [`GitApi::push`] (`git push`).
+///
+/// `#[non_exhaustive]`, so build it through [`GitPush::branch`] /
+/// [`GitPush::refspec`] rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct GitPush {
+    /// Remote to push to (defaults to `origin`).
+    pub remote: String,
+    /// The refspec — a bare branch name, or `local:remote_branch`.
+    pub refspec: String,
+    /// Set the pushed branch as the upstream (`-u`).
+    pub set_upstream: bool,
+}
+
+impl GitPush {
+    /// Push branch `name` to `origin` under the same name (`git push origin <name>`).
+    pub fn branch(name: impl Into<String>) -> Self {
+        Self {
+            remote: "origin".to_string(),
+            refspec: name.into(),
+            set_upstream: false,
+        }
+    }
+
+    /// Push `local` to a differently-named `remote_branch`
+    /// (`git push origin <local>:<remote_branch>`).
+    pub fn refspec(local: impl AsRef<str>, remote_branch: impl AsRef<str>) -> Self {
+        Self {
+            remote: "origin".to_string(),
+            refspec: format!("{}:{}", local.as_ref(), remote_branch.as_ref()),
+            set_upstream: false,
+        }
+    }
+
+    /// Push to a non-default remote.
+    pub fn remote(mut self, remote: impl Into<String>) -> Self {
+        self.remote = remote.into();
+        self
+    }
+
+    /// Record the pushed branch as the local branch's upstream (`-u`).
+    pub fn set_upstream(mut self) -> Self {
+        self.set_upstream = true;
+        self
+    }
+}
+
 /// The Git operations this crate exposes — the interface consumers code against
 /// and mock in tests.
 #[cfg_attr(feature = "mock", mockall::automock)]
@@ -181,11 +229,20 @@ pub trait GitApi: Send + Sync {
     async fn remote_branch_exists(&self, dir: &Path, name: &str) -> Result<bool>;
     /// A remote's URL (`remote get-url <remote>`).
     async fn remote_url(&self, dir: &Path, remote: &str) -> Result<String>;
+    /// The current branch's upstream, e.g. `Some("origin/main")`
+    /// (`rev-parse --abbrev-ref --symbolic-full-name @{u}`); `None` when unset.
+    async fn upstream(&self, dir: &Path) -> Result<Option<String>>;
+    /// Branch names on `remote`, without fetching
+    /// (`ls-remote --heads <remote>`).
+    async fn remote_branches(&self, dir: &Path, remote: &str) -> Result<Vec<String>>;
 
     // --- Branches ------------------------------------------------------------
 
     /// Whether `branch` is fully merged into `target` (`branch --merged <target>`).
     async fn is_merged(&self, dir: &Path, branch: &str, target: &str) -> Result<bool>;
+    /// Set `branch`'s upstream to `upstream` (e.g. `origin/main`)
+    /// (`branch --set-upstream-to=<upstream> <branch>`).
+    async fn set_upstream(&self, dir: &Path, branch: &str, upstream: &str) -> Result<()>;
     /// Delete a local branch (`branch -d`, or `-D` when `force`).
     async fn delete_branch(&self, dir: &Path, name: &str, force: bool) -> Result<()>;
     /// Rename a local branch (`branch -m <old> <new>`).
@@ -221,6 +278,8 @@ pub trait GitApi: Send + Sync {
     /// (`fetch --quiet origin refs/heads/<b>:refs/remotes/origin/<b>`), with
     /// `GIT_TERMINAL_PROMPT=0`.
     async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()>;
+    /// Push to a remote (`push [-u] <remote> <refspec>`); see [`GitPush`].
+    async fn push(&self, dir: &Path, spec: GitPush) -> Result<()>;
     /// Stage a branch's changes without committing (`merge --squash <branch>`).
     async fn merge_squash(&self, dir: &Path, branch: &str) -> Result<()>;
     /// Merge a branch (`merge [--no-ff] [-m <msg>] <branch>`).
@@ -552,9 +611,14 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // (non-zero exit) rather than erroring, so an unreachable remote reads as
         // "absent" (`false`) — the best-effort answer a probe wants. A genuine
         // spawn failure (no `git`) still surfaces as an error.
+        //
+        // Query the *fully-qualified* ref: `ls-remote origin <name>` tail-matches
+        // path components, so a bare `foo` would also match `refs/heads/bar/foo`.
+        // `refs/heads/<name>` matches only the exact branch.
+        let refname = format!("refs/heads/{name}");
         let cmd = self
             .core
-            .command_in(dir, ["ls-remote", "--heads", "origin", name])
+            .command_in(dir, ["ls-remote", "origin", refname.as_str()])
             .env("GIT_TERMINAL_PROMPT", "0")
             .timeout(Duration::from_secs(10));
         let res = self.core.capture(cmd).await?;
@@ -565,6 +629,35 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         self.core
             .text(self.core.command_in(dir, ["remote", "get-url", remote]))
             .await
+    }
+
+    async fn upstream(&self, dir: &Path) -> Result<Option<String>> {
+        // `@{u}` resolves the configured upstream; with no upstream the command
+        // exits non-zero — surface that as `None` rather than an error.
+        match self
+            .core
+            .capture(self.core.command_in(
+                dir,
+                ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            ))
+            .await?
+        {
+            res if res.code() == Some(0) => {
+                let name = res.stdout().trim();
+                Ok((!name.is_empty()).then(|| name.to_string()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn remote_branches(&self, dir: &Path, remote: &str) -> Result<Vec<String>> {
+        // `GIT_TERMINAL_PROMPT=0`: a remote needing credentials must fail fast,
+        // never block on an interactive auth prompt.
+        let cmd = self
+            .core
+            .command_in(dir, ["ls-remote", "--heads", remote])
+            .env("GIT_TERMINAL_PROMPT", "0");
+        self.core.parse(cmd, parse::parse_ls_remote_heads).await
     }
 
     async fn is_merged(&self, dir: &Path, branch: &str, target: &str) -> Result<bool> {
@@ -578,6 +671,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .lines()
             .map(|line| line.trim_start_matches(['*', '+', ' ']))
             .any(|b| b == branch))
+    }
+
+    async fn set_upstream(&self, dir: &Path, branch: &str, upstream: &str) -> Result<()> {
+        let flag = format!("--set-upstream-to={upstream}");
+        self.core
+            .unit(self.core.command_in(dir, ["branch", flag.as_str(), branch]))
+            .await
     }
 
     async fn delete_branch(&self, dir: &Path, name: &str, force: bool) -> Result<()> {
@@ -699,6 +799,20 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         self.core.unit(cmd).await
     }
 
+    async fn push(&self, dir: &Path, spec: GitPush) -> Result<()> {
+        let mut args: Vec<&str> = vec!["push"];
+        if spec.set_upstream {
+            args.push("-u");
+        }
+        args.push(spec.remote.as_str());
+        args.push(spec.refspec.as_str());
+        let cmd = self
+            .core
+            .command_in(dir, args)
+            .env("GIT_TERMINAL_PROMPT", "0");
+        self.core.unit(cmd).await
+    }
+
     async fn merge_squash(&self, dir: &Path, branch: &str) -> Result<()> {
         self.core
             .unit(self.core.command_in(dir, ["merge", "--squash", branch]))
@@ -719,6 +833,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if let Some(msg) = message.as_deref() {
             args.push("-m");
             args.push(msg);
+        } else {
+            // No message → take the default merge message non-interactively
+            // instead of opening `$EDITOR` (which would hang a headless caller).
+            args.push("--no-edit");
         }
         args.push(branch);
         self.core.unit(self.core.command_in(dir, args)).await
@@ -767,8 +885,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn rebase(&self, dir: &Path, onto: &str) -> Result<()> {
+        // Force a no-op editor so a rebase that would open `$EDITOR` (reword, or
+        // the message-confirm on `--continue`) never hangs a headless caller.
         self.core
-            .unit(self.core.command_in(dir, ["rebase", onto]))
+            .unit(no_editor(self.core.command_in(dir, ["rebase", onto])))
             .await
     }
 
@@ -780,7 +900,9 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn rebase_continue(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["rebase", "--continue"]))
+            .unit(no_editor(
+                self.core.command_in(dir, ["rebase", "--continue"]),
+            ))
             .await
     }
 
@@ -905,6 +1027,14 @@ pub fn is_transient_fetch_error(err: &Error) -> bool {
     matches!(err, Error::Timeout { .. }) || exit_output_matches(err, TRANSIENT_FETCH_MARKERS)
 }
 
+/// Point git's editor at a no-op so any command that would open `$EDITOR`
+/// (a rebase reword, the message-confirm on `rebase --continue`) succeeds
+/// non-interactively instead of hanging a headless caller.
+fn no_editor(cmd: processkit::Command) -> processkit::Command {
+    cmd.env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
+}
+
 impl<R: ProcessRunner> Git<R> {
     /// Run `git <args>` over string slices — `git.run_args(&["status", "-s"])`
     /// without allocating a `Vec<String>`. Inherent (not on the object-safe
@@ -933,6 +1063,32 @@ impl<R: ProcessRunner> Git<R> {
         } else {
             dir.join(git_dir)
         })
+    }
+}
+
+/// Synchronous, best-effort helpers for contexts that cannot `.await` — chiefly
+/// a `Drop` guard. They shell out through `std::process` directly (no async, no
+/// job-containment), so reserve them for short-lived cleanup.
+pub mod blocking {
+    use std::path::Path;
+    use std::process::Command;
+
+    /// Remove a worktree synchronously (`git worktree remove [--force] <path>`).
+    pub fn worktree_remove(dir: &Path, path: &Path, force: bool) -> std::io::Result<()> {
+        let mut cmd = Command::new(super::BINARY);
+        cmd.current_dir(dir).args(["worktree", "remove"]);
+        if force {
+            cmd.arg("--force");
+        }
+        cmd.arg(path);
+        let status = cmd.status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "`git worktree remove` exited with {status}"
+            )))
+        }
     }
 }
 
@@ -1233,10 +1389,13 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(rec.only_call().envs.iter().any(|(k, v)| {
+        let call = rec.only_call();
+        assert!(call.envs.iter().any(|(k, v)| {
             k.to_str() == Some("GIT_TERMINAL_PROMPT")
                 && v.as_deref().and_then(|o| o.to_str()) == Some("0")
         }));
+        // Exact-ref query — a bare `main` would tail-match `bar/main`.
+        assert_eq!(call.args_str(), ["ls-remote", "origin", "refs/heads/main"]);
 
         let empty = Git::with_runner(ScriptedRunner::new().on(["ls-remote"], Reply::ok("")));
         assert!(
@@ -1342,6 +1501,85 @@ mod tests {
             rec.only_call().args_str(),
             ["merge", "--no-ff", "-m", "merge it", "feature"]
         );
+    }
+
+    // No message → `--no-edit` (default message, non-interactive) instead of `$EDITOR`.
+    #[tokio::test]
+    async fn merge_commit_without_message_uses_no_edit() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.merge_commit(Path::new("/r"), "feature", false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["merge", "--no-edit", "feature"]
+        );
+    }
+
+    // rebase/rebase_continue force a no-op editor so a headless caller never hangs.
+    #[tokio::test]
+    async fn rebase_suppresses_editor() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.rebase(Path::new("/r"), "main").await.unwrap();
+        let call = rec.only_call();
+        assert_eq!(call.args_str(), ["rebase", "main"]);
+        assert!(call.envs.iter().any(|(k, v)| {
+            k.to_str() == Some("GIT_EDITOR")
+                && v.as_deref().and_then(|o| o.to_str()) == Some("true")
+        }));
+    }
+
+    #[tokio::test]
+    async fn push_builds_set_upstream_remote_refspec() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.push(
+            Path::new("/r"),
+            GitPush::refspec("feat", "feature").set_upstream(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["push", "-u", "origin", "feat:feature"]
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_maps_unset_to_none() {
+        let set =
+            Git::with_runner(ScriptedRunner::new().on(["rev-parse"], Reply::ok("origin/main\n")));
+        assert_eq!(
+            set.upstream(Path::new(".")).await.unwrap().as_deref(),
+            Some("origin/main")
+        );
+        let unset = Git::with_runner(ScriptedRunner::new().on(["rev-parse"], Reply::fail(128, "")));
+        assert!(unset.upstream(Path::new(".")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn set_upstream_builds_branch_flag() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.set_upstream(Path::new("/r"), "feat", "origin/feature")
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["branch", "--set-upstream-to=origin/feature", "feat"]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_branches_parses_ls_remote() {
+        let git = Git::with_runner(ScriptedRunner::new().on(
+            ["ls-remote"],
+            Reply::ok("aaa\trefs/heads/main\nbbb\trefs/heads/feat/x\n"),
+        ));
+        let branches = git.remote_branches(Path::new("."), "origin").await.unwrap();
+        assert_eq!(branches, ["main", "feat/x"]);
     }
 
     #[tokio::test]
