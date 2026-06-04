@@ -266,6 +266,12 @@ impl<R: ProcessRunner> Repo<R> {
     }
 
     /// Aggregate insertion/deletion counts for the working copy.
+    ///
+    /// Backend nuance: git counts the working tree against `HEAD` (`git diff`,
+    /// which **excludes untracked files**), while jj counts the `@` change against
+    /// its parent (which **includes** newly-added files). So on git a brand-new
+    /// file shows in [`changed_files`](Self::changed_files) but not here, whereas
+    /// on jj it shows in both.
     pub async fn diff_stat(&self) -> Result<DiffStat> {
         match &self.backend {
             Backend::Git(g) => git_backend::diff_stat(g, &self.cwd).await,
@@ -562,7 +568,7 @@ mod tests {
         repo.rename_branch("old", "new").await.unwrap();
         assert_eq!(
             rec.only_call().args_str(),
-            ["bookmark", "rename", "old", "new"]
+            ["bookmark", "rename", "old", "new", "--color", "never"]
         );
     }
 }

@@ -25,7 +25,13 @@ crates; tag releases as `vcs-jj-v<version>`.
   failures (3 attempts, 500 ms backoff).
 
 ### Fixed
--
+- Every `jj` invocation now forces `--color never`, so a user's
+  `ui.color = "always"` config can no longer wrap templated output (and the error
+  text classified by `is_transient_fetch_error`) in ANSI escapes and break parsing.
+- A change description containing a literal tab is no longer truncated when parsing
+  `jj log` template rows (`splitn` keeps the remainder).
+- `diff_summary` parenthesises each endpoint of the `<from>..<to>` revset range, so
+  a compound revset keeps its meaning instead of rebinding by operator precedence.
 
 ## [0.3.1] - 2026-06-03
 

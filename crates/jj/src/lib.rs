@@ -294,6 +294,22 @@ processkit::cli_client!(
     pub struct Jj => BINARY
 );
 
+impl<R: ProcessRunner> Jj<R> {
+    /// A repo-scoped `jj` command with `--color never` forced on. jj honours
+    /// `ui.color = "always"` from user config even when its output is piped, which
+    /// would wrap our templated output — and the command error text we classify —
+    /// in ANSI escapes and break parsing; `--color never` is the only thing that
+    /// overrides that config (`NO_COLOR`/`CLICOLOR` do not). It is a global flag,
+    /// appended here (no jj subcommand takes a trailing `--`, so this is safe).
+    fn cmd_in<I, S>(&self, dir: &Path, args: I) -> processkit::Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.core.command_in(dir, args).arg("--color").arg("never")
+    }
+}
+
 #[async_trait::async_trait]
 impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn run(&self, args: &[String]) -> Result<String> {
@@ -313,21 +329,21 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         // changes that `jj status` renders for humans: one `<letter> <path>` line.
         self.core
             .parse(
-                self.core.command_in(dir, ["diff", "-r", "@", "--summary"]),
+                self.cmd_in(dir, ["diff", "-r", "@", "--summary"]),
                 parse::parse_diff_summary,
             )
             .await
     }
 
     async fn status_text(&self, dir: &Path) -> Result<String> {
-        self.core.text(self.core.command_in(dir, ["status"])).await
+        self.core.text(self.cmd_in(dir, ["status"])).await
     }
 
     async fn log(&self, dir: &Path, revset: &str, max: usize) -> Result<Vec<Change>> {
         let n = format!("-n{max}");
         self.core
             .parse(
-                self.core.command_in(
+                self.cmd_in(
                     dir,
                     [
                         "log",
@@ -354,29 +370,26 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
 
     async fn describe(&self, dir: &Path, message: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["describe", "-m", message]))
+            .unit(self.cmd_in(dir, ["describe", "-m", message]))
             .await
     }
 
     async fn describe_rev(&self, dir: &Path, revset: &str, message: &str) -> Result<()> {
         self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["describe", "-r", revset, "-m", message]),
-            )
+            .unit(self.cmd_in(dir, ["describe", "-r", revset, "-m", message]))
             .await
     }
 
     async fn new_change(&self, dir: &Path, message: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["new", "-m", message]))
+            .unit(self.cmd_in(dir, ["new", "-m", message]))
             .await
     }
 
     async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>> {
         self.core
             .parse(
-                self.core.command_in(dir, ["bookmark", "list"]),
+                self.cmd_in(dir, ["bookmark", "list"]),
                 parse::parse_bookmarks,
             )
             .await
@@ -385,7 +398,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn bookmarks_all(&self, dir: &Path) -> Result<Vec<BookmarkRef>> {
         self.core
             .parse(
-                self.core.command_in(
+                self.cmd_in(
                     dir,
                     ["bookmark", "list", "-a", "-T", parse::BOOKMARK_ALL_TEMPLATE],
                 ),
@@ -397,25 +410,19 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn bookmark_track(&self, dir: &Path, name: &str, remote: &str) -> Result<()> {
         let target = format!("{name}@{remote}");
         self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["bookmark", "track", target.as_str()]),
-            )
+            .unit(self.cmd_in(dir, ["bookmark", "track", target.as_str()]))
             .await
     }
 
     async fn bookmark_set(&self, dir: &Path, name: &str, revision: &str) -> Result<()> {
         self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["bookmark", "set", name, "-r", revision]),
-            )
+            .unit(self.cmd_in(dir, ["bookmark", "set", name, "-r", revision]))
             .await
     }
 
     async fn git_fetch(&self, dir: &Path) -> Result<()> {
         // Idempotent → `retry` replays it on a transient (network) failure.
-        let cmd = self.core.command_in(dir, ["git", "fetch"]).retry(
+        let cmd = self.cmd_in(dir, ["git", "fetch"]).retry(
             FETCH_ATTEMPTS,
             FETCH_BACKOFF,
             is_transient_fetch_error,
@@ -429,19 +436,19 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             args.push("-b");
             args.push(name);
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn root(&self, dir: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(
-            self.core.text(self.core.command_in(dir, ["root"])).await?,
+            self.core.text(self.cmd_in(dir, ["root"])).await?,
         ))
     }
 
     async fn current_bookmark(&self, dir: &Path) -> Result<Option<String>> {
         let out = self
             .core
-            .text(self.core.command_in(
+            .text(self.cmd_in(
                 dir,
                 [
                     "log",
@@ -461,7 +468,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn trunk(&self, dir: &Path) -> Result<Option<String>> {
         let out = self
             .core
-            .text(self.core.command_in(
+            .text(self.cmd_in(
                 dir,
                 [
                     "log",
@@ -480,22 +487,19 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
 
     async fn bookmark_create(&self, dir: &Path, name: &str, revision: &str) -> Result<()> {
         self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["bookmark", "create", name, "-r", revision]),
-            )
+            .unit(self.cmd_in(dir, ["bookmark", "create", name, "-r", revision]))
             .await
     }
 
     async fn bookmark_rename(&self, dir: &Path, old: &str, new: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["bookmark", "rename", old, new]))
+            .unit(self.cmd_in(dir, ["bookmark", "rename", old, new]))
             .await
     }
 
     async fn bookmark_delete(&self, dir: &Path, name: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["bookmark", "delete", name]))
+            .unit(self.cmd_in(dir, ["bookmark", "delete", name]))
             .await
     }
 
@@ -510,15 +514,16 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         if allow_backwards {
             args.push("--allow-backwards");
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn diff_summary(&self, dir: &Path, from: &str, to: &str) -> Result<Vec<ChangedPath>> {
-        let range = format!("{from}..{to}");
+        // Parenthesise each endpoint so a compound revset (e.g. `x | y`) keeps its
+        // meaning inside the `..` range instead of binding by operator precedence.
+        let range = format!("({from})..({to})");
         self.core
             .parse(
-                self.core
-                    .command_in(dir, ["diff", "-r", range.as_str(), "--summary"]),
+                self.cmd_in(dir, ["diff", "-r", range.as_str(), "--summary"]),
                 parse::parse_diff_summary,
             )
             .await
@@ -527,7 +532,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn diff_stat(&self, dir: &Path, revset: &str) -> Result<DiffStat> {
         self.core
             .parse(
-                self.core.command_in(dir, ["diff", "-r", revset, "--stat"]),
+                self.cmd_in(dir, ["diff", "-r", revset, "--stat"]),
                 parse::parse_diff_stat,
             )
             .await
@@ -541,10 +546,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             DiffSpec::Rev(rev) => rev,
         };
         self.core
-            .text(
-                self.core
-                    .command_in(dir, ["diff", "-r", revset.as_str(), "--git"]),
-            )
+            .text(self.cmd_in(dir, ["diff", "-r", revset.as_str(), "--git"]))
             .await
     }
 
@@ -556,7 +558,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn commit_count(&self, dir: &Path, revset: &str) -> Result<usize> {
         self.core
             .parse(
-                self.core.command_in(
+                self.cmd_in(
                     dir,
                     [
                         "log",
@@ -575,7 +577,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn is_conflicted(&self, dir: &Path, revset: &str) -> Result<bool> {
         let out = self
             .core
-            .text(self.core.command_in(
+            .text(self.cmd_in(
                 dir,
                 [
                     "log",
@@ -617,28 +619,23 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         }
         args.push("-T".into());
         args.push(template.into());
-        self.core.text(self.core.command_in(dir, args)).await
+        self.core.text(self.cmd_in(dir, args)).await
     }
 
     async fn rebase(&self, dir: &Path, onto: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["rebase", "-d", onto]))
+            .unit(self.cmd_in(dir, ["rebase", "-d", onto]))
             .await
     }
 
     async fn rebase_branch(&self, dir: &Path, branch: &str, dest: &str) -> Result<()> {
         self.core
-            .unit(
-                self.core
-                    .command_in(dir, ["rebase", "-b", branch, "-d", dest]),
-            )
+            .unit(self.cmd_in(dir, ["rebase", "-b", branch, "-d", dest]))
             .await
     }
 
     async fn edit(&self, dir: &Path, revset: &str) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["edit", revset]))
-            .await
+        self.core.unit(self.cmd_in(dir, ["edit", revset])).await
     }
 
     async fn squash_into(
@@ -647,7 +644,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         into: &str,
         use_destination_message: bool,
     ) -> Result<()> {
-        let mut command = self.core.command_in(dir, ["squash", "--into", into]);
+        let mut command = self.cmd_in(dir, ["squash", "--into", into]);
         if use_destination_message {
             command = command.arg("--use-destination-message");
         }
@@ -657,7 +654,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn commit_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()> {
         let mut args: Vec<String> = vec!["commit".into(), "-m".into(), message.into()];
         args.extend(filesets.iter().map(|f| f.as_str().to_string()));
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn squash_paths(
@@ -679,7 +676,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             args.push("--use-destination-message".into());
         }
         args.extend(filesets.iter().map(|f| f.as_str().to_string()));
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn sparse_set(&self, dir: &Path, patterns: &[String]) -> Result<()> {
@@ -690,38 +687,33 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             args.push("--add".into());
             args.push(pattern.clone());
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn new_merge(&self, dir: &Path, message: &str, parents: Vec<String>) -> Result<()> {
         let mut args: Vec<String> = vec!["new".into(), "-m".into(), message.into()];
         args.extend(parents);
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.unit(self.cmd_in(dir, args)).await
     }
 
     async fn abandon(&self, dir: &Path, revset: &str) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["abandon", revset]))
-            .await
+        self.core.unit(self.cmd_in(dir, ["abandon", revset])).await
     }
 
     async fn git_fetch_branch(&self, dir: &Path, branch: &str) -> Result<()> {
         let cmd = self
-            .core
-            .command_in(dir, ["git", "fetch", "--remote", "origin", "-b", branch])
+            .cmd_in(dir, ["git", "fetch", "--remote", "origin", "-b", branch])
             .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
     }
 
     async fn git_import(&self, dir: &Path) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["git", "import"]))
-            .await
+        self.core.unit(self.cmd_in(dir, ["git", "import"])).await
     }
 
     async fn op_head(&self, dir: &Path) -> Result<String> {
         self.core
-            .text(self.core.command_in(
+            .text(self.cmd_in(
                 dir,
                 [
                     "op",
@@ -738,21 +730,18 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
 
     async fn op_restore(&self, dir: &Path, op_id: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["op", "restore", op_id]))
+            .unit(self.cmd_in(dir, ["op", "restore", op_id]))
             .await
     }
 
     async fn op_undo(&self, dir: &Path) -> Result<()> {
-        self.core
-            .unit(self.core.command_in(dir, ["op", "undo"]))
-            .await
+        self.core.unit(self.cmd_in(dir, ["op", "undo"])).await
     }
 
     async fn workspace_list(&self, dir: &Path) -> Result<Vec<Workspace>> {
         self.core
             .parse(
-                self.core
-                    .command_in(dir, ["workspace", "list", "-T", parse::WORKSPACE_TEMPLATE]),
+                self.cmd_in(dir, ["workspace", "list", "-T", parse::WORKSPACE_TEMPLATE]),
                 parse::parse_workspaces,
             )
             .await
@@ -764,12 +753,13 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             args.push("--name".into());
             args.push(n.to_string());
         }
-        Ok(PathBuf::from(
-            self.core.text(self.core.command_in(dir, args)).await?,
-        ))
+        Ok(PathBuf::from(self.core.text(self.cmd_in(dir, args)).await?))
     }
 
     async fn workspace_add(&self, dir: &Path, spec: WorkspaceAdd) -> Result<()> {
+        // Built directly on `command_in` (not `cmd_in`) because the trailing
+        // `--color never` must come after the chained value args, not between
+        // `--name` and its value.
         let mut command = self
             .core
             .command_in(dir, ["workspace", "add", "--name"])
@@ -779,13 +769,13 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         if let Some(mode) = spec.sparse_patterns {
             command = command.arg("--sparse-patterns").arg(mode.as_arg());
         }
-        command = command.arg(&spec.path);
+        command = command.arg(&spec.path).arg("--color").arg("never");
         self.core.unit(command).await
     }
 
     async fn workspace_forget(&self, dir: &Path, name: &str) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["workspace", "forget", name]))
+            .unit(self.cmd_in(dir, ["workspace", "forget", name]))
             .await
     }
 }
@@ -958,7 +948,17 @@ mod tests {
             .expect("workspace add");
         assert_eq!(
             rec.only_call().args_str(),
-            ["workspace", "add", "--name", "ws1", "-r", "main", "/wt"]
+            [
+                "workspace",
+                "add",
+                "--name",
+                "ws1",
+                "-r",
+                "main",
+                "/wt",
+                "--color",
+                "never"
+            ]
         );
     }
 
@@ -984,7 +984,9 @@ mod tests {
                 "main",
                 "--sparse-patterns",
                 "empty",
-                "/wt"
+                "/wt",
+                "--color",
+                "never"
             ]
         );
     }
@@ -1012,7 +1014,15 @@ mod tests {
         .expect("commit_paths");
         assert_eq!(
             rec.only_call().args_str(),
-            ["commit", "-m", "msg", "file:\"x|y.rs\"", "file:\"z.rs\""]
+            [
+                "commit",
+                "-m",
+                "msg",
+                "file:\"x|y.rs\"",
+                "file:\"z.rs\"",
+                "--color",
+                "never"
+            ]
         );
     }
 
@@ -1031,7 +1041,16 @@ mod tests {
         .expect("squash_paths");
         assert_eq!(
             rec.only_call().args_str(),
-            ["squash", "--from", "@", "--into", "feat", "file:\"a.rs\""]
+            [
+                "squash",
+                "--from",
+                "@",
+                "--into",
+                "feat",
+                "file:\"a.rs\"",
+                "--color",
+                "never"
+            ]
         );
     }
 
@@ -1057,7 +1076,9 @@ mod tests {
                 "--into",
                 "feat",
                 "--use-destination-message",
-                "file:\"a.rs\""
+                "file:\"a.rs\"",
+                "--color",
+                "never"
             ]
         );
     }
@@ -1071,7 +1092,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rec.only_call().args_str(),
-            ["describe", "-r", "feat", "-m", "msg"]
+            ["describe", "-r", "feat", "-m", "msg", "--color", "never"]
         );
 
         let rec = RecordingRunner::replying(Reply::ok(""));
@@ -1081,7 +1102,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rec.only_call().args_str(),
-            ["rebase", "-b", "feat", "-d", "main"]
+            ["rebase", "-b", "feat", "-d", "main", "--color", "never"]
         );
 
         let rec = RecordingRunner::replying(Reply::ok(""));
@@ -1091,7 +1112,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rec.only_call().args_str(),
-            ["bookmark", "track", "feat@origin"]
+            ["bookmark", "track", "feat@origin", "--color", "never"]
         );
     }
 
@@ -1125,7 +1146,9 @@ mod tests {
                 "--add",
                 "README.md",
                 "--add",
-                "lib"
+                "lib",
+                "--color",
+                "never"
             ]
         );
     }
@@ -1196,7 +1219,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             rec.only_call().args_str(),
-            ["bookmark", "move", "main", "--to", "@", "--allow-backwards"]
+            [
+                "bookmark",
+                "move",
+                "main",
+                "--to",
+                "@",
+                "--allow-backwards",
+                "--color",
+                "never"
+            ]
         );
     }
 
@@ -1207,7 +1239,10 @@ mod tests {
         jj.new_merge(Path::new("/r"), "m", vec!["p1".into(), "p2".into()])
             .await
             .unwrap();
-        assert_eq!(rec.only_call().args_str(), ["new", "-m", "m", "p1", "p2"]);
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["new", "-m", "m", "p1", "p2", "--color", "never"]
+        );
     }
 
     #[tokio::test]
@@ -1295,7 +1330,25 @@ mod tests {
         jj.diff_text(Path::new("."), DiffSpec::WorkingTree)
             .await
             .expect("diff_text");
-        assert_eq!(rec.only_call().args_str(), ["diff", "-r", "@", "--git"]);
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["diff", "-r", "@", "--git", "--color", "never"]
+        );
+    }
+
+    // Every repo-scoped command forces `--color never` so a user's
+    // `ui.color = "always"` config can't wrap parsed output in ANSI escapes.
+    #[tokio::test]
+    async fn commands_force_color_off() {
+        let rec = RecordingRunner::replying(Reply::ok("x\n"));
+        let jj = Jj::with_runner(&rec);
+        jj.status_text(Path::new(".")).await.expect("status_text");
+        let args = rec.only_call().args_str();
+        let pos = args.iter().position(|a| a == "--color");
+        assert_eq!(
+            pos.map(|p| args.get(p + 1).map(String::as_str)),
+            Some(Some("never"))
+        );
     }
 
     // Hermetic: real diff() arg-building (`Rev`) + the ported parser against

@@ -33,7 +33,8 @@ crates; tag releases as `vcs-git-v<version>`.
   API change, but an unexpected exit code now carries the real captured output.
 
 ### Fixed
--
+- `merge_no_commit` no longer builds the mutually-exclusive `--squash --no-ff`
+  pair (which git rejects); `squash` takes precedence (it never fast-forwards).
 
 ## [0.3.1] - 2026-06-03
 

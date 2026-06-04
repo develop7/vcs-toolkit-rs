@@ -813,10 +813,11 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         no_ff: bool,
     ) -> Result<()> {
         let mut args: Vec<&str> = vec!["merge", "--no-commit"];
+        // `--squash` and `--no-ff` are mutually exclusive (git rejects the pair);
+        // a squash never fast-forwards anyway, so it takes precedence.
         if squash {
             args.push("--squash");
-        }
-        if no_ff {
+        } else if no_ff {
             args.push("--no-ff");
         }
         args.push(branch);

@@ -163,7 +163,9 @@ pub(crate) fn parse_changes(output: &str) -> Vec<Change> {
         .lines()
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
-            let mut fields = line.split('\t');
+            // `splitn(4)` so the trailing description keeps any literal tabs it
+            // contains rather than being truncated at the first one.
+            let mut fields = line.splitn(4, '\t');
             let change_id = fields.next()?.to_string();
             let commit_id = fields.next()?.to_string();
             let empty = fields.next()? == "true";
@@ -460,6 +462,15 @@ mod tests {
         // Undescribed, empty change.
         assert!(got[1].empty);
         assert_eq!(got[1].description, "");
+    }
+
+    // A literal tab inside the (first-line) description must not truncate it:
+    // `splitn(4)` keeps the remainder intact.
+    #[test]
+    fn changes_keep_tab_in_description() {
+        let got = parse_changes("kztuxlro\t38e00654\tfalse\tcol1\tcol2\n");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].description, "col1\tcol2");
     }
 
     #[test]
