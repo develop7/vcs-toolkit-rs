@@ -10,11 +10,24 @@ crates; tag releases as `vcs-core-v<version>`.
 ## [Unreleased]
 
 ### Added
+- `Repo::git_at()` / `Repo::jj_at()` — the backend client bound to the handle's
+  `cwd` (`GitAt`/`JjAt`), so tool-specific calls drop the `dir` argument:
+  `repo.git_at()?.merge_continue().await?`. For another worktree, bind the
+  re-anchored handle first (`let wt = repo.at(path); wt.git_at()…`).
+- Wider common surface: `checkout`, `rebase`, `fetch_remote_branch`, and
+  `in_progress_state` → `OperationState` (a backend-agnostic merge/rebase/conflict
+  state), so consumers stop re-implementing git-vs-jj dispatch for them.
+- `VcsRepo` trait over the common surface, so a consumer can hold a
+  `Box<dyn VcsRepo>` / `&dyn VcsRepo` instead of threading the runner generic.
+- `Error::is_conflict()` / `is_nothing_to_commit()` / `is_transient_fetch()` —
+  classify a failure without matching on `processkit::Error` internals.
 - `Repo::cleanup_worktree_blocking(path)` — synchronous, best-effort worktree
   removal for a `Drop` guard that can't `.await` (git: `worktree remove --force`;
   jj: resolve the workspace name by path, delete the dir, `workspace forget`).
 
 ### Changed
+- `trunk()` now falls back to a local `main`, then `master`, when the backend has
+  no native trunk (git `origin/HEAD` unset / jj `trunk()` unresolved).
 - Requires `vcs-git` / `vcs-jj` **0.4** (for the `blocking` helpers it dispatches
   to). See AGENTS.md "Releasing" for the two-phase release coordination.
 - Bumped `processkit` to 0.6 (no code change).

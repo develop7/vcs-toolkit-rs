@@ -178,6 +178,9 @@ pub trait GitApi: Send + Sync {
     async fn log_range(&self, dir: &Path, range: &str, max: usize) -> Result<Vec<Commit>>;
     /// Resolve a revision to a full hash (`git rev-parse <rev>`).
     async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String>;
+    /// Resolve a revision to its abbreviated hash (`git rev-parse --short <rev>`) —
+    /// e.g. to label a detached HEAD.
+    async fn rev_parse_short(&self, dir: &Path, rev: &str) -> Result<String>;
     /// Initialise a repository (`git init`).
     async fn init(&self, dir: &Path) -> Result<()>;
     /// Stage `paths` (`git add -- <paths>`).
@@ -429,6 +432,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String> {
         self.core
             .text(self.core.command_in(dir, ["rev-parse", rev]))
+            .await
+    }
+
+    async fn rev_parse_short(&self, dir: &Path, rev: &str) -> Result<String> {
+        self.core
+            .text(self.core.command_in(dir, ["rev-parse", "--short", rev]))
             .await
     }
 
@@ -1019,6 +1028,14 @@ impl<R: ProcessRunner> Git<R> {
         self.core.capture(self.core.command(args)).await
     }
 
+    /// Bind this client to `dir`, returning a [`GitAt`] handle whose methods omit
+    /// the `dir` argument: `git.at(dir).status()` runs [`status`](GitApi::status)
+    /// against `dir`. The dir-taking [`GitApi`] methods stay on [`Git`] for
+    /// driving many directories (e.g. linked worktrees) from one client.
+    pub fn at<'a>(&'a self, dir: &'a Path) -> GitAt<'a, R> {
+        GitAt { git: self, dir }
+    }
+
     /// `git_dir` resolved to an absolute path — `rev-parse --git-dir` may report
     /// it relative to `dir` (e.g. `.git`), which the filesystem probes need joined.
     async fn resolved_git_dir(&self, dir: &Path) -> Result<PathBuf> {
@@ -1032,6 +1049,121 @@ impl<R: ProcessRunner> Git<R> {
         } else {
             dir.join(git_dir)
         })
+    }
+}
+
+/// A [`Git`] client with a working directory bound, so calls drop the leading
+/// `dir` argument — `git.at(dir).status()` is `git.status(dir)`. Construct one
+/// with [`Git::at`] (or, through the facade, `vcs_core::Repo::git_at`). Cheap to
+/// copy: it only borrows the client and the path.
+pub struct GitAt<'a, R: ProcessRunner = processkit::JobRunner> {
+    git: &'a Git<R>,
+    dir: &'a Path,
+}
+
+// Hand-written rather than derived: the view only holds two references, so it is
+// `Copy` for *every* runner. `#[derive(Copy)]` would add a spurious `R: Copy`
+// bound that the real default `JobRunner` doesn't satisfy, silently dropping
+// `Copy` on the production `Repo::git_at()` handle.
+impl<R: ProcessRunner> Clone for GitAt<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<R: ProcessRunner> Copy for GitAt<'_, R> {}
+
+/// Generate [`GitAt`] forwarders from a method list: `bare` methods forward
+/// verbatim, `dir` methods inject `self.dir` as the first argument.
+macro_rules! git_at_forwarders {
+    (
+        bare { $( fn $bn:ident( $($ba:ident: $bt:ty),* $(,)? ) -> $br:ty; )* }
+        dir  { $( fn $dn:ident( $($da:ident: $dt:ty),* $(,)? ) -> $dr:ty; )* }
+    ) => {
+        impl<'a, R: ProcessRunner> GitAt<'a, R> {
+            $(
+                #[doc = concat!("Bound form of [`Git`]'s `", stringify!($bn), "`.")]
+                pub async fn $bn(&self, $($ba: $bt),*) -> $br {
+                    self.git.$bn($($ba),*).await
+                }
+            )*
+            $(
+                #[doc = concat!("Bound form of [`Git`]'s `", stringify!($dn), "` (with `dir` pre-bound).")]
+                pub async fn $dn(&self, $($da: $dt),*) -> $dr {
+                    self.git.$dn(self.dir, $($da),*).await
+                }
+            )*
+        }
+    };
+}
+
+git_at_forwarders! {
+    bare {
+        fn run(args: &[String]) -> Result<String>;
+        fn run_raw(args: &[String]) -> Result<ProcessResult<String>>;
+        fn run_args(args: &[&str]) -> Result<String>;
+        fn run_raw_args(args: &[&str]) -> Result<ProcessResult<String>>;
+        fn version() -> Result<String>;
+    }
+    dir {
+        fn status() -> Result<Vec<StatusEntry>>;
+        fn status_text() -> Result<String>;
+        fn current_branch() -> Result<String>;
+        fn branches() -> Result<Vec<Branch>>;
+        fn log(max: usize) -> Result<Vec<Commit>>;
+        fn log_range(range: &str, max: usize) -> Result<Vec<Commit>>;
+        fn rev_parse(rev: &str) -> Result<String>;
+        fn rev_parse_short(rev: &str) -> Result<String>;
+        fn init() -> Result<()>;
+        fn add(paths: &[PathBuf]) -> Result<()>;
+        fn commit(message: &str) -> Result<()>;
+        fn create_branch(name: &str) -> Result<()>;
+        fn checkout(reference: &str) -> Result<()>;
+        fn checkout_detach(commit: &str) -> Result<()>;
+        fn commit_paths(paths: &[PathBuf], message: &str, amend: bool) -> Result<()>;
+        fn last_commit_message() -> Result<String>;
+        fn is_unborn() -> Result<bool>;
+        fn diff_is_empty() -> Result<bool>;
+        fn common_dir() -> Result<PathBuf>;
+        fn git_dir() -> Result<PathBuf>;
+        fn resolve_commit(rev: &str) -> Result<String>;
+        fn remote_head_branch() -> Result<Option<String>>;
+        fn branch_exists(name: &str) -> Result<bool>;
+        fn remote_branch_exists(name: &str) -> Result<bool>;
+        fn remote_url(remote: &str) -> Result<String>;
+        fn upstream() -> Result<Option<String>>;
+        fn remote_branches(remote: &str) -> Result<Vec<String>>;
+        fn is_merged(branch: &str, target: &str) -> Result<bool>;
+        fn set_upstream(branch: &str, upstream: &str) -> Result<()>;
+        fn delete_branch(name: &str, force: bool) -> Result<()>;
+        fn rename_branch(old: &str, new: &str) -> Result<()>;
+        fn rev_list_count(range: &str) -> Result<usize>;
+        fn diff_range_is_empty(range: &str) -> Result<bool>;
+        fn diff_stat(range: &str) -> Result<DiffStat>;
+        fn diff_text(spec: DiffSpec) -> Result<String>;
+        fn diff(spec: DiffSpec) -> Result<Vec<FileDiff>>;
+        fn staged_is_empty() -> Result<bool>;
+        fn is_rebase_in_progress() -> Result<bool>;
+        fn is_merge_in_progress() -> Result<bool>;
+        fn fetch() -> Result<()>;
+        fn fetch_remote_branch(branch: &str) -> Result<()>;
+        fn push(spec: GitPush) -> Result<()>;
+        fn merge_squash(branch: &str) -> Result<()>;
+        fn merge_commit(branch: &str, no_ff: bool, message: Option<String>) -> Result<()>;
+        fn merge_no_commit(branch: &str, squash: bool, no_ff: bool) -> Result<()>;
+        fn merge_abort() -> Result<()>;
+        fn merge_continue() -> Result<()>;
+        fn reset_merge() -> Result<()>;
+        fn reset_hard(rev: &str) -> Result<()>;
+        fn rebase(onto: &str) -> Result<()>;
+        fn rebase_abort() -> Result<()>;
+        fn rebase_continue() -> Result<()>;
+        fn stash_push(include_untracked: bool) -> Result<()>;
+        fn stash_pop() -> Result<()>;
+        fn worktree_list() -> Result<Vec<Worktree>>;
+        fn worktree_add(spec: WorktreeAdd) -> Result<()>;
+        fn worktree_remove(path: &Path, force: bool) -> Result<()>;
+        fn worktree_move(from: &Path, to: &Path) -> Result<()>;
+        fn worktree_prune() -> Result<()>;
     }
 }
 
@@ -1071,6 +1203,44 @@ mod tests {
         assert_eq!(BINARY, "git");
     }
 
+    // Compile-time guard: the bound view must stay `Copy` for the *default*
+    // `JobRunner` (the production `Repo::git_at()` handle), not just for the
+    // `&RecordingRunner` the other tests use. A derived `Copy` would regress this.
+    #[allow(dead_code)]
+    fn bound_view_is_copy_for_default_runner() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<GitAt<'static, processkit::JobRunner>>();
+    }
+
+    // The bound view (`git.at(dir)`) must produce byte-identical argv to the
+    // dir-taking call (`git.method(dir, …)`) — the forwarder injects `self.dir`
+    // in the right place and nothing else changes.
+    #[tokio::test]
+    async fn bound_view_matches_dir_taking_calls() {
+        let dir = Path::new("/repo");
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+
+        // A method with trailing args (dir injected first).
+        git.merge_commit(dir, "feat", true, None).await.unwrap();
+        git.at(dir).merge_commit("feat", true, None).await.unwrap();
+        // A method taking a path arg after dir.
+        git.worktree_remove(dir, Path::new("/wt"), true)
+            .await
+            .unwrap();
+        git.at(dir)
+            .worktree_remove(Path::new("/wt"), true)
+            .await
+            .unwrap();
+
+        let calls = rec.calls();
+        assert_eq!(calls[0].args_str(), calls[1].args_str());
+        assert_eq!(calls[2].args_str(), calls[3].args_str());
+        // The bound calls also carried the bound dir as their working directory.
+        assert_eq!(calls[1].cwd.as_deref(), Some(dir.as_os_str()));
+        assert_eq!(calls[3].cwd.as_deref(), Some(dir.as_os_str()));
+    }
+
     // Hermetic: the real status() command-building + porcelain parsing run
     // against a scripted runner — no `git` binary needed, so this runs on CI.
     #[tokio::test]
@@ -1082,6 +1252,15 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].code, " M");
         assert_eq!(entries[1].path, "b.rs");
+    }
+
+    #[tokio::test]
+    async fn rev_parse_short_builds_short_flag() {
+        let rec = RecordingRunner::replying(Reply::ok("a1b2c3d\n"));
+        let git = Git::with_runner(&rec);
+        let out = git.rev_parse_short(Path::new("/r"), "HEAD").await.unwrap();
+        assert_eq!(out, "a1b2c3d");
+        assert_eq!(rec.only_call().args_str(), ["rev-parse", "--short", "HEAD"]);
     }
 
     // A non-zero exit surfaces as a structured `Error::Exit`.
@@ -1582,9 +1761,6 @@ mod tests {
         );
     }
 
-    // The consumer-facing mock seam: a function depending on `&dyn GitApi` is
-    // tested with a generated mock.
-    #[cfg(feature = "mock")]
     // `fetch` must disable the credential prompt so it fails fast (never hangs) on
     // a remote needing auth — matching the other remote ops.
     #[tokio::test]
@@ -1621,6 +1797,9 @@ mod tests {
         assert_eq!(rec.calls().len(), 1);
     }
 
+    // The consumer-facing mock seam: a function depending on `&dyn GitApi` is
+    // tested with a generated mock.
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn consumer_mocks_the_interface() {
         async fn on_branch(git: &dyn GitApi, want: &str) -> bool {

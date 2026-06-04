@@ -157,6 +157,12 @@ pub(crate) const CONFLICT_TEMPLATE: &str = "if(conflict, \"1\", \"0\")";
 /// revset.
 pub(crate) const COUNT_TEMPLATE: &str = "commit_id.short() ++ \"\\n\"";
 
+/// `jj log -T` template for [`reachable_bookmarks`](crate::JjApi::reachable_bookmarks):
+/// the commit's local bookmark names (space-joined; jj names can't contain spaces)
+/// then a tab then the short commit id.
+pub(crate) const REACHABLE_BOOKMARKS_TEMPLATE: &str =
+    "local_bookmarks.map(|b| b.name()).join(\" \") ++ \"\\t\" ++ commit_id.short() ++ \"\\n\"";
+
 /// Parse rows produced by [`CHANGE_TEMPLATE`].
 pub(crate) fn parse_changes(output: &str) -> Vec<Change> {
     output
@@ -223,6 +229,39 @@ pub(crate) fn parse_bookmarks_all(output: &str) -> Vec<BookmarkRef> {
                 target,
                 tracked,
             })
+        })
+        .collect()
+}
+
+/// Parse rows produced by [`REACHABLE_BOOKMARKS_TEMPLATE`]:
+/// `<name>[ <name>…]\t<commit>`. A commit with several bookmarks yields one
+/// [`Bookmark`] per name, all sharing that commit as the target. A row with no
+/// bookmark names (empty first field) contributes nothing.
+pub(crate) fn parse_reachable_bookmarks(output: &str) -> Vec<Bookmark> {
+    let mut out = Vec::new();
+    for line in output.lines().filter(|l| !l.is_empty()) {
+        let mut fields = line.splitn(2, '\t');
+        let names = fields.next().unwrap_or("");
+        let target = fields.next().unwrap_or("");
+        for name in names.split_whitespace() {
+            out.push(Bookmark {
+                name: name.to_string(),
+                target: target.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Parse `jj resolve --list` output: each line is a conflicted path left-aligned
+/// in a column, then a run of spaces, then a human conflict description. Take the
+/// path (the text before the first 2-space gap).
+pub(crate) fn parse_resolve_list(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let path = line.split("  ").next().unwrap_or(line).trim();
+            (!path.is_empty()).then(|| path.to_string())
         })
         .collect()
 }
@@ -471,6 +510,35 @@ mod tests {
         let got = parse_changes("kztuxlro\t38e00654\tfalse\tcol1\tcol2\n");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].description, "col1\tcol2");
+    }
+
+    // A commit carrying several bookmarks fans out to one entry each, all sharing
+    // the commit; a bookmark-less row contributes nothing.
+    #[test]
+    fn reachable_bookmarks_fan_out_per_name() {
+        let got = parse_reachable_bookmarks("main feat\tabc123\n\tdef456\n");
+        assert_eq!(
+            got,
+            vec![
+                Bookmark {
+                    name: "main".into(),
+                    target: "abc123".into()
+                },
+                Bookmark {
+                    name: "feat".into(),
+                    target: "abc123".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_list_extracts_paths_before_description() {
+        let got = parse_resolve_list(
+            "src/a.rs    2-sided conflict\nb.txt    2-sided conflict including 1 deletion\n",
+        );
+        assert_eq!(got, vec!["src/a.rs".to_string(), "b.txt".to_string()]);
+        assert!(parse_resolve_list("").is_empty());
     }
 
     #[test]

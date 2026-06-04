@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use processkit::ProcessRunner;
 use vcs_jj::{ChangedPath, Jj, JjApi, JjFileset, WorkspaceAdd};
 
-use crate::dto::{ChangeKind, CreateOutcome, DiffStat, FileChange, WorktreeInfo};
+use crate::dto::{ChangeKind, CreateOutcome, DiffStat, FileChange, OperationState, WorktreeInfo};
 use crate::error::{Error, Result};
 
 pub(crate) async fn current_branch<R: ProcessRunner>(
@@ -103,6 +103,44 @@ pub(crate) async fn commit_paths<R: ProcessRunner>(
 pub(crate) async fn fetch<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result<()> {
     jj.git_fetch(dir).await?;
     Ok(())
+}
+
+pub(crate) async fn fetch_remote_branch<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+    branch: &str,
+) -> Result<()> {
+    jj.git_fetch_branch(dir, branch).await?;
+    Ok(())
+}
+
+pub(crate) async fn checkout<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+    reference: &str,
+) -> Result<()> {
+    // jj has no "switch branch"; moving `@` to the bookmark/revision is the
+    // equivalent of a git checkout.
+    jj.edit(dir, reference).await?;
+    Ok(())
+}
+
+pub(crate) async fn rebase<R: ProcessRunner>(jj: &Jj<R>, dir: &Path, onto: &str) -> Result<()> {
+    jj.rebase(dir, onto).await?;
+    Ok(())
+}
+
+pub(crate) async fn in_progress_state<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+) -> Result<OperationState> {
+    // jj operations are atomic — there is no paused merge/rebase. A conflict is
+    // recorded on the working-copy change instead.
+    if jj.has_workingcopy_conflict(dir).await? {
+        Ok(OperationState::Conflict)
+    } else {
+        Ok(OperationState::Clear)
+    }
 }
 
 pub(crate) async fn list_worktrees<R: ProcessRunner>(

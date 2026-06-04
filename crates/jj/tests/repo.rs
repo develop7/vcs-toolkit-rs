@@ -156,3 +156,56 @@ async fn workspace_add_list_forget_cycle() {
         "workspace should be gone after forget"
     );
 }
+
+// New surface against a real jj: the bound view, `reachable_bookmarks`, and
+// `resolve_list` (empty when the revision has no conflicts).
+#[tokio::test]
+#[ignore = "requires the jj binary"]
+async fn reachable_bookmarks_and_resolve_list_cycle() {
+    let tmp = TempDir::new("reachable");
+    let dir = tmp.path();
+    init_repo(dir);
+    let jj = Jj::new();
+
+    jj.describe(dir, "base").await.expect("describe");
+    jj.bookmark_create(dir, "feature", "@")
+        .await
+        .expect("bookmark create");
+
+    // The bound view drops the `dir` argument and resolves the same way.
+    let reachable = jj.at(dir).reachable_bookmarks().await.expect("reachable");
+    assert!(
+        reachable.iter().any(|b| b.name == "feature"),
+        "got {reachable:?}"
+    );
+
+    // A clean working copy has no conflicts → empty list (jj exits non-zero).
+    assert!(
+        jj.resolve_list(dir, "@")
+            .await
+            .expect("resolve_list")
+            .is_empty()
+    );
+
+    // Build a real conflict: two children of base that edit the same file,
+    // merged. `resolve_list` must return the actual conflicted path (this is the
+    // case the format parser has to get right).
+    let jj_raw = |args: &[&str]| {
+        Command::new(vcs_jj::BINARY)
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .expect("jj");
+    };
+    std::fs::write(dir.join("c.txt"), "base\n").expect("write base");
+    jj_raw(&["new", "root()", "-m", "side-a"]);
+    std::fs::write(dir.join("c.txt"), "aaa\n").expect("write a");
+    let a = jj.current_change(dir).await.expect("a").change_id;
+    jj_raw(&["new", "root()", "-m", "side-b"]);
+    std::fs::write(dir.join("c.txt"), "bbb\n").expect("write b");
+    let b = jj.current_change(dir).await.expect("b").change_id;
+    jj_raw(&["new", &a, &b, "-m", "merge"]);
+
+    let conflicts = jj.resolve_list(dir, "@").await.expect("resolve_list");
+    assert_eq!(conflicts, ["c.txt"], "got {conflicts:?}");
+}

@@ -203,16 +203,108 @@ impl<R: ProcessRunner> GitHub<R> {
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
         self.core.capture(self.core.command(args)).await
     }
+
+    /// Bind this client to `dir`, returning a [`GitHubAt`] handle whose `dir`-taking
+    /// methods omit that argument: `gh.at(dir).pr_list()` runs
+    /// [`pr_list`](GitHubApi::pr_list) against `dir`.
+    pub fn at<'a>(&'a self, dir: &'a Path) -> GitHubAt<'a, R> {
+        GitHubAt { gh: self, dir }
+    }
+}
+
+/// A [`GitHub`] client with a working directory bound, so its repo-scoped methods
+/// drop the leading `dir` argument (`gh.at(dir).pr_list()`). Construct one with
+/// [`GitHub::at`].
+pub struct GitHubAt<'a, R: ProcessRunner = processkit::JobRunner> {
+    gh: &'a GitHub<R>,
+    dir: &'a Path,
+}
+
+// Hand-written rather than derived: holding only references, the view is `Copy`
+// for *every* runner. `#[derive(Copy)]` would add a spurious `R: Copy` bound the
+// default `JobRunner` doesn't satisfy, silently dropping `Copy` on the handle.
+impl<R: ProcessRunner> Clone for GitHubAt<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<R: ProcessRunner> Copy for GitHubAt<'_, R> {}
+
+/// Generate [`GitHubAt`] forwarders: `bare` methods forward verbatim, `dir`
+/// methods inject `self.dir` as the first argument.
+macro_rules! github_at_forwarders {
+    (
+        bare { $( fn $bn:ident( $($ba:ident: $bt:ty),* $(,)? ) -> $br:ty; )* }
+        dir  { $( fn $dn:ident( $($da:ident: $dt:ty),* $(,)? ) -> $dr:ty; )* }
+    ) => {
+        impl<'a, R: ProcessRunner> GitHubAt<'a, R> {
+            $(
+                #[doc = concat!("Bound form of [`GitHub`]'s `", stringify!($bn), "`.")]
+                pub async fn $bn(&self, $($ba: $bt),*) -> $br {
+                    self.gh.$bn($($ba),*).await
+                }
+            )*
+            $(
+                #[doc = concat!("Bound form of [`GitHub`]'s `", stringify!($dn), "` (with `dir` pre-bound).")]
+                pub async fn $dn(&self, $($da: $dt),*) -> $dr {
+                    self.gh.$dn(self.dir, $($da),*).await
+                }
+            )*
+        }
+    };
+}
+
+github_at_forwarders! {
+    bare {
+        fn run(args: &[String]) -> Result<String>;
+        fn run_raw(args: &[String]) -> Result<ProcessResult<String>>;
+        fn run_args(args: &[&str]) -> Result<String>;
+        fn run_raw_args(args: &[&str]) -> Result<ProcessResult<String>>;
+        fn version() -> Result<String>;
+        fn auth_status() -> Result<bool>;
+        fn api(endpoint: &str) -> Result<String>;
+    }
+    dir {
+        fn repo_view() -> Result<Repo>;
+        fn pr_list() -> Result<Vec<PullRequest>>;
+        fn pr_list_for_branch(head: &str, base: &str) -> Result<Vec<PullRequest>>;
+        fn pr_view(number: u64) -> Result<PullRequest>;
+        fn issue_list() -> Result<Vec<Issue>>;
+        fn pr_create(title: &str, body: &str, head: Option<String>, base: Option<String>) -> Result<String>;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use processkit::{Reply, ScriptedRunner};
+    use processkit::{RecordingRunner, Reply, ScriptedRunner};
 
     #[test]
     fn binary_name_is_gh() {
         assert_eq!(BINARY, "gh");
+    }
+
+    // Compile-time guard: the bound view stays `Copy` for the default `JobRunner`.
+    #[allow(dead_code)]
+    fn bound_view_is_copy_for_default_runner() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<GitHubAt<'static, processkit::JobRunner>>();
+    }
+
+    // The bound view (`gh.at(dir)`) must produce byte-identical argv to the
+    // dir-taking call.
+    #[tokio::test]
+    async fn bound_view_matches_dir_taking_calls() {
+        let dir = Path::new("/repo");
+        let rec = RecordingRunner::replying(Reply::ok("[]"));
+        let gh = GitHub::with_runner(&rec);
+
+        gh.pr_list_for_branch(dir, "feat", "main").await.unwrap();
+        gh.at(dir).pr_list_for_branch("feat", "main").await.unwrap();
+
+        let calls = rec.calls();
+        assert_eq!(calls[0].args_str(), calls[1].args_str());
+        assert_eq!(calls[1].cwd.as_deref(), Some(dir.as_os_str()));
     }
 
     #[tokio::test]

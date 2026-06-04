@@ -16,6 +16,9 @@ processkit.workspace = true
 # workspace; `version` is used when published independently.
 vcs-git = { path = "../git", version = "0.3" }
 vcs-jj = { path = "../jj", version = "0.3" }
+# `async fn` in the object-safe `VcsRepo` trait, so a consumer can hold a
+# `Box<dyn VcsRepo>` / `&dyn VcsRepo` instead of threading the runner generic.
+async-trait = "0.1"
 
 [features]
 # Forward to the underlying clients' `tracing` (a `debug` event per command).

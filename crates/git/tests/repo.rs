@@ -200,3 +200,34 @@ async fn worktree_add_list_remove_cycle() {
         "worktree should be gone after remove"
     );
 }
+
+// New surface against a real git: the bound view (`git.at(dir)`) resolves the
+// same as the dir-taking call, and `rev_parse_short` abbreviates HEAD.
+#[tokio::test]
+#[ignore = "requires the git binary"]
+async fn bound_view_and_rev_parse_short() {
+    let tmp = TempDir::new("bound");
+    let dir = tmp.path();
+    let git = Git::new();
+
+    git.init(dir).await.expect("init");
+    configure(dir);
+    std::fs::write(dir.join("f.txt"), "x\n").expect("write");
+    git.add(dir, &[PathBuf::from("f.txt")]).await.expect("add");
+    git.commit(dir, "c1").await.expect("commit");
+
+    // Bound view yields the same current branch as the dir-taking call.
+    let bound = git.at(dir);
+    assert_eq!(
+        bound.current_branch().await.expect("branch"),
+        git.current_branch(dir).await.expect("branch")
+    );
+
+    // `rev_parse_short` is a prefix of the full hash.
+    let full = git.rev_parse(dir, "HEAD").await.expect("rev_parse");
+    let short = bound.rev_parse_short("HEAD").await.expect("short");
+    assert!(
+        !short.is_empty() && full.starts_with(&short),
+        "{short} vs {full}"
+    );
+}

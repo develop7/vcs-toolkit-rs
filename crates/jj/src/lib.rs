@@ -156,6 +156,10 @@ pub trait JjApi: Send + Sync {
     async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>>;
     /// Local *and* remote-tracking bookmarks (`jj bookmark list -a`).
     async fn bookmarks_all(&self, dir: &Path) -> Result<Vec<BookmarkRef>>;
+    /// Local bookmarks on the nearest commits reachable from `@`
+    /// (`log -r 'heads(::@ & bookmarks())'`) — the candidate targets a commit
+    /// "belongs to". A commit carrying several bookmarks yields one entry each.
+    async fn reachable_bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>>;
     /// Track a remote bookmark (`jj bookmark track <name>@<remote>`).
     async fn bookmark_track(&self, dir: &Path, name: &str, remote: &str) -> Result<()>;
     /// Point a bookmark at `revision` (`jj bookmark set <name> -r <revision>`).
@@ -213,6 +217,9 @@ pub trait JjApi: Send + Sync {
     async fn is_conflicted(&self, dir: &Path, revset: &str) -> Result<bool>;
     /// Whether the working copy has unresolved conflicts (`jj status`).
     async fn has_workingcopy_conflict(&self, dir: &Path) -> Result<bool>;
+    /// Paths with unresolved conflicts in `revset` (`jj resolve --list -r <revset>`).
+    /// Empty when there are none.
+    async fn resolve_list(&self, dir: &Path, revset: &str) -> Result<Vec<String>>;
     /// Run an arbitrary templated `jj log` query and return raw stdout
     /// (`log -r <revset> --no-graph [--limit n] -T <template>`).
     async fn template_query(
@@ -403,6 +410,25 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
                     ["bookmark", "list", "-a", "-T", parse::BOOKMARK_ALL_TEMPLATE],
                 ),
                 parse::parse_bookmarks_all,
+            )
+            .await
+    }
+
+    async fn reachable_bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>> {
+        self.core
+            .parse(
+                self.cmd_in(
+                    dir,
+                    [
+                        "log",
+                        "-r",
+                        "heads(::@ & bookmarks())",
+                        "--no-graph",
+                        "-T",
+                        parse::REACHABLE_BOOKMARKS_TEMPLATE,
+                    ],
+                ),
+                parse::parse_reachable_bookmarks,
             )
             .await
     }
@@ -598,6 +624,25 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         // Ask the template engine directly rather than string-matching localized
         // `jj status` prose: `@` is conflicted iff its `conflict` flag is set.
         self.is_conflicted(dir, "@").await
+    }
+
+    async fn resolve_list(&self, dir: &Path, revset: &str) -> Result<Vec<String>> {
+        let res = self
+            .core
+            .capture(self.cmd_in(dir, ["resolve", "--list", "-r", revset]))
+            .await?;
+        match res.code() {
+            Some(0) => Ok(parse::parse_resolve_list(res.stdout())),
+            // jj exits non-zero with "No conflicts found …" when the revision is
+            // conflict-free — the one non-zero we read as an empty list. Any other
+            // failure (bad revset, not a repo, …) must surface, not masquerade as
+            // "no conflicts".
+            _ if res.stderr().contains("No conflicts") => Ok(Vec::new()),
+            _ => {
+                res.ensure_success()?;
+                Ok(Vec::new()) // unreachable: a non-zero exit always errors above.
+            }
+        }
     }
 
     async fn template_query(
@@ -837,6 +882,118 @@ impl<R: ProcessRunner> Jj<R> {
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
         self.core.capture(self.core.command(args)).await
     }
+
+    /// Bind this client to `dir`, returning a [`JjAt`] handle whose methods omit
+    /// the `dir` argument: `jj.at(dir).status()` runs [`status`](JjApi::status)
+    /// against `dir`. The dir-taking [`JjApi`] methods stay on [`Jj`] for driving
+    /// many directories (e.g. workspaces) from one client.
+    pub fn at<'a>(&'a self, dir: &'a Path) -> JjAt<'a, R> {
+        JjAt { jj: self, dir }
+    }
+}
+
+/// A [`Jj`] client with a working directory bound, so calls drop the leading
+/// `dir` argument — `jj.at(dir).status()` is `jj.status(dir)`. Construct one with
+/// [`Jj::at`] (or, through the facade, `vcs_core::Repo::jj_at`). Cheap to copy: it
+/// only borrows the client and the path.
+pub struct JjAt<'a, R: ProcessRunner = processkit::JobRunner> {
+    jj: &'a Jj<R>,
+    dir: &'a Path,
+}
+
+// Hand-written rather than derived: holding only references, the view is `Copy`
+// for *every* runner. `#[derive(Copy)]` would add a spurious `R: Copy` bound the
+// default `JobRunner` doesn't satisfy, silently dropping `Copy` on the production
+// handle.
+impl<R: ProcessRunner> Clone for JjAt<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<R: ProcessRunner> Copy for JjAt<'_, R> {}
+
+/// Generate [`JjAt`] forwarders from a method list: `bare` methods forward
+/// verbatim, `dir` methods inject `self.dir` as the first argument.
+macro_rules! jj_at_forwarders {
+    (
+        bare { $( fn $bn:ident( $($ba:ident: $bt:ty),* $(,)? ) -> $br:ty; )* }
+        dir  { $( fn $dn:ident( $($da:ident: $dt:ty),* $(,)? ) -> $dr:ty; )* }
+    ) => {
+        impl<'a, R: ProcessRunner> JjAt<'a, R> {
+            $(
+                #[doc = concat!("Bound form of [`Jj`]'s `", stringify!($bn), "`.")]
+                pub async fn $bn(&self, $($ba: $bt),*) -> $br {
+                    self.jj.$bn($($ba),*).await
+                }
+            )*
+            $(
+                #[doc = concat!("Bound form of [`Jj`]'s `", stringify!($dn), "` (with `dir` pre-bound).")]
+                pub async fn $dn(&self, $($da: $dt),*) -> $dr {
+                    self.jj.$dn(self.dir, $($da),*).await
+                }
+            )*
+        }
+    };
+}
+
+jj_at_forwarders! {
+    bare {
+        fn run(args: &[String]) -> Result<String>;
+        fn run_raw(args: &[String]) -> Result<ProcessResult<String>>;
+        fn run_args(args: &[&str]) -> Result<String>;
+        fn run_raw_args(args: &[&str]) -> Result<ProcessResult<String>>;
+        fn version() -> Result<String>;
+    }
+    dir {
+        fn status() -> Result<Vec<ChangedPath>>;
+        fn status_text() -> Result<String>;
+        fn log(revset: &str, max: usize) -> Result<Vec<Change>>;
+        fn current_change() -> Result<Change>;
+        fn describe(message: &str) -> Result<()>;
+        fn describe_rev(revset: &str, message: &str) -> Result<()>;
+        fn new_change(message: &str) -> Result<()>;
+        fn bookmarks() -> Result<Vec<Bookmark>>;
+        fn bookmarks_all() -> Result<Vec<BookmarkRef>>;
+        fn reachable_bookmarks() -> Result<Vec<Bookmark>>;
+        fn bookmark_track(name: &str, remote: &str) -> Result<()>;
+        fn bookmark_set(name: &str, revision: &str) -> Result<()>;
+        fn git_fetch() -> Result<()>;
+        fn git_push(bookmark: Option<String>) -> Result<()>;
+        fn root() -> Result<PathBuf>;
+        fn current_bookmark() -> Result<Option<String>>;
+        fn trunk() -> Result<Option<String>>;
+        fn bookmark_create(name: &str, revision: &str) -> Result<()>;
+        fn bookmark_rename(old: &str, new: &str) -> Result<()>;
+        fn bookmark_delete(name: &str) -> Result<()>;
+        fn bookmark_move(name: &str, to: &str, allow_backwards: bool) -> Result<()>;
+        fn diff_summary(from: &str, to: &str) -> Result<Vec<ChangedPath>>;
+        fn diff_stat(revset: &str) -> Result<DiffStat>;
+        fn diff_text(spec: DiffSpec) -> Result<String>;
+        fn diff(spec: DiffSpec) -> Result<Vec<FileDiff>>;
+        fn commit_count(revset: &str) -> Result<usize>;
+        fn is_conflicted(revset: &str) -> Result<bool>;
+        fn has_workingcopy_conflict() -> Result<bool>;
+        fn resolve_list(revset: &str) -> Result<Vec<String>>;
+        fn template_query(revset: &str, template: &str, limit: Option<usize>) -> Result<String>;
+        fn rebase(onto: &str) -> Result<()>;
+        fn rebase_branch(branch: &str, dest: &str) -> Result<()>;
+        fn edit(revset: &str) -> Result<()>;
+        fn squash_into(into: &str, use_destination_message: bool) -> Result<()>;
+        fn commit_paths(filesets: &[JjFileset], message: &str) -> Result<()>;
+        fn squash_paths(from: &str, into: &str, filesets: &[JjFileset], use_destination_message: bool) -> Result<()>;
+        fn sparse_set(patterns: &[String]) -> Result<()>;
+        fn new_merge(message: &str, parents: Vec<String>) -> Result<()>;
+        fn abandon(revset: &str) -> Result<()>;
+        fn git_fetch_branch(branch: &str) -> Result<()>;
+        fn git_import() -> Result<()>;
+        fn op_head() -> Result<String>;
+        fn op_restore(op_id: &str) -> Result<()>;
+        fn op_undo() -> Result<()>;
+        fn workspace_list() -> Result<Vec<Workspace>>;
+        fn workspace_root(name: Option<String>) -> Result<PathBuf>;
+        fn workspace_add(spec: WorkspaceAdd) -> Result<()>;
+        fn workspace_forget(name: &str) -> Result<()>;
+    }
 }
 
 /// Synchronous, best-effort helpers for contexts that cannot `.await` — chiefly
@@ -923,6 +1080,32 @@ mod tests {
     #[test]
     fn binary_name_is_jj() {
         assert_eq!(BINARY, "jj");
+    }
+
+    // Compile-time guard: the bound view stays `Copy` for the default `JobRunner`.
+    #[allow(dead_code)]
+    fn bound_view_is_copy_for_default_runner() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<JjAt<'static, processkit::JobRunner>>();
+    }
+
+    // The bound view (`jj.at(dir)`) must produce byte-identical argv to the
+    // dir-taking call — including the forced `--color never`.
+    #[tokio::test]
+    async fn bound_view_matches_dir_taking_calls() {
+        let dir = Path::new("/repo");
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let jj = Jj::with_runner(&rec);
+
+        jj.bookmark_move(dir, "main", "@", true).await.unwrap();
+        jj.at(dir).bookmark_move("main", "@", true).await.unwrap();
+        jj.describe_rev(dir, "feat", "msg").await.unwrap();
+        jj.at(dir).describe_rev("feat", "msg").await.unwrap();
+
+        let calls = rec.calls();
+        assert_eq!(calls[0].args_str(), calls[1].args_str());
+        assert_eq!(calls[2].args_str(), calls[3].args_str());
+        assert_eq!(calls[1].cwd.as_deref(), Some(dir.as_os_str()));
     }
 
     #[tokio::test]
@@ -1257,6 +1440,49 @@ mod tests {
     async fn commit_count_counts_template_lines() {
         let jj = Jj::with_runner(ScriptedRunner::new().on(["log"], Reply::ok("a\nb\nc\n")));
         assert_eq!(jj.commit_count(Path::new("."), "::@").await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn reachable_bookmarks_queries_heads_revset() {
+        let rec = RecordingRunner::replying(Reply::ok("main\tabc123\n"));
+        let jj = Jj::with_runner(&rec);
+        let got = jj.reachable_bookmarks(Path::new(".")).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "main");
+        let args = rec.only_call().args_str();
+        assert_eq!(
+            &args[..4],
+            &["log", "-r", "heads(::@ & bookmarks())", "--no-graph"]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_list_distinguishes_no_conflicts_from_errors() {
+        // The benign "no conflicts" non-zero exit → empty list.
+        let none = Jj::with_runner(ScriptedRunner::new().on(
+            ["resolve"],
+            Reply::fail(2, "Error: No conflicts found at this revision"),
+        ));
+        assert!(
+            none.resolve_list(Path::new("."), "@")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // A real failure (e.g. bad revset) must surface, not read as "no conflicts".
+        let bad = Jj::with_runner(ScriptedRunner::new().on(
+            ["resolve"],
+            Reply::fail(1, "Error: Revision `bogus` doesn't exist"),
+        ));
+        assert!(bad.resolve_list(Path::new("."), "bogus").await.is_err());
+        // Success with conflicts → parsed paths.
+        let some = Jj::with_runner(
+            ScriptedRunner::new().on(["resolve"], Reply::ok("a.rs    2-sided conflict\n")),
+        );
+        assert_eq!(
+            some.resolve_list(Path::new("."), "@").await.unwrap(),
+            ["a.rs"]
+        );
     }
 
     #[tokio::test]

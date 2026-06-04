@@ -10,7 +10,8 @@ crates; tag releases as `vcs-github-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- `GitHub::at(dir)` → `GitHubAt`, a cwd-bound view whose repo-scoped methods omit
+  the leading `dir` argument (`gh.at(dir).pr_list()`).
 
 ### Changed
 - Bumped `processkit` to 0.6; `auth_status` uses processkit's `probe()` (exit `0`/`1`

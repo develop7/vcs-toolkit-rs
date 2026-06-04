@@ -10,6 +10,10 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
+- `Git::at(dir)` → `GitAt`, a cwd-bound view whose methods omit the leading `dir`
+  argument (`git.at(dir).status()`), so a caller needn't thread `dir` through every
+  call. The dir-taking `GitApi` stays for driving many directories from one client.
+- `rev_parse_short` (`rev-parse --short <rev>`) — e.g. to label a detached HEAD.
 - `push(dir, GitPush)` (git had no push): a `GitPush` builder — `branch(name)` /
   `refspec(local, remote_branch)`, `.remote(_)`, `.set_upstream()`.
 - `upstream` (`@{u}`, `None` when unset), `set_upstream`, and `remote_branches`

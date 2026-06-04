@@ -6,7 +6,7 @@ use std::path::Path;
 use processkit::ProcessRunner;
 use vcs_git::{Git, GitApi, StatusEntry, WorktreeAdd};
 
-use crate::dto::{ChangeKind, CreateOutcome, DiffStat, FileChange, WorktreeInfo};
+use crate::dto::{ChangeKind, CreateOutcome, DiffStat, FileChange, OperationState, WorktreeInfo};
 use crate::error::Result;
 
 pub(crate) async fn current_branch<R: ProcessRunner>(
@@ -102,6 +102,44 @@ pub(crate) async fn commit_paths<R: ProcessRunner>(
 pub(crate) async fn fetch<R: ProcessRunner>(git: &Git<R>, dir: &Path) -> Result<()> {
     git.fetch(dir).await?;
     Ok(())
+}
+
+pub(crate) async fn fetch_remote_branch<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+    branch: &str,
+) -> Result<()> {
+    git.fetch_remote_branch(dir, branch).await?;
+    Ok(())
+}
+
+pub(crate) async fn checkout<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+    reference: &str,
+) -> Result<()> {
+    git.checkout(dir, reference).await?;
+    Ok(())
+}
+
+pub(crate) async fn rebase<R: ProcessRunner>(git: &Git<R>, dir: &Path, onto: &str) -> Result<()> {
+    git.rebase(dir, onto).await?;
+    Ok(())
+}
+
+pub(crate) async fn in_progress_state<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+) -> Result<OperationState> {
+    // git surfaces an interrupted operation as on-disk state; a merge and a rebase
+    // can't both be live, so report whichever is present.
+    if git.is_merge_in_progress(dir).await? {
+        Ok(OperationState::Merge)
+    } else if git.is_rebase_in_progress(dir).await? {
+        Ok(OperationState::Rebase)
+    } else {
+        Ok(OperationState::Clear)
+    }
 }
 
 pub(crate) async fn list_worktrees<R: ProcessRunner>(

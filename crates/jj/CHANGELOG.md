@@ -10,6 +10,14 @@ crates; tag releases as `vcs-jj-v<version>`.
 ## [Unreleased]
 
 ### Added
+- `Jj::at(dir)` → `JjAt`, a cwd-bound view whose methods omit the leading `dir`
+  argument (`jj.at(dir).status()`); the dir-taking `JjApi` stays for driving many
+  workspaces from one client.
+- `reachable_bookmarks` — local bookmarks on the nearest commits reachable from
+  `@` (`log -r 'heads(::@ & bookmarks())'`), the candidate targets a commit belongs
+  to; one entry per name when a commit carries several.
+- `resolve_list(revset)` — conflicted paths from `jj resolve --list` (empty when
+  there are none, including the no-conflict non-zero exit).
 - Revision-scoped variants of the `@`-only ops: `describe_rev(revset, msg)` and
   `rebase_branch(branch, dest)` (`rebase -b … -d …`).
 - Remote-tracking bookmarks: `bookmarks_all` (`bookmark list -a`, new `BookmarkRef`

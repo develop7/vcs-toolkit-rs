@@ -11,7 +11,14 @@
 //!   [`Repo::at`] without threading a `dir` argument through every call.
 //!
 //! Tool-specific operations stay on the underlying typed clients, reachable via
-//! the [`Repo::git`] / [`Repo::jj`] escape hatches.
+//! the cwd-bound [`Repo::git_at`] / [`Repo::jj_at`] handles (or the raw
+//! [`Repo::git`] / [`Repo::jj`] escape hatches). Some operations are deliberately
+//! *not* on the common surface because the backends model them too differently to
+//! unify without lying: a full `merge` (jj composes `new` + `squash` + bookmark
+//! moves), operation rollback (jj's `op restore` has no faithful git analogue),
+//! and range/revset-scoped queries (`commit_count`, diff stats over a range —
+//! git's `a..b` and jj's revsets aren't interchangeable). Reach those through the
+//! bound handles.
 //!
 //! ```no_run
 //! use vcs_core::Repo;
@@ -28,15 +35,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use processkit::{JobRunner, ProcessRunner};
-use vcs_git::Git;
-use vcs_jj::Jj;
+use vcs_git::{Git, GitAt};
+use vcs_jj::{Jj, JjAt};
 
 mod dto;
 mod error;
 mod git_backend;
 mod jj_backend;
 
-pub use dto::{BackendKind, ChangeKind, CreateOutcome, DiffStat, FileChange, WorktreeInfo};
+pub use dto::{
+    BackendKind, ChangeKind, CreateOutcome, DiffStat, FileChange, OperationState, WorktreeInfo,
+};
 pub use error::{Error, Result};
 
 // Re-export the underlying typed clients so a consumer depending only on
@@ -198,6 +207,39 @@ impl<R: ProcessRunner> Repo<R> {
         }
     }
 
+    /// The git client bound to this handle's [`cwd`](Repo::cwd) — a [`GitAt`] whose
+    /// methods omit the `dir` argument — or `None` when jj-backed. The dir-free
+    /// counterpart of [`git`](Repo::git): `repo.git_at()?.merge_continue().await?`.
+    ///
+    /// The returned view borrows `self`. To work in another worktree, **bind the
+    /// re-anchored handle first** (the view can't outlive a temporary
+    /// [`at`](Repo::at)):
+    ///
+    /// ```no_run
+    /// # async fn f(repo: vcs_core::Repo, wt: &std::path::Path) -> vcs_core::Result<()> {
+    /// let wt = repo.at(wt);          // owns the re-anchored handle
+    /// let git = wt.git_at().unwrap();
+    /// git.fetch().await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn git_at(&self) -> Option<GitAt<'_, R>> {
+        match &self.backend {
+            Backend::Git(g) => Some(g.at(&self.cwd)),
+            Backend::Jj(_) => None,
+        }
+    }
+
+    /// The jj client bound to this handle's [`cwd`](Repo::cwd) — a [`JjAt`] whose
+    /// methods omit the `dir` argument — or `None` when git-backed. The dir-free
+    /// counterpart of [`jj`](Repo::jj). For another workspace, bind the re-anchored
+    /// handle first (`let ws = repo.at(path); ws.jj_at()…`) — see [`git_at`](Repo::git_at).
+    pub fn jj_at(&self) -> Option<JjAt<'_, R>> {
+        match &self.backend {
+            Backend::Jj(j) => Some(j.at(&self.cwd)),
+            Backend::Git(_) => None,
+        }
+    }
+
     /// The current branch (git) or bookmark (jj); `None` when detached / no
     /// bookmark on the working copy.
     pub async fn current_branch(&self) -> Result<Option<String>> {
@@ -207,12 +249,23 @@ impl<R: ProcessRunner> Repo<R> {
         }
     }
 
-    /// The trunk branch/bookmark; `None` when it can't be resolved.
+    /// The trunk branch/bookmark. Resolution order: the backend's own notion
+    /// (git's `origin/HEAD`, jj's `trunk()` revset), then a fallback to a local
+    /// `main`, then `master`; `None` when none of those resolve.
     pub async fn trunk(&self) -> Result<Option<String>> {
-        match &self.backend {
-            Backend::Git(g) => git_backend::trunk(g, &self.cwd).await,
-            Backend::Jj(j) => jj_backend::trunk(j, &self.cwd).await,
+        let native = match &self.backend {
+            Backend::Git(g) => git_backend::trunk(g, &self.cwd).await?,
+            Backend::Jj(j) => jj_backend::trunk(j, &self.cwd).await?,
+        };
+        if native.is_some() {
+            return Ok(native);
         }
+        for candidate in ["main", "master"] {
+            if self.branch_exists(candidate).await? {
+                return Ok(Some(candidate.to_string()));
+            }
+        }
+        Ok(None)
     }
 
     /// Local branch (git) / bookmark (jj) names.
@@ -296,6 +349,46 @@ impl<R: ProcessRunner> Repo<R> {
         }
     }
 
+    /// Fetch a single branch/bookmark from `origin` into its remote-tracking ref
+    /// (git `fetch_remote_branch` / jj `git fetch -b`). Transient network failures
+    /// are retried by the underlying client.
+    pub async fn fetch_remote_branch(&self, branch: &str) -> Result<()> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::fetch_remote_branch(g, &self.cwd, branch).await,
+            Backend::Jj(j) => jj_backend::fetch_remote_branch(j, &self.cwd, branch).await,
+        }
+    }
+
+    /// Switch the working copy to `reference` (git `checkout` / jj `edit`).
+    pub async fn checkout(&self, reference: &str) -> Result<()> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::checkout(g, &self.cwd, reference).await,
+            Backend::Jj(j) => jj_backend::checkout(j, &self.cwd, reference).await,
+        }
+    }
+
+    /// Rebase the current work onto `onto` (git `rebase` / jj `rebase -d`). The
+    /// `onto` is a branch/bookmark name or revision the backend understands.
+    pub async fn rebase(&self, onto: &str) -> Result<()> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::rebase(g, &self.cwd, onto).await,
+            Backend::Jj(j) => jj_backend::rebase(j, &self.cwd, onto).await,
+        }
+    }
+
+    /// Whether the working copy is mid-operation or conflicted — see
+    /// [`OperationState`]. Lets a caller decide between abort/continue without
+    /// knowing the backend's model. Note the asymmetry: git reports `Merge`/
+    /// `Rebase` (a git conflict *is* that paused state — the conflict itself
+    /// surfaces on the failed op via [`Error::is_conflict`]), while jj has no
+    /// paused op and reports `Conflict` directly.
+    pub async fn in_progress_state(&self) -> Result<OperationState> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::in_progress_state(g, &self.cwd).await,
+            Backend::Jj(j) => jj_backend::in_progress_state(j, &self.cwd).await,
+        }
+    }
+
     /// List attached worktrees (git) / workspaces (jj).
     pub async fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         match &self.backend {
@@ -357,6 +450,142 @@ impl<R: ProcessRunner> Repo<R> {
                 }
             }
         }
+    }
+}
+
+/// The backend-agnostic common surface of [`Repo`], as a trait — so a consumer can
+/// hold a `Box<dyn VcsRepo>` / `&dyn VcsRepo` and code against the operations
+/// without naming the [`ProcessRunner`] generic or wrapping `Repo` themselves.
+///
+/// Every method mirrors the like-named inherent method on [`Repo`]; the trait adds
+/// nothing but the abstraction boundary. Tool-specific operations stay off it (see
+/// the crate docs) — reach those through the concrete [`Repo`] and its bound
+/// handles. For hermetic tests, build a `Repo` over a fake runner with
+/// [`Repo::from_git`] / [`Repo::from_jj`] rather than mocking this trait.
+#[async_trait::async_trait]
+pub trait VcsRepo: Send + Sync {
+    /// Which backend drives this handle.
+    fn kind(&self) -> BackendKind;
+    /// The repository root detected at open time.
+    fn root(&self) -> &Path;
+    /// The directory operations run against.
+    fn cwd(&self) -> &Path;
+
+    /// See [`Repo::current_branch`].
+    async fn current_branch(&self) -> Result<Option<String>>;
+    /// See [`Repo::trunk`].
+    async fn trunk(&self) -> Result<Option<String>>;
+    /// See [`Repo::local_branches`].
+    async fn local_branches(&self) -> Result<Vec<String>>;
+    /// See [`Repo::branch_exists`].
+    async fn branch_exists(&self, name: &str) -> Result<bool>;
+    /// See [`Repo::has_uncommitted_changes`].
+    async fn has_uncommitted_changes(&self) -> Result<bool>;
+    /// See [`Repo::delete_branch`].
+    async fn delete_branch(&self, name: &str, force: bool) -> Result<()>;
+    /// See [`Repo::rename_branch`].
+    async fn rename_branch(&self, old: &str, new: &str) -> Result<()>;
+    /// See [`Repo::changed_files`].
+    async fn changed_files(&self) -> Result<Vec<FileChange>>;
+    /// See [`Repo::diff_stat`].
+    async fn diff_stat(&self) -> Result<DiffStat>;
+    /// See [`Repo::commit_paths`].
+    async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()>;
+    /// See [`Repo::fetch`].
+    async fn fetch(&self) -> Result<()>;
+    /// See [`Repo::fetch_remote_branch`].
+    async fn fetch_remote_branch(&self, branch: &str) -> Result<()>;
+    /// See [`Repo::checkout`].
+    async fn checkout(&self, reference: &str) -> Result<()>;
+    /// See [`Repo::rebase`].
+    async fn rebase(&self, onto: &str) -> Result<()>;
+    /// See [`Repo::in_progress_state`].
+    async fn in_progress_state(&self) -> Result<OperationState>;
+    /// See [`Repo::list_worktrees`].
+    async fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>>;
+    /// See [`Repo::create_worktree`].
+    async fn create_worktree(&self, path: &Path, branch: &str, base: &str)
+    -> Result<CreateOutcome>;
+    /// See [`Repo::remove_worktree`].
+    async fn remove_worktree(&self, path: &Path, force: bool) -> Result<()>;
+    /// See [`Repo::cleanup_worktree_blocking`].
+    fn cleanup_worktree_blocking(&self, path: &Path) -> Result<()>;
+}
+
+// Delegates to the inherent methods, which method resolution prefers — so these
+// bodies dispatch through `Repo`'s real implementations, not back into the trait.
+#[async_trait::async_trait]
+impl<R: ProcessRunner> VcsRepo for Repo<R> {
+    fn kind(&self) -> BackendKind {
+        self.kind()
+    }
+    fn root(&self) -> &Path {
+        self.root()
+    }
+    fn cwd(&self) -> &Path {
+        self.cwd()
+    }
+    async fn current_branch(&self) -> Result<Option<String>> {
+        self.current_branch().await
+    }
+    async fn trunk(&self) -> Result<Option<String>> {
+        self.trunk().await
+    }
+    async fn local_branches(&self) -> Result<Vec<String>> {
+        self.local_branches().await
+    }
+    async fn branch_exists(&self, name: &str) -> Result<bool> {
+        self.branch_exists(name).await
+    }
+    async fn has_uncommitted_changes(&self) -> Result<bool> {
+        self.has_uncommitted_changes().await
+    }
+    async fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
+        self.delete_branch(name, force).await
+    }
+    async fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
+        self.rename_branch(old, new).await
+    }
+    async fn changed_files(&self) -> Result<Vec<FileChange>> {
+        self.changed_files().await
+    }
+    async fn diff_stat(&self) -> Result<DiffStat> {
+        self.diff_stat().await
+    }
+    async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()> {
+        self.commit_paths(paths, message).await
+    }
+    async fn fetch(&self) -> Result<()> {
+        self.fetch().await
+    }
+    async fn fetch_remote_branch(&self, branch: &str) -> Result<()> {
+        self.fetch_remote_branch(branch).await
+    }
+    async fn checkout(&self, reference: &str) -> Result<()> {
+        self.checkout(reference).await
+    }
+    async fn rebase(&self, onto: &str) -> Result<()> {
+        self.rebase(onto).await
+    }
+    async fn in_progress_state(&self) -> Result<OperationState> {
+        self.in_progress_state().await
+    }
+    async fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>> {
+        self.list_worktrees().await
+    }
+    async fn create_worktree(
+        &self,
+        path: &Path,
+        branch: &str,
+        base: &str,
+    ) -> Result<CreateOutcome> {
+        self.create_worktree(path, branch, base).await
+    }
+    async fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
+        self.remove_worktree(path, force).await
+    }
+    fn cleanup_worktree_blocking(&self, path: &Path) -> Result<()> {
+        self.cleanup_worktree_blocking(path)
     }
 }
 
@@ -441,6 +670,21 @@ mod tests {
         assert_eq!(repo.kind(), BackendKind::Git);
         assert!(repo.git().is_some());
         assert!(repo.jj().is_none());
+    }
+
+    // The cwd-bound views mirror the backend, and `at` re-binds them to another
+    // directory without a separate client.
+    #[tokio::test]
+    async fn bound_views_reflect_backend_and_cwd() {
+        let git = git_repo(ScriptedRunner::new());
+        assert!(git.git_at().is_some());
+        assert!(git.jj_at().is_none());
+        // A sibling handle bound elsewhere yields a view rooted at that dir.
+        assert_eq!(git.at("/repo/wt").cwd(), Path::new("/repo/wt"));
+
+        let jj = jj_repo(ScriptedRunner::new());
+        assert!(jj.jj_at().is_some());
+        assert!(jj.git_at().is_none());
     }
 
     #[tokio::test]
@@ -570,5 +814,105 @@ mod tests {
             rec.only_call().args_str(),
             ["bookmark", "rename", "old", "new", "--color", "never"]
         );
+    }
+
+    // The widened common surface dispatches `checkout` to each backend's verb:
+    // git `checkout`, jj `edit`.
+    #[tokio::test]
+    async fn checkout_dispatches_per_backend() {
+        use processkit::RecordingRunner;
+        let grec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_git("/repo", "/repo", Git::with_runner(&grec))
+            .checkout("feat")
+            .await
+            .unwrap();
+        assert_eq!(grec.only_call().args_str(), ["checkout", "feat"]);
+
+        let jrec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_jj("/repo", "/repo", Jj::with_runner(&jrec))
+            .checkout("feat")
+            .await
+            .unwrap();
+        assert_eq!(
+            jrec.only_call().args_str(),
+            ["edit", "feat", "--color", "never"]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_remote_branch_dispatches_per_backend() {
+        use processkit::RecordingRunner;
+        let grec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_git("/repo", "/repo", Git::with_runner(&grec))
+            .fetch_remote_branch("main")
+            .await
+            .unwrap();
+        assert!(
+            grec.only_call()
+                .args_str()
+                .starts_with(&["fetch".to_string()])
+        );
+
+        let jrec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_jj("/repo", "/repo", Jj::with_runner(&jrec))
+            .fetch_remote_branch("main")
+            .await
+            .unwrap();
+        let args = jrec.only_call().args_str();
+        assert_eq!(&args[..2], &["git", "fetch"]);
+    }
+
+    // jj records conflicts on the change; the facade maps that to `Conflict`.
+    #[tokio::test]
+    async fn jj_in_progress_state_maps_conflict() {
+        let conflicted = jj_repo(ScriptedRunner::new().on(["log"], Reply::ok("1\n")));
+        assert_eq!(
+            conflicted.in_progress_state().await.unwrap(),
+            OperationState::Conflict
+        );
+        let clear = jj_repo(ScriptedRunner::new().on(["log"], Reply::ok("0\n")));
+        assert_eq!(
+            clear.in_progress_state().await.unwrap(),
+            OperationState::Clear
+        );
+    }
+
+    // `&dyn VcsRepo` must dispatch through the real inherent methods (a delegating
+    // body that recursed would stack-overflow here instead of returning).
+    #[tokio::test]
+    async fn vcs_repo_trait_object_dispatches() {
+        let repo = git_repo(ScriptedRunner::new().on(["rev-parse"], Reply::ok("main\n")));
+        let dynamic: &dyn VcsRepo = &repo;
+        assert_eq!(dynamic.kind(), BackendKind::Git);
+        assert_eq!(
+            dynamic.current_branch().await.unwrap().as_deref(),
+            Some("main")
+        );
+    }
+
+    // When the backend has no native trunk (git `origin/HEAD` unset), the facade
+    // falls back to a local `main`, then `master`.
+    #[tokio::test]
+    async fn trunk_falls_back_to_main() {
+        let repo = git_repo(
+            ScriptedRunner::new()
+                .on(["symbolic-ref"], Reply::fail(1, "")) // origin/HEAD unset → None
+                .on(["show-ref"], Reply::ok("")), // branch_exists("main") → exit 0
+        );
+        assert_eq!(repo.trunk().await.unwrap().as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn error_classifiers_recognise_markers() {
+        let conflict = Error::Vcs(processkit::Error::Exit {
+            program: "git".into(),
+            code: 1,
+            stdout: "CONFLICT (content): Merge conflict in a.rs".into(),
+            stderr: String::new(),
+        });
+        assert!(conflict.is_conflict());
+        assert!(!conflict.is_nothing_to_commit());
+        // A non-Vcs error classifies as none of them.
+        assert!(!Error::NotARepository("/x".into()).is_conflict());
     }
 }

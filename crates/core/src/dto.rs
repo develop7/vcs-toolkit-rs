@@ -77,6 +77,24 @@ pub struct WorktreeInfo {
     pub is_bare: bool,
 }
 
+/// Whether the working copy is mid-operation, unified across the backends'
+/// different models: git exposes an in-progress merge or rebase as on-disk state
+/// (`MERGE_HEAD` / a `rebase-*` dir), while jj has no multi-step operations — it
+/// records a conflict directly on the working-copy change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OperationState {
+    /// No operation in progress and no conflict.
+    Clear,
+    /// A git merge is in progress (`MERGE_HEAD` present).
+    Merge,
+    /// A git rebase is in progress (a `rebase-merge`/`rebase-apply` dir present).
+    Rebase,
+    /// The working copy has an unresolved conflict (chiefly jj, which records
+    /// conflicts on the change rather than pausing an operation).
+    Conflict,
+}
+
 /// How a worktree was materialised. The facade always reports
 /// [`Plain`](CreateOutcome::Plain); the [`CowCloned`](CreateOutcome::CowCloned)
 /// variant exists so a consumer that layers a copy-on-write strategy on top can
