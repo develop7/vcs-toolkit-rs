@@ -160,7 +160,8 @@ pub trait JjApi: Send + Sync {
     async fn bookmark_track(&self, dir: &Path, name: &str, remote: &str) -> Result<()>;
     /// Point a bookmark at `revision` (`jj bookmark set <name> -r <revision>`).
     async fn bookmark_set(&self, dir: &Path, name: &str, revision: &str) -> Result<()>;
-    /// Fetch from the git remote (`jj git fetch`).
+    /// Fetch from the git remote (`jj git fetch`); transient (network) failures
+    /// are retried (3 attempts, 500 ms backoff).
     async fn git_fetch(&self, dir: &Path) -> Result<()>;
     /// Push to the git remote (`jj git push`, optionally `-b <bookmark>`). The
     /// bookmark is owned (`Option<String>`) to keep the trait `mockall`-friendly.
@@ -259,7 +260,8 @@ pub trait JjApi: Send + Sync {
     async fn new_merge(&self, dir: &Path, message: &str, parents: Vec<String>) -> Result<()>;
     /// Abandon a revision (`abandon <rev>`).
     async fn abandon(&self, dir: &Path, revset: &str) -> Result<()>;
-    /// Fetch a single bookmark from origin (`git fetch --remote origin -b <branch>`).
+    /// Fetch a single bookmark from origin (`git fetch --remote origin -b <branch>`);
+    /// transient failures are retried (3×, 500 ms).
     async fn git_fetch_branch(&self, dir: &Path, branch: &str) -> Result<()>;
     /// Import git refs into jj (`jj git import`) — colocated-repo sync.
     async fn git_import(&self, dir: &Path) -> Result<()>;

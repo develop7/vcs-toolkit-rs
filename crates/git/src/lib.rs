@@ -274,10 +274,11 @@ pub trait GitApi: Send + Sync {
     // --- Mutations -----------------------------------------------------------
 
     /// Fetch from the default remote (`fetch --quiet`), with `GIT_TERMINAL_PROMPT=0`.
+    /// Transient (network) failures are retried (3 attempts, 500 ms backoff).
     async fn fetch(&self, dir: &Path) -> Result<()>;
     /// Fetch a single branch from `origin` into its remote-tracking ref
     /// (`fetch --quiet origin refs/heads/<b>:refs/remotes/origin/<b>`), with
-    /// `GIT_TERMINAL_PROMPT=0`.
+    /// `GIT_TERMINAL_PROMPT=0`. Transient failures are retried (3×, 500 ms).
     async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()>;
     /// Push to a remote (`push [-u] <remote> <refspec>`); see [`GitPush`].
     async fn push(&self, dir: &Path, spec: GitPush) -> Result<()>;

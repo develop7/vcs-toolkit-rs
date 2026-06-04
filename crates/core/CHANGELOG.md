@@ -15,9 +15,8 @@ crates; tag releases as `vcs-core-v<version>`.
   jj: resolve the workspace name by path, delete the dir, `workspace forget`).
 
 ### Changed
-- Requires `vcs-git` / `vcs-jj` **0.4** (for the new `blocking` helpers). Bump the
-  path-dep `version` to `"0.4"` only **after** those crates are published at 0.4 —
-  see the release note below.
+- Requires `vcs-git` / `vcs-jj` **0.4** (for the `blocking` helpers it dispatches
+  to). See AGENTS.md "Releasing" for the two-phase release coordination.
 - Bumped `processkit` to 0.6 (no code change).
 
 ### Fixed

@@ -212,7 +212,7 @@ use vcs_github::{GitHub, GitHubApi};
     let res = git
         .run_raw(&["status".into(), "--porcelain".into()])
         .await?;
-    println!("{sha} — exit {}", res.exit_code());
+    println!("{sha} — exit {:?}", res.code()); // `code()` is `Option<i32>`
 # Ok(()) }
 ```
 
