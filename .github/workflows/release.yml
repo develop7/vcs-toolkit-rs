@@ -49,6 +49,7 @@ on:
           - vcs-forge
           - vcs-testkit
           - vcs-core
+          - vcs-watch
         default: all
       bump:
         description: Version bump type (ignored on a crate's first release)
@@ -111,13 +112,14 @@ jobs:
           PLAN: ${{ runner.temp }}/plan.tsv
         run: |
           set -euo pipefail
-          declare -A DIR=( [vcs-diff]=crates/diff [vcs-cli-support]=crates/cli-support [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-gitlab]=crates/gitlab [vcs-gitea]=crates/gitea [vcs-forge]=crates/forge [vcs-testkit]=crates/testkit [vcs-core]=crates/core )
+          declare -A DIR=( [vcs-diff]=crates/diff [vcs-cli-support]=crates/cli-support [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-gitlab]=crates/gitlab [vcs-gitea]=crates/gitea [vcs-forge]=crates/forge [vcs-testkit]=crates/testkit [vcs-core]=crates/core [vcs-watch]=crates/watch )
           if [ "$SELECTED" = "all" ]; then
             # Foundational crates first (vcs-diff/vcs-cli-support: the wrappers/facades
-            # depend on them), then the wrappers, then the facades LAST: vcs-forge
-            # depends on vcs-github/vcs-gitlab/vcs-gitea, and vcs-core on vcs-git/vcs-jj.
-            # vcs-testkit has no workspace deps (any position).
-            NAMES=(vcs-diff vcs-cli-support vcs-git vcs-jj vcs-github vcs-gitlab vcs-gitea vcs-forge vcs-testkit vcs-core)
+            # depend on them), then the wrappers, then the facades: vcs-forge depends on
+            # vcs-github/vcs-gitlab/vcs-gitea, and vcs-core on vcs-git/vcs-jj. vcs-watch
+            # depends on vcs-core, so it publishes LAST. vcs-testkit has no workspace
+            # deps (any position).
+            NAMES=(vcs-diff vcs-cli-support vcs-git vcs-jj vcs-github vcs-gitlab vcs-gitea vcs-forge vcs-testkit vcs-core vcs-watch)
           else
             NAMES=("$SELECTED")
           fi
@@ -318,6 +320,8 @@ jobs:
             in_run_dep=""
             if [ "$name" = "vcs-core" ] && grep -qP '^(vcs-git|vcs-jj)\t' "$PLAN"; then
               in_run_dep="vcs-git/vcs-jj"
+            elif [ "$name" = "vcs-watch" ] && grep -qP '^(vcs-core)\t' "$PLAN"; then
+              in_run_dep="vcs-core"
             elif [ "$name" = "vcs-forge" ] && grep -qP '^(vcs-github|vcs-gitlab|vcs-gitea)\t' "$PLAN"; then
               in_run_dep="vcs-github/vcs-gitlab/vcs-gitea"
             elif [ "$name" != "vcs-diff" ] && [ "$name" != "vcs-cli-support" ] && \

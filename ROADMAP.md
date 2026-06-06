@@ -139,7 +139,7 @@ Where the toolkit could go as a general-purpose "typed CLI automation" SDK,
 regardless of what the current consumers need. Being executed as a program of
 waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
 (✅ done), **C** = 6.4+6.5+6.11+6.12 (✅ done; 6.5 spec-only), **D** = 6.1
-(forges — ✅ done), **E** = 6.6 (watching), **F** = 6.8 (vcs-mcp; depends on Wave A).
+(forges — ✅ done), **E** = 6.6 (watching — ✅ done), **F** = 6.8 (vcs-mcp; depends on Wave A).
 
 ### New forges
 
@@ -201,10 +201,20 @@ waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
 
 ### Repo events
 
-- **6.6 Watching.** Filesystem-watch `.git`/`.jj`, debounce, re-query, and
-  emit typed events (`HeadMoved`, `BranchCreated`, `WorkingCopyChanged`) —
-  the foundation for status bars, TUIs, and daemons, and a layer no CLI
-  provides by itself.
+- **6.6 ✅ Watching.** Shipped `vcs-watch`: `RepoWatcher` filesystem-watches
+  `.git`/`.jj` (jj wins when colocated; worktree gitlinks resolved), debounces
+  the write burst, **re-queries** `vcs-core`'s batched `snapshot()` (+
+  `local_branches`), and **diffs** against the previous state to emit typed
+  `RepoEvent`s (`HeadMoved`, `BranchSwitched`, `BranchCreated`/`Deleted`,
+  `WorkingCopyChanged`, `UpstreamChanged`, `AheadBehindChanged`,
+  `OperationChanged`, `ConflictChanged`). Each settled change is a `RepoChange {
+  snapshot, events }` (bundled state + deltas) on an async `recv()` stream;
+  re-query+diff makes raw-event noise (ref temp-renames, `index.lock`, reflog) a
+  no-op. Decisions: raw `notify` + a custom debounce (default 250 ms / 1 s
+  ceiling); watch scope configurable (state-dir default, opt-in working-tree).
+  The pure diff is hermetically unit-tested; the notify pipeline by `#[ignore]`
+  real-repo tests. This is the workspace's first runtime-tokio + streaming crate.
+  Future, additive: a `Stream` adapter, `.gitignore`-aware working-tree filtering.
 
 ### Structured conflicts
 

@@ -38,8 +38,9 @@ timeouts, the structured `Error`, and the test seams these wrappers build on.
 This is a Cargo workspace, each crate **versioned and published independently**:
 five CLI wrappers built on the external
 [`processkit`](https://crates.io/crates/processkit) crate, two facades (over the
-git/jj pair and over the three forges), two foundational crates the wrappers
-share, and a dependency-free test-fixture crate:
+git/jj pair and over the three forges), a filesystem-watch crate emitting typed
+repo events, two foundational crates the wrappers share, and a dependency-free
+test-fixture crate:
 
 | Crate | Drives | crates.io name |
 |---|---|---|
@@ -50,6 +51,7 @@ share, and a dependency-free test-fixture crate:
 | [`crates/gitea`](crates/gitea) | the `tea` (Gitea CLI) binary | `vcs-gitea` |
 | [`crates/forge`](crates/forge) | — (facade over `vcs-github`/`vcs-gitlab`/`vcs-gitea`) | `vcs-forge` |
 | [`crates/core`](crates/core) | — (facade over `vcs-git`/`vcs-jj`) | `vcs-core` |
+| [`crates/watch`](crates/watch) | — (filesystem-watch repo events, on `vcs-core`) | `vcs-watch` |
 | [`crates/diff`](crates/diff) | — (shared std-only diff model + parser, `Version`) | `vcs-diff` |
 | [`crates/cli-support`](crates/cli-support) | — (shared argv guard, fetch policy, error classifiers) | `vcs-cli-support` |
 | [`crates/testkit`](crates/testkit) | — (test fixtures: git/jj sandboxes, bare remote) | `vcs-testkit` |
@@ -92,6 +94,7 @@ examples — see the **[guide set in `docs/`](docs/README.md)**:
   [vcs-github](docs/github.md) · [vcs-gitlab](docs/gitlab.md) ·
   [vcs-gitea](docs/gitea.md) · [vcs-core](docs/core.md) (the git/jj facade) ·
   [vcs-forge](docs/forge.md) (the forge facade) ·
+  [vcs-watch](docs/watch.md) (repo-event stream) ·
   [vcs-testkit](docs/testkit.md) (fixtures).
 - Cross-cutting topics: [Conflict resolution](docs/conflicts.md) ·
   [Testing & mocking](docs/testing.md) · [Security & hardening](docs/security.md) ·
@@ -383,8 +386,8 @@ Releases go through the **`Release` GitHub Action** (`workflow_dispatch`) — yo
 never type a version. Click *Run workflow* and pick:
 
 - **Crate** — `vcs-diff`, `vcs-cli-support`, `vcs-git`, `vcs-jj`, `vcs-github`,
-  `vcs-gitlab`, `vcs-gitea`, `vcs-forge`, `vcs-testkit`, `vcs-core`, or **`all`**
-  (release every crate in one run).
+  `vcs-gitlab`, `vcs-gitea`, `vcs-forge`, `vcs-testkit`, `vcs-core`, `vcs-watch`,
+  or **`all`** (release every crate in one run).
 - **Bump** — `patch` / `minor` / `major`.
 
 For each selected crate it reads the current version from that crate's
@@ -398,9 +401,9 @@ The dependency layers drive the publish order. The two foundational crates
 (`vcs-diff` — std-only — and `vcs-cli-support`, which depends only on the
 already-published [`processkit`](https://crates.io/crates/processkit)) publish
 **first**; the CLI wrappers depend on them (plus `processkit`), so they publish
-next; and the **facades publish last** — `vcs-forge` (depends on the
-github/gitlab/gitea wrappers) and `vcs-core` (depends on `vcs-git`/`vcs-jj`).
-`vcs-testkit` depends on nothing and can go anywhere. So
+next; the **facades** come after — `vcs-forge` (depends on the github/gitlab/gitea
+wrappers) and `vcs-core` (depends on `vcs-git`/`vcs-jj`) — and `vcs-watch` (on
+`vcs-core`) **last**. `vcs-testkit` depends on nothing and can go anywhere. So
 `all` releases in that order, and each `^MAJOR.MINOR` requirement on an
 in-workspace dependency must stay in range when that dependency crosses a
 minor/major boundary.

@@ -11,6 +11,7 @@ members = [
     "crates/forge",
     "crates/core",
     "crates/testkit",
+    "crates/watch",
 ]
 # `fuzz/` is a cargo-fuzz crate (nightly + libFuzzer); excluded so it never
 # touches the stable build, MSRV, or the CI gate. Run it manually — see

@@ -26,6 +26,7 @@ types, and the validating newtypes — with worked examples throughout.
 | [vcs-gitea](gitea.md) | `vcs-gitea` | the `tea` CLI — the lean pull-request lifecycle (list/view/create/merge/close) |
 | [vcs-forge](forge.md) | `vcs-forge` | a forge-agnostic facade over GitHub/GitLab/Gitea — one PR/MR lifecycle across all three |
 | [vcs-core](core.md) | `vcs-core` | a backend-agnostic facade that detects git-vs-jj and dispatches the operations both share |
+| [vcs-watch](watch.md) | `vcs-watch` | filesystem-watch a repo and stream typed state-change events (built on `vcs-core`) |
 | [vcs-testkit](testkit.md) | `vcs-testkit` | throwaway git/jj sandboxes and a bare remote for integration tests |
 
 Two **foundational crates** sit below the wrappers (no guide of their own — their
@@ -70,16 +71,17 @@ These apply across the wrapper crates:
                               │
    ┌─────────┬─────────┬──────┴───┬─────────┬─────────┬──────────┐
  git.md    jj.md   github.md  gitlab.md  gitea.md  core.md   testkit.md
-   │         │     └────┬─────────┴────┬────┘         │
-   │         │       forge.md (over the three forges) │
+   │         │     └────┬─────────┴────┬────┘      │   │
+   │         │       forge.md (over the three forges)  └─ watch.md (over core)
    └────┬────┴───────────┬─────────────┬──────────────┘
    conflicts.md     security.md    testing.md
                     process-model.md
 ```
 
-`core.md` sits over `git.md` / `jj.md`, and `forge.md` over `github.md` /
-`gitlab.md` / `gitea.md` (each facade dispatches to them); the cross-cutting
-guides are referenced from every per-crate guide's *See also* footer.
+`core.md` sits over `git.md` / `jj.md`, `forge.md` over `github.md` /
+`gitlab.md` / `gitea.md` (each facade dispatches to them), and `watch.md` builds
+on `core.md` (it re-queries `Repo::snapshot`); the cross-cutting guides are
+referenced from every per-crate guide's *See also* footer.
 
 ## Reference
 

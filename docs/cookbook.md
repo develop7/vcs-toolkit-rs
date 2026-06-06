@@ -39,6 +39,33 @@ and want the raw one-spawn primitive without the facade, call
 [`GitApi::branch_status`](git.md) directly — it returns a [`BranchStatus`](git.md)
 with the same fields plus `is_dirty()`.
 
+## Keep a status line live
+
+Don't poll `snapshot()` on a timer — let [`vcs-watch`](watch.md) push a fresh one
+whenever the repo actually changes. It filesystem-watches `.git`/`.jj`, debounces,
+re-queries, and hands you the new [`RepoSnapshot`] plus the typed deltas.
+
+```rust
+# use vcs_core::Repo;
+# use vcs_watch::RepoWatcher;
+# async fn demo() -> vcs_watch::Result<()> {
+let repo = Repo::open(".")?;
+let mut watcher = RepoWatcher::watch(repo).await?;     // tokio runtime required
+render(watcher.current());                             // initial paint
+while let Some(change) = watcher.recv().await {
+    render(&change.snapshot);                           // repaint with the fresh state
+    let _ = &change.events;                             // …or react to specific deltas
+}
+# Ok(()) }
+# fn render(_s: &vcs_watch::RepoSnapshot) {}
+```
+
+Notes: each `change` carries both the full `snapshot` (repaint) and `events`
+(`HeadMoved`/`BranchCreated`/`WorkingCopyChanged`/… — react). A bare unstaged edit
+is caught only once staged unless you opt into `RepoWatcher::builder(repo)
+.working_tree(true)`. Dropping the watcher stops it. `RepoSnapshot` is re-exported
+from `vcs-watch`, so depending on it alone suffices.
+
 ## Open a PR and wait for CI
 
 Push a branch, open the PR, then block on its workflow run and branch on the

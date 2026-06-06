@@ -1,0 +1,39 @@
+[package]
+name = "vcs-watch"
+version = "0.1.0"
+description = "Filesystem-watch a git/jj repository and emit typed state-change events (built on vcs-core)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+# Re-query the repository state on each filesystem change and diff snapshots —
+# `detect`/`Repo::open`/`snapshot`/`local_branches` and the `RepoSnapshot` DTO.
+vcs-core = { path = "../core", version = "0.2" }
+# Cross-platform filesystem watcher (inotify / FSEvents / ReadDirectoryChangesW).
+# Raw events only — we debounce ourselves and re-query state, so the heavier
+# debouncer crates buy nothing here.
+notify = "8"
+# Async runtime surface: the mpsc channel bridging notify's callback thread into
+# async, the debounce timer, and the background re-query task. This is the first
+# crate in the workspace to take tokio as a *runtime* (not just dev) dependency —
+# everything else hides it behind `processkit`; documented in the crate docs.
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+
+[features]
+# Emit a `tracing` debug event when a re-query is skipped (e.g. a transient
+# mid-operation failure). Off by default; pulls in `tracing` only when enabled.
+tracing = ["dep:tracing"]
+
+[dependencies.tracing]
+version = "0.1"
+optional = true
+
+[dev-dependencies]
+# `#[tokio::test]` for the async watcher tests, and `time` for timeouts.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# Real throwaway git/jj repositories for the `#[ignore]` integration tests.
+vcs-testkit = { path = "../testkit" }

@@ -39,6 +39,7 @@ All crates are **pre-1.0** today — the API may still change. Relative maturity
 | `vcs-gitea` | 0.1 | **new** | The `tea` lean PR lifecycle (narrower — see its capability notes); expect movement. |
 | `vcs-forge` | 0.1 | **new** | The forge facade + unified DTOs; the unification will grow as the wrappers do. |
 | `vcs-core` | 0.2 | **evolving** | The facade's common surface grows as cross-backend needs surface (e.g. `snapshot`). |
+| `vcs-watch` | 0.1 | **new** | Repo-event stream over `vcs-core`; the workspace's first runtime-tokio + streaming API — the event set and the API may still shift. |
 
 "Settling" = close to its 1.0 shape; "maturing" = the surface is broad and
 proven but still grows additively; "evolving" = expect the most movement; "new" =
