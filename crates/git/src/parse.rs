@@ -142,21 +142,22 @@ pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
     let mut entries = Vec::new();
     let mut records = output.split('\0').filter(|rec| !rec.is_empty());
     while let Some(rec) = records.next() {
-        // "XY path": two ASCII code chars (always ASCII → byte-slicing is safe),
-        // a space, then a non-empty path.
-        if rec.len() < 4 {
+        // "XY path": two status-code chars, a space, then the path. Real git
+        // codes are ASCII, but slice via `get` so a malformed record (a
+        // multibyte char where the code/space belong) is skipped, not a panic.
+        let (Some(code), Some(path)) = (rec.get(..2), rec.get(3..)) else {
             continue;
-        }
+        };
         // A rename/copy (R/C in the index column) carries its source path as the
         // immediately following NUL record; consume it.
-        let orig_path = if matches!(rec.as_bytes()[0], b'R' | b'C') {
+        let orig_path = if matches!(rec.as_bytes().first(), Some(b'R' | b'C')) {
             records.next().map(str::to_string)
         } else {
             None
         };
         entries.push(StatusEntry {
-            code: rec[..2].to_string(),
-            path: rec[3..].to_string(),
+            code: code.to_string(),
+            path: path.to_string(),
             orig_path,
         });
     }
@@ -643,6 +644,18 @@ mod tests {
         assert!(parse_porcelain("\0  \0X\0").is_empty());
     }
 
+    // Regression (found by proptest): a record whose leading char is multibyte
+    // must be skipped, not panic on a non-char-boundary slice. `𝓁` is 4 bytes,
+    // so byte index 2 lands inside it.
+    #[test]
+    fn porcelain_skips_non_ascii_status_records() {
+        assert!(parse_porcelain("𝓁abc\0").is_empty());
+        // A well-formed record alongside the garbage still parses.
+        let entries = parse_porcelain("𝓁abc\0 M a.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "a.rs");
+    }
+
     // --line-porcelain repeats the full metadata for every line; the group
     // count appears only on a group's first header, and `boundary` is a
     // valueless tag — both must parse.
@@ -874,5 +887,73 @@ mod tests {
         let hunk = &parse_diff(full)[0].hunks[0];
         assert_eq!((hunk.old_start, hunk.old_lines), (3, 1));
         assert_eq!((hunk.new_start, hunk.new_lines), (3, 1));
+    }
+}
+
+// Property-based fuzzing: the parsers are pure functions over *arbitrary* CLI
+// text (a git on the user's machine we don't control), so the load-bearing
+// invariant is "never panic, whatever the bytes". These feed both unconstrained
+// Unicode and structure-biased inputs (real delimiters: NUL, tab, unit
+// separator, `diff --git`, `@@` hunks, rename braces) so the fuzzer reaches the
+// byte-offset branches, not just the early returns.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A line drawn from git's structural vocabulary plus multibyte text, so a
+    /// joined document exercises the porcelain/diff/blame branches.
+    fn structured_line() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("diff --git a/f b/f\n".to_string()),
+            Just("--- a/f\n".to_string()),
+            Just("+++ b/f\n".to_string()),
+            Just("@@ -1,2 +3,4 @@ ctx\n".to_string()),
+            Just("@@ -1 +1 @@\n".to_string()),
+            Just("rename from {old => new}.rs\n".to_string()),
+            Just("R100\told\tnew\n".to_string()),
+            Just(format!("{}\n", "a".repeat(40))), // a 40-hex-ish blame header
+            "[-+ ]?[a-zé\t]{0,12}\n",              // diff body / text incl. multibyte
+            "[ MARD?]{0,2} [a-zé/]{0,8}\0",        // porcelain-ish NUL record
+        ]
+    }
+
+    fn structured_doc() -> impl Strategy<Value = String> {
+        prop::collection::vec(structured_line(), 0..40).prop_map(|lines| lines.concat())
+    }
+
+    proptest! {
+        // Panic-freedom on completely arbitrary input.
+        #[test]
+        fn parsers_never_panic_on_arbitrary_text(s in any::<String>()) {
+            let _ = parse_porcelain(&s);
+            let _ = parse_log(&s);
+            let _ = parse_branches(&s);
+            let _ = parse_worktree_porcelain(&s);
+            let _ = parse_blame_porcelain(&s);
+            let _ = parse_shortstat(&s);
+            let _ = parse_ls_remote_heads(&s);
+            let _ = parse_nul_paths(&s);
+            let _ = parse_git_version(&s);
+            let _ = parse_diff(&s);
+        }
+
+        // …and on structure-biased input that reaches the parsing branches.
+        #[test]
+        fn parsers_never_panic_on_structured_text(s in structured_doc()) {
+            let _ = parse_porcelain(&s);
+            let _ = parse_log(&s);
+            let _ = parse_blame_porcelain(&s);
+            let _ = parse_diff(&s);
+        }
+
+        // parse_diff never invents files it can't render the marker for: every
+        // returned FileDiff carries a non-empty raw section starting with `diff`.
+        #[test]
+        fn parse_diff_sections_are_well_formed(s in structured_doc()) {
+            for file in parse_diff(&s) {
+                prop_assert!(file.raw.starts_with("diff --git"));
+            }
+        }
     }
 }

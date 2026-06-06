@@ -462,3 +462,60 @@ mod tests {
         assert!(!has_conflict_markers(git_style), "git markers aren't jj's");
     }
 }
+
+// Property-based fuzzing of the jj conflict grammar: marker-run slicing, the
+// `conflict N of M` counters, the `%%%`/`\\\` diff-section continuation, and
+// `apply_diff` must never panic on hostile input, and `render(parse(x)?) == x`
+// must hold byte-for-byte.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Lines from jj's materialized-conflict vocabulary (diff + snapshot
+    /// styles) with variable counters/marker lengths and multibyte content.
+    fn conflict_line() -> impl Strategy<Value = String> {
+        prop_oneof![
+            (1u32..3, 1u32..3).prop_map(|(n, m)| format!("<<<<<<< conflict {n} of {m}\n")),
+            (1u32..3, 1u32..3).prop_map(|(n, m)| format!(">>>>>>> conflict {n} of {m} ends\n")),
+            Just("%%%%%%% diff from: ab cd \"basé\"\n".to_string()),
+            Just("\\\\\\\\\\\\\\        to: ef gh \"side\"\n".to_string()),
+            Just("+++++++ ij kl \"side-b\"\n".to_string()),
+            Just("------- mn op \"base\"\n".to_string()),
+            "[-+ ]?[a-zé]{0,10}\n", // diff/content line incl. multibyte
+        ]
+    }
+
+    fn conflict_doc() -> impl Strategy<Value = String> {
+        prop::collection::vec(conflict_line(), 0..30).prop_map(|lines| lines.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn parse_never_panics_on_arbitrary_text(s in any::<String>()) {
+            let _ = has_conflict_markers(&s);
+            if let Ok(segments) = parse_conflicts(&s) {
+                // Exercise the materializers + writer on whatever parsed.
+                let _ = render(&segments);
+                for seg in &segments {
+                    if let JjConflictSegment::Conflict(r) = seg {
+                        let _ = r.sides();
+                        let _ = r.base();
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn parse_never_panics_on_structured_text(s in conflict_doc()) {
+            let _ = parse_conflicts(&s);
+        }
+
+        #[test]
+        fn render_roundtrips_whatever_parses(s in conflict_doc()) {
+            if let Ok(segments) = parse_conflicts(&s) {
+                prop_assert_eq!(render(&segments), s);
+            }
+        }
+    }
+}

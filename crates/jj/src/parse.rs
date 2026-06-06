@@ -914,3 +914,65 @@ mod tests {
         );
     }
 }
+
+// Property-based fuzzing: pure parsers over arbitrary jj output must never
+// panic, with special attention to `expand_rename` (byte-offset arithmetic on
+// `{old => new}` braces) and the templated tab-row parsers.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// jj's structural vocabulary: `diff --summary` letters, brace renames
+    /// (incl. multibyte around the braces), template tab-rows, and diff text.
+    fn structured_line() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("M src/a.rs\n".to_string()),
+            Just("R sub\\{old.rs => new.rs}\n".to_string()),
+            Just("C {a => b}.rs\n".to_string()),
+            "[A-Z] \\{[a-zé]{0,6} => [a-zé]{0,6}\\}\n", // rename braces + multibyte
+            "[a-zé]{0,8}\t[a-zé]{0,8}\t(true|false)\t[a-zé\t]{0,10}\n", // change row
+            "[a-zé]{0,8}\t[a-zé@]{0,8}\t[01]\t[a-zé]{0,8}\n", // bookmark row
+            "[-+ ]?[a-zé]{0,10}\n",                     // diff body
+        ]
+    }
+
+    fn structured_doc() -> impl Strategy<Value = String> {
+        prop::collection::vec(structured_line(), 0..40).prop_map(|lines| lines.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn parsers_never_panic_on_arbitrary_text(s in any::<String>()) {
+            let _ = parse_changes(&s);
+            let _ = parse_operations(&s);
+            let _ = parse_annotate(&s);
+            let _ = parse_bookmarks(&s);
+            let _ = parse_bookmarks_all(&s);
+            let _ = parse_reachable_bookmarks(&s);
+            let _ = parse_resolve_list(&s);
+            let _ = parse_workspaces(&s);
+            let _ = parse_diff_summary(&s);
+            let _ = parse_diff_stat(&s);
+            let _ = parse_jj_version(&s);
+            let _ = parse_diff(&s);
+            let _ = expand_rename(&s);
+        }
+
+        #[test]
+        fn parsers_never_panic_on_structured_text(s in structured_doc()) {
+            let _ = parse_diff_summary(&s);
+            let _ = parse_changes(&s);
+            let _ = parse_bookmarks_all(&s);
+            let _ = parse_diff(&s);
+        }
+
+        // expand_rename returns the raw verbatim for a non-brace input (its
+        // documented identity for the no-rename case).
+        #[test]
+        fn expand_rename_is_identity_without_braces(s in "[a-zé/ ]{0,20}") {
+            prop_assume!(!s.contains('{') && !s.contains('}'));
+            prop_assert_eq!(expand_rename(&s), (s.clone(), s));
+        }
+    }
+}

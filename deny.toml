@@ -11,3 +11,7 @@ yanked = "deny"
 multiple-versions = "warn"
 # Wildcard version requirements hide breakage; flag them.
 wildcards = "deny"
+# …except intra-workspace `path` dev-dependencies (e.g. `vcs-testkit`), which
+# carry no version on purpose — dev-deps are stripped on publish, so their
+# implicit `*` never reaches a released crate.
+allow-wildcard-paths = true

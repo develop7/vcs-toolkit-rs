@@ -351,3 +351,61 @@ mod tests {
         }
     }
 }
+
+// Property-based fuzzing. The marker grammar slices on marker-run lengths and
+// must never panic on a hostile file (a real conflicted file from a git we
+// don't control), and `render(parse(x)?) == x` must hold byte-for-byte — the
+// regression net for the marker-detection / byte-offset logic.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A line drawn from the conflict-marker vocabulary plus multibyte text,
+    /// with variable marker-run lengths (7..16) and CRLF, so a joined document
+    /// reaches the marker-slicing branches with adversarial content.
+    fn conflict_line() -> impl Strategy<Value = String> {
+        prop_oneof![
+            (7usize..16).prop_map(|n| format!("{} HEAD\n", "<".repeat(n))),
+            (7usize..16).prop_map(|n| format!("{}\n", "=".repeat(n))),
+            (7usize..16).prop_map(|n| format!("{} branché\n", ">".repeat(n))),
+            (7usize..16).prop_map(|n| format!("{} base\n", "|".repeat(n))),
+            "[a-zé<>=|]{0,14}\r?\n", // text incl. marker-ish chars + multibyte + CRLF
+            Just("\n".to_string()),
+        ]
+    }
+
+    fn conflict_doc() -> impl Strategy<Value = String> {
+        prop::collection::vec(conflict_line(), 0..30).prop_map(|lines| lines.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn parse_never_panics_on_arbitrary_text(s in any::<String>()) {
+            let _ = has_conflict_markers(&s);
+            let _ = parse_conflicts(&s);
+        }
+
+        #[test]
+        fn parse_never_panics_on_structured_text(s in conflict_doc()) {
+            let _ = parse_conflicts(&s);
+        }
+
+        // The load-bearing invariant: whenever the file parses, re-rendering is
+        // byte-exact.
+        #[test]
+        fn render_roundtrips_whatever_parses(s in conflict_doc()) {
+            if let Ok(segments) = parse_conflicts(&s) {
+                prop_assert_eq!(render(&segments), s);
+            }
+        }
+
+        // A marker-free file is one Text segment that renders back unchanged.
+        #[test]
+        fn marker_free_files_are_a_single_text_segment(s in "[a-zé \t\r\n]{0,80}") {
+            prop_assume!(!has_conflict_markers(&s));
+            let segments = parse_conflicts(&s).expect("no markers → Ok");
+            prop_assert_eq!(render(&segments), s);
+        }
+    }
+}

@@ -49,6 +49,48 @@ jobs:
       # and the `tracing` per-command events.
       - run: cargo test --workspace --all-features
 
+  # Run the real-binary integration suites (`--ignored`) against multiple jj
+  # versions — jj's CLI/revset/template surface churns fast and the parsers are
+  # validated empirically, so this catches drift (a new jj that changes output)
+  # before users hit it. The hermetic `test` job above already covers the 3 OSes
+  # on runner-default versions; this is Linux-only to keep the matrix cheap.
+  integration:
+    name: integration (jj ${{ matrix.jj }}${{ matrix.os == 'ubuntu-22.04' && ', old git' || '' }})
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor (the validated version), a mid release, and the latest.
+        jj: ["0.38.0", "0.40.0", "0.42.0"]
+        # One cheap older-git data point: the floor jj on an older image (its
+        # git is older than ubuntu-latest's), no git-install step needed.
+        include:
+          - jj: "0.38.0"
+            os: ubuntu-22.04
+    env:
+      # Let the read-only gh integration tests (run/release reads against this
+      # repo) run too; the rest skip gracefully when unauthenticated.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install jj ${{ matrix.jj }}
+        # jj has no install-action entry and cargo-binstall ignores the pinned
+        # version, so download the release tarball and drop the binary on PATH.
+        run: |
+          gh release download "v${{ matrix.jj }}" --repo jj-vcs/jj \
+            --pattern '*x86_64-unknown-linux-musl.tar.gz' --output jj.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          # The tarball holds `./jj` at the root; extract it all (tiny) and put
+          # the binary on PATH.
+          tar -xzf jj.tar.gz -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/jj"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: jj --version
+      - run: git --version
+      # The integration suites are `#[ignore]`d (need the real binaries); run them.
+      - run: cargo test --workspace --all-features -- --ignored
+
   audit:
     name: cargo-deny
     runs-on: ubuntu-latest

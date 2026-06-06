@@ -1,0 +1,29 @@
+[package]
+name = "vcs-toolkit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libFuzzer harness macro (`fuzz_target!`). Nightly-only.
+libfuzzer-sys = "0.4"
+# The crates whose public parsers we fuzz, by path.
+vcs-git = { path = "../crates/git" }
+vcs-jj = { path = "../crates/jj" }
+
+[[bin]]
+name = "git_conflict"
+path = "fuzz_targets/git_conflict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jj_conflict"
+path = "fuzz_targets/jj_conflict.rs"
+test = false
+doc = false
+bench = false

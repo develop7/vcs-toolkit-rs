@@ -80,7 +80,15 @@ cargo fmt --all --check             # format check (CI gate)
 ```
 
 Tests that invoke the real `git` / `jj` / `gh` binaries are marked `#[ignore]`
-so `cargo test` stays hermetic on CI; run them locally with `--ignored`.
+so `cargo test` stays hermetic on CI; run them locally with `--ignored`. CI's
+`integration` job installs several **jj versions** (oldest supported … latest)
+plus an older-git image and runs the `--ignored` suites against each, so
+CLI/template drift in the parsers surfaces in CI rather than for a user. The
+pure parsers are also **property-tested** (`proptest`, `#[cfg(test)] mod
+proptests` in each `parse.rs`/`conflict.rs`) for panic-freedom on arbitrary
+input and a byte-exact conflict roundtrip; these run in the normal gate. When
+you touch a parser, keep both nets green and add a regression unit test for any
+case proptest surfaces.
 Integration tests (if added) live in each crate's `tests/` dir — each file is
 compiled as its own crate; prefer shared helpers in `tests/common/mod.rs`.
 

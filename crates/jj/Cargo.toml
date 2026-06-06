@@ -31,3 +31,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Throwaway git/jj repos for the ignored integration tests. Path-only: dev-deps
 # are stripped on publish, so this adds no release coupling.
 vcs-testkit = { path = "../testkit" }
+# Property-based fuzzing of the pure parsers (panic-freedom on arbitrary input,
+# byte-exact conflict roundtrip). Stable Rust, dev-only.
+proptest = "1"

@@ -323,9 +323,16 @@ cargo fmt --all --check
 ```
 
 Tests that shell out to the real `git` / `jj` / `gh` binaries are marked
-`#[ignore]` so CI stays hermetic; run them locally with `--ignored`. CI
-(`.github/workflows/ci.yml`) runs fmt, clippy (with and without `mock`), the test
-suite on Linux/Windows/macOS, `cargo-deny`, and a `cargo package` gate.
+`#[ignore]` so CI stays hermetic; run them locally with `--ignored`. The pure
+parsers (status/diff/blame, the operation and conflict models) are additionally
+**property-tested** with `proptest` for panic-freedom on arbitrary input and a
+byte-exact `render(parse(x)) == x` conflict roundtrip — these run in the normal
+`cargo test` gate. CI (`.github/workflows/ci.yml`) runs fmt, clippy (with and
+without `mock`), the test suite on Linux/Windows/macOS, `cargo-deny`, a
+`cargo package` gate, and an `integration` job that installs several **jj
+versions** (oldest supported … latest) plus an older-git runner image and runs
+the `--ignored` suites against each, so CLI/template drift in the parsers is
+caught before users hit it.
 
 ## Publishing
 

@@ -204,12 +204,20 @@ waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10,
 
 ### Quality and project maturity
 
-- **6.9 CLI version matrix in CI.** Test against current and previous git/jj
-  releases (jj's CLI moves fast; the parsers are validated against jj 0.38
-  empirically). Pairs with the capability probes in §5 to catch parser drift
-  before users do.
-- **6.10 Fuzz and property-test the parsers.** They are pure functions over
-  arbitrary CLI text — ideal `cargo-fuzz`/proptest targets.
+- **6.9 ✅ CLI version matrix in CI.** A Linux `integration` job runs the
+  `#[ignore]` suites against jj **0.38 / 0.40 / 0.42** (floor / mid / latest,
+  installed by pinned `gh release download`) plus the floor on an older-git
+  image — catching CLI/template drift before users do. Pre-validated locally
+  against jj 0.42: zero drift (the §4/§6 surface still parses). The hermetic
+  3-OS `test` job stays on runner-default versions.
+- **6.10 ✅ Fuzz and property-test the parsers.** `proptest` (stable, in the
+  CI gate) fuzzes every pure parser in vcs-git/vcs-jj for panic-freedom on
+  arbitrary + structure-biased input, plus a byte-exact `render(parse(x))==x`
+  invariant on the conflict modules. It **found a real bug**: `parse_porcelain`
+  byte-sliced a status record assuming ASCII codes and panicked on a leading
+  multibyte char — fixed (boundary-safe `get`) with a regression test. An
+  optional `fuzz/` dir (cargo-fuzz, nightly, workspace-excluded) carries
+  libFuzzer targets for the two conflict parsers.
 - **6.11 Cookbook and positioning docs.** Task-oriented recipes, plus an
   explicit "when to use this vs `gitoxide`/`git2` bindings" guide (answer:
   when you want the installed binary's exact behaviour, config, and
