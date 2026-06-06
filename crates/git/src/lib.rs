@@ -29,7 +29,7 @@ pub use processkit::{Error, ProcessResult, Result};
 
 pub mod conflict;
 mod parse;
-pub use parse::{BlameLine, Branch, Commit, StatusEntry, Worktree};
+pub use parse::{BlameLine, Branch, BranchStatus, Commit, StatusEntry, Worktree};
 // The git-format diff model + parser and the version type are shared with
 // `vcs-jj` (identical output) — re-exported so `vcs_git::FileDiff`,
 // `vcs_git::parse_diff`, `vcs_git::GitVersion`, … still resolve.
@@ -356,6 +356,11 @@ pub trait GitApi: Send + Sync {
     /// (`git status --porcelain=v1 -z --untracked-files=no`) — "is the *tracked*
     /// tree dirty", staged or not.
     async fn status_tracked(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
+    /// A combined branch + working-tree snapshot in **one** spawn
+    /// (`git status --porcelain=v2 --branch -z`): HEAD, branch, upstream,
+    /// ahead/behind, and change counts — the data a prompt/status-bar needs
+    /// without N round-trips. See [`BranchStatus`].
+    async fn branch_status(&self, dir: &Path) -> Result<BranchStatus>;
     /// Paths with unresolved merge conflicts, repo-relative with `/` separators
     /// (`git diff --name-only --diff-filter=U -z`). Empty when there are none.
     async fn conflicted_files(&self, dir: &Path) -> Result<Vec<String>>;
@@ -640,6 +645,16 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn status_text(&self, dir: &Path) -> Result<String> {
         self.core
             .text(self.core.command_in(dir, ["status", "--porcelain=v1"]))
+            .await
+    }
+
+    async fn branch_status(&self, dir: &Path) -> Result<BranchStatus> {
+        self.core
+            .parse(
+                self.core
+                    .command_in(dir, ["status", "--porcelain=v2", "--branch", "-z"]),
+                parse::parse_porcelain_v2,
+            )
             .await
     }
 
@@ -1679,6 +1694,7 @@ git_at_forwarders! {
         fn status() -> Result<Vec<StatusEntry>>;
         fn status_text() -> Result<String>;
         fn status_tracked() -> Result<Vec<StatusEntry>>;
+        fn branch_status() -> Result<BranchStatus>;
         fn conflicted_files() -> Result<Vec<String>>;
         fn current_branch() -> Result<String>;
         fn branches() -> Result<Vec<Branch>>;
@@ -1862,6 +1878,36 @@ mod tests {
             rec.only_call().args_str(),
             ["status", "--porcelain=v1", "-z", "--untracked-files=no"]
         );
+    }
+
+    // `branch_status` builds the porcelain v2 + branch + -z argv and parses the
+    // combined header/entry output in one call.
+    #[tokio::test]
+    async fn branch_status_builds_v2_branch_args_and_parses() {
+        let out = concat!(
+            "# branch.oid abc\0",
+            "# branch.head main\0",
+            "# branch.upstream origin/main\0",
+            "# branch.ab +1 -0\0",
+            "1 .M N... 100644 100644 100644 1 2 a.rs\0",
+            "? new.txt\0",
+        );
+        let rec = RecordingRunner::replying(Reply::ok(out));
+        let git = Git::with_runner(&rec);
+        let s = git
+            .branch_status(Path::new("."))
+            .await
+            .expect("branch_status");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["status", "--porcelain=v2", "--branch", "-z"]
+        );
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (Some(1), Some(0)));
+        assert_eq!(s.tracked_changes, 1);
+        assert_eq!(s.untracked, 1);
+        assert!(s.is_dirty());
     }
 
     // `conflicted_files` lists unmerged paths NUL-delimited (no quoting).

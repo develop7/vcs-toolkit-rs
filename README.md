@@ -172,6 +172,10 @@ that aren't modelled yet, plus `version()`.
 
 ## Recipes
 
+A few inline snippets below; the full collection — a prompt line in one call,
+open-a-PR-and-watch-CI, stash-safe switch, programmatic conflict resolution,
+backend dispatch — is in the **[Cookbook](docs/cookbook.md)**.
+
 **Stage everything changed and commit (git):**
 
 ```rust

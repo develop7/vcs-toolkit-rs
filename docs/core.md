@@ -145,6 +145,7 @@ pub async fn branch_exists(&self, name: &str) -> Result<bool>;
 pub async fn conflicted_files(&self) -> Result<Vec<String>>;
 pub async fn changed_files(&self)    -> Result<Vec<FileChange>>;
 pub async fn diff_stat(&self)        -> Result<DiffStat>;
+pub async fn snapshot(&self)         -> Result<RepoSnapshot>;
 ```
 
 `current_branch` is the current branch (git) or bookmark (jj); `None` when
@@ -164,6 +165,14 @@ copy — **repo-relative, `/` separators** (git `diff --diff-filter=U` / jj
 `changed_files` is the working-copy change set (git `status` / jj
 `diff -r @ --summary`), as `Vec<FileChange>`. `diff_stat` is the aggregate
 insertion/deletion counts.
+
+`snapshot` is the **batched** state query for a prompt/status-bar/TUI refresh —
+branch, upstream, ahead/behind, HEAD, dirtiness, change count, and operation
+state in **one or two** spawns rather than a call per field
+([`RepoSnapshot`](#reposnapshot)). git issues one `status --porcelain=v2 --branch`
+plus the cheap in-progress probe; jj issues one `log -r @` template plus a change
+count only when dirty. Note the asymmetry: `upstream`/`ahead`/`behind` are always
+`None` on jj (no git-style upstream tracking).
 
 > **Backend nuance — untracked files.** `diff_stat` counts the git working tree
 > against `HEAD` (`git diff`, which **excludes untracked files**), but on jj it
@@ -409,6 +418,25 @@ Unifies the backends' different models of "mid-operation":
 | `Merge`    | A git merge is in progress (`MERGE_HEAD` present). git only. |
 | `Rebase`   | A git rebase is in progress (a `rebase-merge`/`rebase-apply` dir present). git only. |
 | `Conflict` | The working copy has an unresolved conflict — chiefly jj, which records conflicts on the change rather than pausing an operation. On git this surfaces from `continue_in_progress`, not `in_progress_state`. |
+
+### `RepoSnapshot`
+
+The batched state from [`snapshot`](#status--files). `#[non_exhaustive]`.
+
+```rust
+#[non_exhaustive]
+pub struct RepoSnapshot {
+    pub head: Option<String>,      // working-copy commit's FULL oid (both backends); None on an unborn git repo; truncate for display
+    pub branch: Option<String>,    // current branch (git) / bookmark (jj); None when detached/unset
+    pub upstream: Option<String>,  // upstream tracking branch; None when unset, ALWAYS None on jj
+    pub ahead: Option<usize>,      // commits ahead of upstream; None with no upstream (always on jj)
+    pub behind: Option<usize>,     // commits behind upstream; None with no upstream (always on jj)
+    pub dirty: bool,               // any uncommitted change (tracked or untracked)
+    pub change_count: usize,       // number of changed paths
+    pub conflicted: bool,          // an unresolved conflict is present
+    pub operation: OperationState, // in-progress operation / conflict state
+}
+```
 
 ### `MergeProbe`
 

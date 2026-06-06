@@ -78,6 +78,37 @@ pub enum OperationState {
     Conflict,
 }
 
+/// A one-shot snapshot of the common repository state — branch, upstream
+/// tracking, ahead/behind, dirtiness, and operation state — gathered in **one or
+/// two** process spawns instead of a call per field. The data a prompt, status
+/// line, or TUI refresh needs. See [`Repo::snapshot`](crate::Repo::snapshot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RepoSnapshot {
+    /// The working-copy commit's **full** object id (git `HEAD` oid / jj `@`
+    /// commit id) on both backends; `None` on an unborn git repo. Truncate for
+    /// display.
+    pub head: Option<String>,
+    /// Current branch (git) / bookmark (jj); `None` when detached or unset.
+    pub branch: Option<String>,
+    /// Upstream tracking branch; `None` when unset, and **always `None` on jj**
+    /// (jj has no git-style upstream tracking).
+    pub upstream: Option<String>,
+    /// Commits ahead of the upstream; `None` with no upstream (always on jj).
+    pub ahead: Option<usize>,
+    /// Commits behind the upstream; `None` with no upstream (always on jj).
+    pub behind: Option<usize>,
+    /// Whether the working copy has any uncommitted change (tracked or untracked).
+    pub dirty: bool,
+    /// Number of changed paths (tracked + untracked on git; the `@` change's
+    /// files on jj).
+    pub change_count: usize,
+    /// Whether the working copy has an unresolved conflict.
+    pub conflicted: bool,
+    /// In-progress operation / conflict state (see [`OperationState`]).
+    pub operation: OperationState,
+}
+
 /// The outcome of a [`try_merge`](crate::Repo::try_merge) probe. The probe
 /// itself is rolled back before it returns, whatever the outcome — this only
 /// *reports* what a real merge would do.

@@ -10,6 +10,10 @@ crates; tag releases as `vcs-git-v<version>`.
 ## [Unreleased]
 
 ### Added
+- `branch_status(dir) -> BranchStatus` — a combined branch + working-tree
+  snapshot in **one** spawn (`status --porcelain=v2 --branch -z`): HEAD, branch,
+  upstream, ahead/behind, and tracked/untracked/conflict counts. The cheap
+  primitive behind the facade's `Repo::snapshot`. `BranchStatus` is re-exported.
 - `fetch_from(dir, remote)` — fetch from a *named* remote (`fetch --quiet
   <remote>`), with the same terminal-prompt-off and transient-retry behaviour as
   `fetch`.

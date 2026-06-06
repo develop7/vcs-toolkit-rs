@@ -158,7 +158,9 @@ committed.
 
 ## Releasing and the changelog
 
-Each crate releases **independently** — they do not share a version.
+Each crate releases **independently** — they do not share a version. The
+stability tiers, the SemVer/MSRV policy, and the public-API review gate for 1.0
+live in **[docs/stability.md](docs/stability.md)**.
 
 - **The crate's `Cargo.toml` `version` is the single source of truth.** The
   release workflow bumps it (you never type a version); never let the manifest,

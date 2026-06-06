@@ -47,7 +47,7 @@ mod jj_backend;
 
 pub use dto::{
     BackendKind, ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState,
-    WorktreeInfo,
+    RepoSnapshot, WorktreeInfo,
 };
 pub use error::{Error, Result};
 
@@ -360,6 +360,19 @@ impl<R: ProcessRunner> Repo<R> {
         }
     }
 
+    /// A batched [`RepoSnapshot`] of the common repo state — branch, upstream,
+    /// ahead/behind, dirtiness, change count, and operation state — in **one or
+    /// two** spawns instead of a call per field (git: `status --porcelain=v2
+    /// --branch` + the in-progress probe; jj: one `log -r @` template + a change
+    /// count). Built for prompt/status-bar/TUI refreshes. Note the asymmetry:
+    /// `upstream`/`ahead`/`behind` are always `None` on jj.
+    pub async fn snapshot(&self) -> Result<RepoSnapshot> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::snapshot(g, &self.cwd).await,
+            Backend::Jj(j) => jj_backend::snapshot(j, &self.cwd).await,
+        }
+    }
+
     /// Commit exactly `paths` with `message` (git `commit --only`, jj
     /// `commit <filesets>`). Paths are repo-relative.
     pub async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()> {
@@ -581,6 +594,8 @@ pub trait VcsRepo: Send + Sync {
     async fn changed_files(&self) -> Result<Vec<FileChange>>;
     /// See [`Repo::diff_stat`].
     async fn diff_stat(&self) -> Result<DiffStat>;
+    /// See [`Repo::snapshot`].
+    async fn snapshot(&self) -> Result<RepoSnapshot>;
     /// See [`Repo::commit_paths`].
     async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()>;
     /// See [`Repo::fetch`].
@@ -657,6 +672,9 @@ impl<R: ProcessRunner> VcsRepo for Repo<R> {
     }
     async fn diff_stat(&self) -> Result<DiffStat> {
         self.diff_stat().await
+    }
+    async fn snapshot(&self) -> Result<RepoSnapshot> {
+        self.snapshot().await
     }
     async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()> {
         self.commit_paths(paths, message).await
@@ -781,6 +799,73 @@ mod tests {
 
     fn jj_repo(runner: ScriptedRunner) -> Repo<ScriptedRunner> {
         Repo::from_jj("/repo", "/repo", Jj::with_runner(runner))
+    }
+
+    // --- snapshot ----------------------------------------------------------
+
+    // git: one porcelain-v2 call + a git-dir probe → a combined RepoSnapshot.
+    #[tokio::test]
+    async fn git_snapshot_combines_v2_status_and_op_state() {
+        let v2 = concat!(
+            "# branch.oid abc123\0",
+            "# branch.head main\0",
+            "# branch.upstream origin/main\0",
+            "# branch.ab +2 -0\0",
+            "1 .M N... 100644 100644 100644 1 2 a.rs\0",
+            "? new.txt\0",
+        );
+        // An empty git dir → no MERGE_HEAD / rebase dir → Clear.
+        let gitdir = TempDir::new("snap-git");
+        let repo = git_repo(
+            ScriptedRunner::new()
+                .on(["status", "--porcelain=v2"], Reply::ok(v2))
+                .on(
+                    ["rev-parse", "--git-dir"],
+                    Reply::ok(gitdir.path().to_str().unwrap()),
+                ),
+        );
+        let s = repo.snapshot().await.unwrap();
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (Some(2), Some(0)));
+        assert!(s.dirty);
+        assert_eq!(s.change_count, 2, "1 tracked + 1 untracked");
+        assert!(!s.conflicted);
+        assert_eq!(s.operation, OperationState::Clear);
+    }
+
+    // jj: one template row + a status count; a conflicted @ maps to Conflict; no
+    // git-style upstream/ahead/behind.
+    #[tokio::test]
+    async fn jj_snapshot_from_template_with_change_count() {
+        let repo = jj_repo(
+            ScriptedRunner::new()
+                .on(["log"], Reply::ok("deadbeef\tmain\t0\t1\n")) // empty=0 dirty, conflict=1
+                .on(["diff"], Reply::ok("M a.rs\nA b.rs\n")), // status -r @ --summary → 2
+        );
+        let s = repo.snapshot().await.unwrap();
+        assert_eq!(s.head.as_deref(), Some("deadbeef"));
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert!(s.dirty);
+        assert_eq!(s.change_count, 2);
+        assert!(s.conflicted);
+        assert_eq!(s.operation, OperationState::Conflict);
+        assert_eq!(s.upstream, None);
+        assert_eq!((s.ahead, s.behind), (None, None));
+    }
+
+    // jj: a clean `@` (empty=1) skips the change-count spawn entirely — the test
+    // scripts NO `diff` rule, so calling `status` would error.
+    #[tokio::test]
+    async fn jj_snapshot_clean_skips_change_count() {
+        let repo = jj_repo(ScriptedRunner::new().on(["log"], Reply::ok("c0ffee\t\t1\t0\n")));
+        let s = repo.snapshot().await.unwrap();
+        assert_eq!(s.head.as_deref(), Some("c0ffee"));
+        assert_eq!(s.branch, None, "no bookmark");
+        assert!(!s.dirty);
+        assert_eq!(s.change_count, 0);
+        assert!(!s.conflicted);
+        assert_eq!(s.operation, OperationState::Clear);
     }
 
     #[tokio::test]

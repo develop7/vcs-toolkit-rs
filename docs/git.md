@@ -103,6 +103,7 @@ Working-tree inspection and the index.
 async fn status(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
 async fn status_text(&self, dir: &Path) -> Result<String>;
 async fn status_tracked(&self, dir: &Path) -> Result<Vec<StatusEntry>>;
+async fn branch_status(&self, dir: &Path) -> Result<BranchStatus>;
 async fn add(&self, dir: &Path, paths: &[PathBuf]) -> Result<()>;
 async fn staged_is_empty(&self, dir: &Path) -> Result<bool>;
 async fn conflicted_files(&self, dir: &Path) -> Result<Vec<String>>;
@@ -112,6 +113,11 @@ async fn conflicted_files(&self, dir: &Path) -> Result<Vec<String>>;
 - **`status_text`** — the raw porcelain text (`--porcelain=v1`), unparsed.
 - **`status_tracked`** — `status` ignoring untracked files (`--untracked-files=no`);
   "is the *tracked* tree dirty", staged or not.
+- **`branch_status`** — a combined branch + working-tree snapshot in **one** spawn
+  (`status --porcelain=v2 --branch -z`): HEAD, branch, upstream, ahead/behind, and
+  change counts ([`BranchStatus`](#branchstatus)) — the cheap primitive behind the
+  facade's [`Repo::snapshot`](core.md#status--files). Use it for a prompt/status-bar
+  line without N round-trips.
 - **`add`** — `git add -- <paths>` (the `--` keeps a path from being read as a flag).
 - **`staged_is_empty`** — `git diff --cached --quiet`, exit-code mapped: `true` =
   nothing staged.
@@ -678,6 +684,22 @@ One entry from `git status --porcelain=v1 -z`.
 | `code` | `String` | two-character status code, e.g. `" M"`, `"??"`, `"A "`, `"R "` |
 | `path` | `String` | the path (the *new* path for a rename/copy); raw, unquoted |
 | `orig_path` | `Option<String>` | the original path for a rename/copy; `None` otherwise |
+
+### `BranchStatus`
+
+The combined snapshot from `branch_status` (`status --porcelain=v2 --branch -z`).
+`is_dirty()` returns whether there's any change (tracked or untracked).
+
+| field | type | meaning |
+|-------|------|---------|
+| `head` | `Option<String>` | HEAD commit's full oid; `None` on an unborn repo (truncate for display) |
+| `branch` | `Option<String>` | current branch; `None` when detached |
+| `upstream` | `Option<String>` | upstream tracking branch; `None` when unset |
+| `ahead` | `Option<usize>` | commits ahead of upstream; `None` with no upstream |
+| `behind` | `Option<usize>` | commits behind upstream; `None` with no upstream |
+| `tracked_changes` | `usize` | changed tracked entries (`1`/`2`/`u` records) |
+| `untracked` | `usize` | untracked files (`?` records) |
+| `conflicts` | `usize` | unmerged entries (`u` records; also in `tracked_changes`) |
 
 ### `Commit`
 

@@ -22,6 +22,40 @@ pub struct StatusEntry {
     pub orig_path: Option<String>,
 }
 
+/// A combined branch + working-tree snapshot from `git status --porcelain=v2
+/// --branch -z`: HEAD, branch, upstream tracking, ahead/behind, and change
+/// counts — everything a prompt/status-bar needs, in **one** process spawn.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct BranchStatus {
+    /// The HEAD commit's full object id (`# branch.oid`); `None` on an unborn
+    /// repo (git reports `(initial)`). Truncate for display.
+    pub head: Option<String>,
+    /// Current branch name (`# branch.head`); `None` when detached.
+    pub branch: Option<String>,
+    /// Upstream tracking branch (`# branch.upstream`); `None` when unset.
+    pub upstream: Option<String>,
+    /// Commits ahead of the upstream (`# branch.ab +A`); `None` when no upstream.
+    pub ahead: Option<usize>,
+    /// Commits behind the upstream (`# branch.ab -B`); `None` when no upstream.
+    pub behind: Option<usize>,
+    /// Count of changed *tracked* entries — modified/added/deleted/renamed/copied
+    /// and unmerged (the `1`/`2`/`u` records).
+    pub tracked_changes: usize,
+    /// Count of untracked files (the `?` records).
+    pub untracked: usize,
+    /// Count of unmerged (conflicted) entries (the `u` records; also in
+    /// `tracked_changes`).
+    pub conflicts: usize,
+}
+
+impl BranchStatus {
+    /// Whether the working tree has any change at all — tracked or untracked.
+    pub fn is_dirty(&self) -> bool {
+        self.tracked_changes > 0 || self.untracked > 0
+    }
+}
+
 /// A commit, parsed from a `\x1f`-delimited `git log` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -93,6 +127,53 @@ pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
         });
     }
     entries
+}
+
+/// Parse `git status --porcelain=v2 --branch -z` output into a [`BranchStatus`].
+///
+/// Records are NUL-terminated: `# branch.*` header lines first, then entry lines
+/// (`1`/`2` changed, `u` unmerged, `?` untracked, `!` ignored). A `2` (rename/copy)
+/// entry stores its original path as the *next* NUL record, so that record is
+/// consumed and skipped. Everything is `strip_prefix`/compare based — no byte
+/// indexing — so arbitrary bytes never panic (proven by proptest).
+pub(crate) fn parse_porcelain_v2(output: &str) -> BranchStatus {
+    let mut status = BranchStatus::default();
+    let mut records = output.split('\0');
+    while let Some(rec) = records.next() {
+        if let Some(rest) = rec.strip_prefix("# branch.oid ") {
+            // `(initial)` marks an unborn repo (no commits yet).
+            status.head = (rest != "(initial)").then(|| rest.to_string());
+        } else if let Some(rest) = rec.strip_prefix("# branch.head ") {
+            status.branch = (rest != "(detached)").then(|| rest.to_string());
+        } else if let Some(rest) = rec.strip_prefix("# branch.upstream ") {
+            status.upstream = Some(rest.to_string());
+        } else if let Some(rest) = rec.strip_prefix("# branch.ab ") {
+            // `+<ahead> -<behind>`.
+            let mut parts = rest.split(' ');
+            status.ahead = parts
+                .next()
+                .and_then(|t| t.strip_prefix('+'))
+                .and_then(|n| n.parse().ok());
+            status.behind = parts
+                .next()
+                .and_then(|t| t.strip_prefix('-'))
+                .and_then(|n| n.parse().ok());
+        } else if rec.starts_with("1 ") {
+            status.tracked_changes += 1;
+        } else if rec.starts_with("2 ") {
+            status.tracked_changes += 1;
+            // The rename/copy original path is the next NUL record; consume it so
+            // it isn't mis-read as another entry.
+            records.next();
+        } else if rec.starts_with("u ") {
+            status.tracked_changes += 1;
+            status.conflicts += 1;
+        } else if rec.starts_with("? ") {
+            status.untracked += 1;
+        }
+        // `! ` (ignored) and other `# ` headers contribute nothing.
+    }
+    status
 }
 
 /// Parse `git --version` output (`git version 2.54.0.windows.1`) into the shared
@@ -399,6 +480,53 @@ mod tests {
         assert_eq!(entries[0].path, "a.rs");
     }
 
+    #[test]
+    fn porcelain_v2_parses_branch_and_change_counts() {
+        // The rename's original path (`1 trap.rs`) is the next NUL record; it must
+        // be CONSUMED, not counted as a fourth `1 …` change.
+        let out = concat!(
+            "# branch.oid abcdef1234567890\0",
+            "# branch.head main\0",
+            "# branch.upstream origin/main\0",
+            "# branch.ab +2 -1\0",
+            "1 .M N... 100644 100644 100644 1111 2222 a.rs\0",
+            "2 R. N... 100644 100644 100644 3333 4444 R100 new.rs\0",
+            "1 trap.rs\0",
+            "u UU N... 100644 100644 100644 100644 5 6 7 conflict.rs\0",
+            "? untracked.txt\0",
+            "! ignored.txt\0",
+        );
+        let s = parse_porcelain_v2(out);
+        assert_eq!(s.head.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (Some(2), Some(1)));
+        assert_eq!(
+            s.tracked_changes, 3,
+            "1 + 2(rename) + u; the trap is consumed"
+        );
+        assert_eq!(s.untracked, 1);
+        assert_eq!(s.conflicts, 1);
+        assert!(s.is_dirty());
+    }
+
+    #[test]
+    fn porcelain_v2_handles_unborn_detached_and_no_upstream() {
+        // Unborn repo: `(initial)` oid, no ab line, clean tree.
+        let s = parse_porcelain_v2("# branch.oid (initial)\0# branch.head main\0");
+        assert_eq!(s.head, None);
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream, None);
+        assert_eq!((s.ahead, s.behind), (None, None));
+        assert!(!s.is_dirty());
+
+        // Detached HEAD, no upstream tracking.
+        let s = parse_porcelain_v2("# branch.oid deadbeef\0# branch.head (detached)\0");
+        assert_eq!(s.head.as_deref(), Some("deadbeef"));
+        assert_eq!(s.branch, None);
+        assert_eq!(s.upstream, None);
+    }
+
     // --line-porcelain repeats the full metadata for every line; the group
     // count appears only on a group's first header, and `boundary` is a
     // valueless tag — both must parse.
@@ -582,6 +710,7 @@ mod proptests {
         #[test]
         fn parsers_never_panic_on_arbitrary_text(s in any::<String>()) {
             let _ = parse_porcelain(&s);
+            let _ = parse_porcelain_v2(&s);
             let _ = parse_log(&s);
             let _ = parse_branches(&s);
             let _ = parse_worktree_porcelain(&s);
@@ -596,8 +725,28 @@ mod proptests {
         #[test]
         fn parsers_never_panic_on_structured_text(s in structured_doc()) {
             let _ = parse_porcelain(&s);
+            let _ = parse_porcelain_v2(&s);
             let _ = parse_log(&s);
             let _ = parse_blame_porcelain(&s);
+        }
+
+        // porcelain v2 header/entry lines (with the `2`-consumes-next-record path)
+        // must never panic on arbitrary NUL-joined records.
+        #[test]
+        fn porcelain_v2_never_panics(records in prop::collection::vec(
+            prop_oneof![
+                Just("# branch.oid (initial)".to_string()),
+                Just("# branch.head main".to_string()),
+                Just("# branch.ab +1 -2".to_string()),
+                "1 [.MADRCU]{2} [a-zé /]{0,10}".prop_map(|s| s),
+                "2 R\\. .* R100 [a-zé /]{0,8}".prop_map(|s| s),
+                "u UU [a-zé /]{0,8}".prop_map(|s| s),
+                "\\? [a-zé /]{0,8}".prop_map(|s| s),
+                "[a-zé0-9# ]{0,12}".prop_map(|s| s),
+            ],
+            0..20,
+        ).prop_map(|r| r.join("\0"))) {
+            let _ = parse_porcelain_v2(&records);
         }
     }
 }

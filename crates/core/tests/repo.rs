@@ -5,7 +5,7 @@
 //! Scaffolding (throwaway repos, raw scenario steps) comes from `vcs-testkit`;
 //! the typed facade under test does the rest.
 
-use vcs_core::{BackendKind, ChangeKind, Repo};
+use vcs_core::{BackendKind, ChangeKind, OperationState, Repo};
 use vcs_testkit::{GitSandbox, JjSandbox, git, jj};
 
 /// A git sandbox with the one seed commit the facade tests build on.
@@ -13,6 +13,74 @@ fn seeded_git() -> GitSandbox {
     let repo = GitSandbox::init("facade");
     repo.commit_file("seed.txt", "seed\n", "initial");
     repo
+}
+
+// The batched snapshot against real git: branch, a local-tracking upstream with
+// ahead/behind, dirtiness, and a Clear operation — all from `status --porcelain=v2
+// --branch`.
+#[tokio::test]
+#[ignore = "requires the git binary"]
+async fn snapshot_git_branch_upstream_ahead_and_dirty() {
+    let sandbox = seeded_git();
+    let dir = sandbox.path();
+    let repo = Repo::open(dir).expect("open");
+    let branch = repo
+        .current_branch()
+        .await
+        .expect("branch")
+        .expect("named branch");
+
+    // Clean, no upstream configured yet.
+    let s = repo.snapshot().await.expect("snapshot");
+    assert_eq!(s.branch.as_deref(), Some(branch.as_str()));
+    assert!(!s.dirty && s.change_count == 0);
+    assert_eq!(s.upstream, None);
+    assert_eq!((s.ahead, s.behind), (None, None));
+    assert_eq!(s.operation, OperationState::Clear);
+    assert!(s.head.is_some());
+
+    // Track a *local* branch as upstream (no remote needed), then commit ahead and
+    // leave an untracked file so the snapshot is dirty.
+    git(dir, &["branch", "base"]); // base = the seed commit
+    git(dir, &["branch", "--set-upstream-to=base"]); // current branch tracks base
+    sandbox.commit_file("a.txt", "a\n", "ahead by one"); // +1 vs base
+    sandbox.write("dirty.txt", "x\n"); // an untracked change
+
+    let s = repo.snapshot().await.expect("snapshot");
+    assert_eq!(s.upstream.as_deref(), Some("base"));
+    assert_eq!(s.ahead, Some(1), "one commit ahead of base");
+    assert_eq!(s.behind, Some(0));
+    assert!(s.dirty);
+    assert!(s.change_count >= 1);
+}
+
+// The batched snapshot against real jj: dirtiness + change count from the `@`
+// change, a bookmark as the branch, and the documented no-upstream asymmetry.
+#[tokio::test]
+#[ignore = "requires the jj binary"]
+async fn snapshot_jj_dirty_bookmark_and_no_upstream() {
+    let sandbox = JjSandbox::init("snap-jj");
+    let dir = sandbox.path();
+    let repo = Repo::open(dir).expect("open");
+
+    // A fresh empty `@`: clean, no git-style upstream.
+    let s = repo.snapshot().await.expect("snapshot");
+    assert!(!s.dirty && s.change_count == 0);
+    assert_eq!(s.upstream, None);
+    assert_eq!((s.ahead, s.behind), (None, None));
+    assert_eq!(s.operation, OperationState::Clear);
+    assert!(s.head.is_some());
+
+    // A new file makes `@` dirty (jj snapshots it) with a change count.
+    sandbox.write("new.txt", "new\n");
+    let s = repo.snapshot().await.expect("snapshot");
+    assert!(s.dirty);
+    assert!(s.change_count >= 1);
+
+    // A bookmark on `@` surfaces as the branch.
+    sandbox.bookmark("feature");
+    let s = repo.snapshot().await.expect("snapshot");
+    assert_eq!(s.branch.as_deref(), Some("feature"));
 }
 
 #[tokio::test]

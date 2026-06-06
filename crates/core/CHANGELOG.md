@@ -10,6 +10,12 @@ crates; tag releases as `vcs-core-v<version>`.
 ## [Unreleased]
 
 ### Added
+- `Repo::snapshot() -> RepoSnapshot` (also on `VcsRepo`) — a batched query for a
+  prompt/status-bar/TUI: branch, upstream, ahead/behind, HEAD, dirtiness, change
+  count, and operation state in **one or two** spawns instead of N. git uses one
+  `status --porcelain=v2 --branch` + the in-progress probe; jj uses one
+  `log -r @` template + a change count only when dirty. `upstream`/`ahead`/
+  `behind` are always `None` on jj. `RepoSnapshot` is re-exported.
 - `Repo::conflicted_files()` (also on `VcsRepo`) — paths with unresolved merge
   conflicts in the working copy (git `diff --diff-filter=U` / jj
   `resolve --list -r @`).

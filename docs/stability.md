@@ -1,0 +1,89 @@
+# Stability, versioning & the path to 1.0
+
+How far each crate has settled, what a version number promises, the MSRV
+contract, and the gate this workspace holds itself to before tagging a `1.0`.
+
+## Versioning
+
+Every crate is **versioned and published independently** and adheres to
+[SemVer](https://semver.org/spec/v2.0.0.html); each has its own `CHANGELOG.md`
+([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)) and is tagged
+`<crate>-v<version>`. There is no workspace-wide version.
+
+While a crate is **pre-1.0 (`0.x`)**, a SemVer **minor** bump (`0.x → 0.(x+1)`)
+may carry breaking changes and a **patch** (`0.x.y → 0.x.(y+1)`) is
+non-breaking — the standard Cargo `^0.x` interpretation. Breaking changes are
+allowed at `0.x` and called out in the changelog's `### Changed`/`### Removed`.
+After a crate reaches **`1.0`**, it switches to strict SemVer: breaking changes
+require a **major** bump.
+
+Because the crates depend on each other (`vcs-core` → `vcs-git`/`vcs-jj`; the
+wrappers → the foundational `vcs-diff`/`vcs-cli-support`), each intra-workspace
+dependency carries a `^MAJOR.MINOR` requirement that must stay in range when a
+dependency crosses a boundary — see the release process in
+[AGENTS.md](../AGENTS.md) and the publish ordering in `release.yml`.
+
+## Stability tiers
+
+All crates are **pre-1.0** today — the API may still change. Relative maturity:
+
+| Crate | Version | Tier | Notes |
+|---|---|---|---|
+| `vcs-diff` | 0.1 | **settling** | Small, pure (diff model + parser, `Version`); shape unlikely to change. |
+| `vcs-cli-support` | 0.1 | **settling** | The argv guard, fetch policy, and error classifiers — a narrow, stable surface. |
+| `vcs-testkit` | 0.1 | **stable-ish (dev-only)** | Test fixtures; only a dev-dependency, so churn never reaches a release build. |
+| `vcs-git` | 0.4 | **maturing** | Broad surface, consumer-validated; new typed methods still land (additive). |
+| `vcs-jj` | 0.4 | **maturing** | Tracks jj, whose CLI/template surface churns — see the CI version matrix. |
+| `vcs-github` | 0.4 | **maturing** | The `gh` PR/issue/run/release surface; additive growth. |
+| `vcs-core` | 0.2 | **evolving** | The facade's common surface grows as cross-backend needs surface (e.g. `snapshot`). |
+
+"Settling" = close to its 1.0 shape; "maturing" = the surface is broad and
+proven but still grows additively; "evolving" = expect the most movement.
+
+## MSRV policy
+
+The **minimum supported Rust version is 1.88** (edition 2024 needs 1.85, but the
+wrappers use let-chains, stabilised in 1.88). It is declared once in
+`[workspace.package]` as `rust-version = "1.88"` and inherited by every crate, so
+`cargo build` on an older toolchain fails early with a clear message — the
+contract is **machine-checked**, not just documented.
+
+An MSRV bump is treated as a **minor**-version change (a `0.x` minor today; a
+major after 1.0 if a consumer pins an older toolchain) and is called out in the
+changelog. We bump the MSRV only when a dependency or a genuinely useful language
+feature requires it — not casually.
+
+## Public-API review checklist (the 1.0 gate)
+
+Before any crate is tagged `1.0`, its public surface is reviewed against the
+invariants this workspace already holds (most are enforced today; 1.0 makes them
+a promise):
+
+- **Trait object-safety & mockability.** Each `*Api` trait stays object-safe and
+  `mockall`-friendly: no generic methods, no nested-reference lifetimes (owned
+  `&[String]`/`Option<String>`, not `&[&str]`/`Option<&str>`), so `&dyn Api`,
+  `async-trait`, and the `mock` feature all keep working.
+- **`#[non_exhaustive]` on returned types.** Every struct/enum a consumer *reads*
+  (DTOs, parsed results) is `#[non_exhaustive]` so a new field/variant isn't a
+  breaking change — except deliberate value types (`Version`) that callers
+  legitimately construct.
+- **Structured errors.** Failures surface as `processkit::Error` variants
+  (`Exit`/`Timeout`/`Spawn`/`Parse`), never a stringly-typed blob; the facade adds
+  only repo-detection variants. Classifiers (`is_merge_conflict`, …) give intent
+  without matching on internals.
+- **Injection-safe by default.** Caller strings in bare positional argv slots are
+  guarded (`reject_flag_like`); flag-value slots are documented as exempt.
+- **No leaked internals.** Re-exports are explicit (no glob leaks); private
+  parsers/helpers stay private; the `cli_client!` seam isn't part of the surface.
+- **Docs + tests.** Every public method has a doc comment and at least a hermetic
+  test pinning its argv/parse; the pure parsers are property-tested for
+  panic-freedom; real-binary behaviour is covered by the `#[ignore]` integration
+  suites (CI version-matrixes jj).
+
+## See also
+
+- [AGENTS.md](../AGENTS.md) — the release process, changelog curation, and
+  dependency conventions.
+- [Process model & errors](process-model.md) — the error model the API review
+  references.
+- [ROADMAP.md](../ROADMAP.md) — `6.12` and the remaining path-to-1.0 work.

@@ -49,6 +49,13 @@ These apply across the wrapper crates:
   `processkit::Error` variants and how to branch on them structurally, and the
   four observability seams (argv recording, streaming, the `tracing` feature,
   the dry-run harness).
+- **[Cookbook](cookbook.md)** — task-oriented end-to-end recipes (a prompt line
+  in one call, open-a-PR-and-watch-CI, stash-safe switch, programmatic conflict
+  resolution, backend dispatch, jj transaction).
+- **[When to use this vs `gitoxide`/`git2`](positioning.md)** — the
+  subprocess-vs-in-process trade-off and an honest comparison table.
+- **[Stability, versioning & path to 1.0](stability.md)** — per-crate stability
+  tiers, the SemVer + MSRV policy, and the public-API review gate.
 
 ## How the guides relate
 

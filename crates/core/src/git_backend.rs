@@ -7,7 +7,8 @@ use processkit::ProcessRunner;
 use vcs_git::{Git, GitApi, StatusEntry, WorktreeAdd};
 
 use crate::dto::{
-    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, WorktreeInfo,
+    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
+    WorktreeInfo,
 };
 use crate::error::Result;
 
@@ -106,6 +107,44 @@ pub(crate) async fn diff_stat<R: ProcessRunner>(git: &Git<R>, dir: &Path) -> Res
         "HEAD"
     };
     git.diff_stat(dir, range).await.map_err(Into::into)
+}
+
+pub(crate) async fn snapshot<R: ProcessRunner>(git: &Git<R>, dir: &Path) -> Result<RepoSnapshot> {
+    // 1 spawn: branch + upstream + ahead/behind + change counts (porcelain v2).
+    let bs = git.branch_status(dir).await?;
+    // 1 spawn: resolve the git dir, then a filesystem probe for an interrupted
+    // merge/rebase (porcelain v2 doesn't report it). A git conflict is part of
+    // that paused state, so `operation` is Merge/Rebase/Clear here (matching
+    // `in_progress_state`); the unresolved-files signal is `conflicted`. Mirrors
+    // the client's private `resolved_git_dir` (relative `--git-dir` → join `dir`).
+    let raw = git.git_dir(dir).await?;
+    let git_dir = if raw.is_absolute() {
+        raw
+    } else {
+        dir.join(raw)
+    };
+    let operation = if git_dir.join("MERGE_HEAD").exists() {
+        OperationState::Merge
+    } else if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        OperationState::Rebase
+    } else {
+        OperationState::Clear
+    };
+    // Derive before moving the String fields out of `bs`.
+    let dirty = bs.is_dirty();
+    let change_count = bs.tracked_changes + bs.untracked;
+    let conflicted = bs.conflicts > 0;
+    Ok(RepoSnapshot {
+        head: bs.head,
+        branch: bs.branch,
+        upstream: bs.upstream,
+        ahead: bs.ahead,
+        behind: bs.behind,
+        dirty,
+        change_count,
+        conflicted,
+        operation,
+    })
 }
 
 pub(crate) async fn commit_paths<R: ProcessRunner>(

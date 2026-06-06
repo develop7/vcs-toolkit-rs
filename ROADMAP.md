@@ -137,9 +137,9 @@ colocates by default depends on the jj version *and* `git.colocate` config, so
 
 Where the toolkit could go as a general-purpose "typed CLI automation" SDK,
 regardless of what the current consumers need. Being executed as a program of
-waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10,
-**C** = 6.4+6.5+6.11+6.12, **D** = 6.1 (forges), **E** = 6.6 (watching),
-**F** = 6.8 (vcs-mcp; depends on Wave A).
+waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
+(✅ done), **C** = 6.4+6.5+6.11+6.12 (✅ done; 6.5 spec-only), **D** = 6.1
+(forges), **E** = 6.6 (watching), **F** = 6.8 (vcs-mcp; depends on Wave A).
 
 ### New forges
 
@@ -167,14 +167,27 @@ waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10,
 
 ### Performance
 
-- **6.4 Batched snapshot queries.** `Repo::snapshot()` collecting branch,
-  status, ahead/behind, and head metadata in one or two process spawns
-  (git `for-each-ref`/`status -z` combined formats; one jj template query)
-  instead of N round-trips — what prompt and TUI integrations actually need.
-- **6.5 Persistent query sessions.** `git cat-file --batch`-style long-lived
-  children for fast object/metadata reads. Needs a long-lived-process
-  capability in `processkit` — written as an upstream spec, like the
-  streaming hooks in §5.
+- **6.4 ✅ Batched snapshot queries.** `Repo::snapshot() -> RepoSnapshot`
+  collects branch, upstream, ahead/behind, HEAD, dirtiness, change count, and
+  operation state in **one or two** spawns instead of N. git uses a single
+  `status --porcelain=v2 --branch -z` (a new `vcs_git::BranchStatus` +
+  `parse_porcelain_v2` — branch/upstream/ahead-behind/changes/unmerged in one
+  call) plus the cheap in-progress fs probe; jj uses one `log -r @` template
+  (commit id + bookmarks + `empty` + `conflict`) plus a change count only when
+  dirty. Documented asymmetry: `upstream`/`ahead`/`behind` are always `None` on
+  jj (no git-style upstream tracking).
+- **6.5 Persistent query sessions — spec delivered upstream** (toolkit adoption
+  pending a processkit release). `git cat-file --batch` / `gh api --paginate`-style
+  long-lived children for fast repeated object/metadata reads need a capability
+  `processkit` doesn't expose, and we do not fork it. *Finding:* the requirements
+  note handed to the ProcessKit project asks for a **persistent-process API** — a
+  child spawned once and held inside the same OS job, with a framed
+  request/response pipe (write a query line, read a length- or NUL-delimited
+  response), explicit cancellation and cleanup-on-drop, and a `ScriptedRunner`
+  analogue that replays canned framed responses so a batch consumer stays
+  hermetically testable (the same testability requirement as the §5.2 streaming
+  hooks). Until that ships, batch reads go through one spawn per query (or the
+  batched `snapshot` of 6.4 for the common case).
 
 ### Repo events
 
@@ -218,13 +231,19 @@ waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10,
   multibyte char — fixed (boundary-safe `get`) with a regression test. An
   optional `fuzz/` dir (cargo-fuzz, nightly, workspace-excluded) carries
   libFuzzer targets for the two conflict parsers.
-- **6.11 Cookbook and positioning docs.** Task-oriented recipes, plus an
-  explicit "when to use this vs `gitoxide`/`git2` bindings" guide (answer:
-  when you want the installed binary's exact behaviour, config, and
-  credentials — spell out the trade-off).
-- **6.12 Path to 1.0.** Per-crate stability tiers, an MSRV policy, and a
-  public API review once the consumer-driven phases (§1–§3) have settled the
-  shape.
+- **6.11 ✅ Cookbook and positioning docs.** `docs/cookbook.md` (task-oriented
+  end-to-end recipes — prompt line via `snapshot`, PR-and-watch-CI, stash-safe
+  switch, programmatic conflict resolution, backend detection, jj transaction)
+  and `docs/positioning.md` ("when to use vcs-toolkit vs `gitoxide`/`git2`": use
+  it for the installed binary's exact behaviour/config/credentials and for
+  jj+GitHub, which the libraries don't cover; reach for gitoxide/git2 for
+  in-process, no-subprocess object reads — with a fair comparison table).
+- **6.12 ✅ Path to 1.0.** `docs/stability.md`: per-crate stability tiers, the
+  SemVer/versioning policy (`0.x` allows breaking; strict after 1.0; independent
+  per-crate versions), the MSRV policy (floor `1.88`, machine-checked via
+  `rust-version`, bumps are minor), and a public-API review checklist for the
+  1.0 gate (object-safety + mockability, `#[non_exhaustive]` coverage, structured
+  errors, injection guards, no leaked internals, docs+tests).
 
 ## Deliberately out of scope
 

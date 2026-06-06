@@ -12,7 +12,8 @@ use processkit::ProcessRunner;
 use vcs_jj::{ChangedPath, Jj, JjApi, JjFileset, WorkspaceAdd};
 
 use crate::dto::{
-    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, WorktreeInfo,
+    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
+    WorktreeInfo,
 };
 use crate::error::{Error, Result};
 
@@ -92,6 +93,54 @@ pub(crate) async fn changed_files<R: ProcessRunner>(
 pub(crate) async fn diff_stat<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result<DiffStat> {
     // `jj.diff_stat` already returns the shared `vcs_diff::DiffStat` — no remap.
     jj.diff_stat(dir, "@").await.map_err(Into::into)
+}
+
+/// One `jj log -r @` template carrying everything the snapshot needs except the
+/// change count: the full commit id (`head` is the full oid on both backends —
+/// truncate for display; a short id would make a fixed-width truncation panic),
+/// the `@` change's local bookmarks (comma-joined), the `empty` flag (→ dirty),
+/// and the `conflict` flag — all bare keywords valid in the `jj log` commit context.
+const SNAPSHOT_TEMPLATE: &str = "commit_id ++ \"\\t\" ++ \
+    local_bookmarks.map(|b| b.name()).join(\",\") ++ \"\\t\" ++ \
+    if(empty, \"1\", \"0\") ++ \"\\t\" ++ if(conflict, \"1\", \"0\")";
+
+pub(crate) async fn snapshot<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result<RepoSnapshot> {
+    // 1 spawn: head/bookmark/empty/conflict for `@`.
+    let row = jj
+        .template_query(dir, "@", SNAPSHOT_TEMPLATE, Some(1))
+        .await?;
+    let mut fields = row.trim_end_matches(['\r', '\n']).split('\t');
+    let head = fields.next().filter(|s| !s.is_empty()).map(str::to_string);
+    let branch = fields
+        .next()
+        .and_then(|b| b.split(',').find(|n| !n.is_empty()))
+        .map(str::to_string);
+    let dirty = fields.next() != Some("1"); // `empty == "1"` ⇒ clean
+    let conflicted = fields.next() == Some("1");
+    // jj has no paused merge/rebase; a conflict is recorded on the change itself.
+    let operation = if conflicted {
+        OperationState::Conflict
+    } else {
+        OperationState::Clear
+    };
+    // 2nd spawn only when there's something to count.
+    let change_count = if dirty {
+        jj.status(dir).await?.len()
+    } else {
+        0
+    };
+    Ok(RepoSnapshot {
+        head,
+        branch,
+        // jj has no git-style upstream tracking.
+        upstream: None,
+        ahead: None,
+        behind: None,
+        dirty,
+        change_count,
+        conflicted,
+        operation,
+    })
 }
 
 pub(crate) async fn commit_paths<R: ProcessRunner>(
