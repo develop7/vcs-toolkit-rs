@@ -24,19 +24,10 @@ impl BackendKind {
     }
 }
 
-/// How a file changed in the working copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ChangeKind {
-    /// Added or untracked.
-    Added,
-    /// Contents modified.
-    Modified,
-    /// Removed.
-    Deleted,
-    /// Renamed (see [`FileChange::old_path`]).
-    Renamed,
-}
+/// How a file changed in the working copy — the shared [`vcs_diff::ChangeKind`]
+/// (one type across the wrappers and the facade, no remapping). The status-code
+/// mappers in the backends turn git's `XY` codes / jj's letters into it.
+pub use vcs_diff::ChangeKind;
 
 /// One changed path in the working copy, unified across `git status` /
 /// `jj diff --summary`.
@@ -51,17 +42,9 @@ pub struct FileChange {
     pub kind: ChangeKind,
 }
 
-/// Aggregate insertion/deletion counts for the working copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct DiffStat {
-    /// Number of files changed.
-    pub files_changed: usize,
-    /// Lines inserted.
-    pub insertions: usize,
-    /// Lines deleted.
-    pub deletions: usize,
-}
+/// Aggregate insertion/deletion counts for the working copy — the shared
+/// [`vcs_diff::DiffStat`], returned by the backends directly (no remapping).
+pub use vcs_diff::DiffStat;
 
 /// One attached worktree (git) / workspace (jj).
 #[derive(Debug, Clone, PartialEq, Eq)]

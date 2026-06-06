@@ -21,6 +21,13 @@ one facade:
 | `crates/jj` | `vcs-jj` | `jj` |
 | `crates/github` | `vcs-github` | `gh` (GitHub CLI) |
 | `crates/core` | `vcs-core` | — (facade over `vcs-git`/`vcs-jj`) |
+| `crates/diff` | `vcs-diff` | — (shared std-only git-format diff model + parser + `Version`) |
+| `crates/cli-support` | `vcs-cli-support` | — (shared processkit-coupled plumbing: argv guard, fetch-retry policy, error classifiers) |
+
+The two foundational crates sit BELOW the wrappers: `vcs-diff` (std-only —
+`git diff` and `jj diff --git` are byte-identical, so the diff types + parser are
+shared not duplicated) and `vcs-cli-support` (the bits needing `processkit::Error`).
+git/jj/core re-export their types, so `vcs_git::FileDiff` etc. still resolve.
 
 (There is also `crates/testkit` = `vcs-testkit`, a dependency-free dev-only
 fixture crate.) User-facing reference docs live in **[`docs/`](docs/README.md)** —

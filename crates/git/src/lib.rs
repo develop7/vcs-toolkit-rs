@@ -29,10 +29,16 @@ pub use processkit::{Error, ProcessResult, Result};
 
 pub mod conflict;
 mod parse;
-pub use parse::{
-    BlameLine, Branch, ChangeKind, Commit, DiffLine, DiffStat, FileDiff, GitVersion, Hunk,
-    StatusEntry, Worktree,
+pub use parse::{BlameLine, Branch, Commit, StatusEntry, Worktree};
+// The git-format diff model + parser and the version type are shared with
+// `vcs-jj` (identical output) — re-exported so `vcs_git::FileDiff`,
+// `vcs_git::parse_diff`, `vcs_git::GitVersion`, … still resolve.
+pub use vcs_diff::{
+    ChangeKind, DiffLine, DiffStat, FileDiff, Hunk, Version as GitVersion, parse_diff,
 };
+// The error classifiers live in the shared plumbing crate — re-exported so
+// `vcs_git::is_merge_conflict`, … still resolve.
+pub use vcs_cli_support::{is_merge_conflict, is_nothing_to_commit, is_transient_fetch_error};
 
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "git";
@@ -1028,7 +1034,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>> {
         let text = self.diff_text(dir, spec).await?;
-        Ok(parse::parse_diff(&text))
+        Ok(parse_diff(&text))
     }
 
     async fn staged_is_empty(&self, dir: &Path) -> Result<bool> {
@@ -1438,71 +1444,21 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 }
 
-// --- Error classification ----------------------------------------------------
+// --- Internal helpers --------------------------------------------------------
 //
-// git writes load-bearing diagnostics to *either* stream on failure — `CONFLICT
-// (content): …` to stdout, `Automatic merge failed …` to stderr — so these probe
-// both `stdout` and `stderr` of `Error::Exit`. Consumers call these instead of
-// re-implementing the string-scraping themselves.
+// The error classifiers (`is_merge_conflict`/`is_nothing_to_commit`/
+// `is_transient_fetch_error`), the fetch-retry policy, and the argv injection
+// guard now live in the shared `vcs-cli-support` crate (re-exported at the top of
+// this module); what remains here is git-specific.
 
 /// Git's well-known empty-tree object id — a stable stand-in for `HEAD` when
 /// diffing the working tree of an unborn (no-commits-yet) repository.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// Total attempts for a transient-retried `fetch` (1 try + 2 retries).
-const FETCH_ATTEMPTS: u32 = 3;
-/// Fixed backoff between fetch retries.
-const FETCH_BACKOFF: Duration = Duration::from_millis(500);
-
-/// Lower-case substrings marking a merge that stopped on conflicts.
-const CONFLICT_MARKERS: &[&str] = &["conflict (", "automatic merge failed"];
-/// Lower-case substrings marking a commit that found nothing to record.
-const NOTHING_TO_COMMIT_MARKERS: &[&str] = &["nothing to commit", "nothing added to commit"];
-/// Lower-case substrings marking a transient (retryable) network/fetch failure.
-const TRANSIENT_FETCH_MARKERS: &[&str] = &[
-    "could not resolve host",
-    "couldn't resolve host",
-    "temporary failure in name resolution",
-    "connection timed out",
-    "connection refused",
-    "operation timed out",
-    "timed out",
-    "network is unreachable",
-    "failed to connect",
-    "could not read from remote repository",
-    "the remote end hung up",
-    "early eof",
-    "rpc failed",
-];
-
-/// Whether `err` is an `Error::Exit` whose captured output contains any marker.
-fn exit_output_matches(err: &Error, markers: &[&str]) -> bool {
-    let Error::Exit { stdout, stderr, .. } = err else {
-        return false;
-    };
-    let out = stdout.to_ascii_lowercase();
-    let errt = stderr.to_ascii_lowercase();
-    markers.iter().any(|m| out.contains(m) || errt.contains(m))
-}
-
-/// Whether a failed `merge`/`merge_commit` stopped on a merge conflict.
-pub fn is_merge_conflict(err: &Error) -> bool {
-    exit_output_matches(err, CONFLICT_MARKERS)
-}
-
-/// Whether a failed `commit`/`commit_paths` reported nothing to commit (a clean
-/// tree), as opposed to a real error.
-pub fn is_nothing_to_commit(err: &Error) -> bool {
-    exit_output_matches(err, NOTHING_TO_COMMIT_MARKERS)
-}
-
-/// Whether a failed `fetch`/`fetch_remote_branch`/`remote_branch_exists` looks
-/// transient (DNS, timeout, dropped connection) and is worth retrying.
-pub fn is_transient_fetch_error(err: &Error) -> bool {
-    // A processkit-level timeout (a `.timeout()`-bounded run that expired) carries
-    // no captured output but is inherently transient; treat it as retryable too.
-    matches!(err, Error::Timeout { .. }) || exit_output_matches(err, TRANSIENT_FETCH_MARKERS)
-}
+/// Total attempts / fixed backoff for a transient-retried `fetch` — the shared
+/// policy from `vcs-cli-support`, aliased so the retry call sites read locally.
+const FETCH_ATTEMPTS: u32 = vcs_cli_support::FETCH_ATTEMPTS;
+const FETCH_BACKOFF: Duration = vcs_cli_support::FETCH_BACKOFF;
 
 /// Point git's editor at a no-op so any command that would open `$EDITOR`
 /// (a rebase reword, the message-confirm on `rebase --continue`) succeeds
@@ -1512,26 +1468,11 @@ fn no_editor(cmd: processkit::Command) -> processkit::Command {
         .env("GIT_SEQUENCE_EDITOR", "true")
 }
 
-/// Injection guard for bare positional argv slots: a caller-supplied value
-/// with a leading `-` would be parsed by git as a *flag* (verified: `git
-/// checkout -evil` → "unknown switch"), and an empty value silently changes
-/// most commands' meaning. Refuse both before anything spawns. Flag-VALUE
-/// positions (`-m <msg>`, `--branch <b>`) don't need this — git consumes the
-/// next token verbatim there.
+/// Injection guard for bare positional argv slots — delegates to the shared
+/// [`vcs_cli_support::reject_flag_like`], naming this crate's binary so the
+/// ~45 call sites stay `reject_flag_like(what, value)`.
 fn reject_flag_like(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') {
-        return Err(Error::Spawn {
-            program: BINARY.to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{what} {value:?} would be parsed as a flag (or is empty) — \
-                     refusing to pass it as a positional argument"
-                ),
-            ),
-        });
-    }
-    Ok(())
+    vcs_cli_support::reject_flag_like(BINARY, what, value)
 }
 
 impl<R: ProcessRunner> Git<R> {
@@ -2274,61 +2215,6 @@ mod tests {
     async fn run_args_forwards_str_slices() {
         let git = Git::with_runner(ScriptedRunner::new().on(["status", "-s"], Reply::ok("ok\n")));
         assert_eq!(git.run_args(&["status", "-s"]).await.unwrap(), "ok");
-    }
-
-    // Conflict markers live on stdout (`CONFLICT (…)`) or stderr (`Automatic
-    // merge failed`); either should classify. A plain error must not.
-    #[test]
-    fn classifies_merge_conflict() {
-        let on_stdout = Error::Exit {
-            program: "git".into(),
-            code: 1,
-            stdout: "CONFLICT (content): Merge conflict in a.rs".into(),
-            stderr: String::new(),
-        };
-        let on_stderr = Error::Exit {
-            program: "git".into(),
-            code: 1,
-            stdout: String::new(),
-            stderr: "Automatic merge failed; fix conflicts and then commit".into(),
-        };
-        let unrelated = Error::Exit {
-            program: "git".into(),
-            code: 128,
-            stdout: String::new(),
-            stderr: "fatal: not a git repository".into(),
-        };
-        assert!(is_merge_conflict(&on_stdout));
-        assert!(is_merge_conflict(&on_stderr));
-        assert!(!is_merge_conflict(&unrelated));
-        assert!(!is_nothing_to_commit(&on_stdout));
-    }
-
-    #[test]
-    fn classifies_nothing_to_commit_and_transient_fetch() {
-        let nothing = Error::Exit {
-            program: "git".into(),
-            code: 1,
-            stdout: "nothing to commit, working tree clean".into(),
-            stderr: String::new(),
-        };
-        assert!(is_nothing_to_commit(&nothing));
-
-        let dns = Error::Exit {
-            program: "git".into(),
-            code: 128,
-            stdout: String::new(),
-            stderr: "fatal: unable to access 'https://x/': Could not resolve host: x".into(),
-        };
-        assert!(is_transient_fetch_error(&dns));
-        assert!(!is_transient_fetch_error(&nothing));
-
-        // A processkit timeout (no captured output) is transient too.
-        let timeout = Error::Timeout {
-            program: "git".into(),
-            timeout: Duration::from_secs(10),
-        };
-        assert!(is_transient_fetch_error(&timeout));
     }
 
     #[tokio::test]

@@ -16,6 +16,10 @@ processkit.workspace = true
 # workspace; `version` is used when published independently.
 vcs-git = { path = "../git", version = "0.4" }
 vcs-jj = { path = "../jj", version = "0.4" }
+# Shared diff DTOs (`ChangeKind`/`DiffStat` re-exported here, so the facade and
+# the backends use one type, no remap) and the error classifiers.
+vcs-diff = { path = "../diff", version = "0.1" }
+vcs-cli-support = { path = "../cli-support", version = "0.1" }
 # `async fn` in the object-safe `VcsRepo` trait, so a consumer can hold a
 # `Box<dyn VcsRepo>` / `&dyn VcsRepo` instead of threading the runner generic.
 async-trait = "0.1"

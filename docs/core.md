@@ -235,7 +235,7 @@ pub async fn fetch_remote_branch(&self, branch: &str) -> Result<()>;
   remote-tracking ref (git `fetch_remote_branch` / jj `git fetch -b`).
 
 Transient network failures are retried by the underlying client; for retrying a
-higher-level flow, classify with `Error::is_transient_fetch`.
+higher-level flow, classify with `Error::is_transient_fetch_error`.
 
 ## Checkout / rebase
 
@@ -290,7 +290,7 @@ working-copy change.
 `in_progress_state` reports whether the working copy is mid-operation. On git it
 returns `Merge`/`Rebase` and **never `Conflict`** — a git conflict *is* that
 paused state, and the conflict itself surfaces on the failed op (via
-`Error::is_conflict`) or via `continue_in_progress`. On jj, which has no paused
+`Error::is_merge_conflict`) or via `continue_in_progress`. On jj, which has no paused
 op, it reports `Conflict` directly.
 
 `continue_in_progress` continues after conflict resolution (git:
@@ -427,7 +427,8 @@ copy-on-write strategy on top can reuse this type rather than inventing its own.
 The facade error wraps `processkit::Error` and adds detection failures:
 `NotARepository(PathBuf)`, `WorktreeNotFound(PathBuf)`, `Io(io::Error)`,
 `Vcs(processkit::Error)`. Classifiers let a caller branch without matching on
-internals: `is_conflict()`, `is_nothing_to_commit()`, `is_transient_fetch()`.
+internals: `is_merge_conflict()`, `is_nothing_to_commit()`, `is_transient_fetch_error()`
+(named to match the wrapper classifiers — one name per concept workspace-wide).
 `Result<T>` is `std::result::Result<T, Error>`. See
 [Process model & errors](process-model.md).
 

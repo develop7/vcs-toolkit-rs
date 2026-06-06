@@ -71,7 +71,13 @@ crates; tag releases as `vcs-jj-v<version>`.
   `Git` client instead.
 
 ### Changed
--
+- Internal: the diff model + parser (`ChangeKind`/`DiffLine`/`Hunk`/`FileDiff`/
+  `DiffStat`/`parse_diff`) and the version type now come from the shared
+  `vcs-diff` crate, and the transient-fetch classifier + the argv injection guard
+  from `vcs-cli-support` — both re-exported, so the public API is unchanged
+  (`vcs_jj::FileDiff`, `vcs_jj::is_transient_fetch_error`, … still resolve;
+  `JjVersion` is now an alias of `vcs_diff::Version`). Removes the byte-identical
+  duplication with `vcs-git`. `parse_diff` is now part of the public surface.
 
 ### Fixed
 -

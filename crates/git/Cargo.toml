@@ -13,6 +13,12 @@ readme = "README.md"
 # tree is killed on close — no orphaned subprocesses. Also the `ProcessRunner`
 # seam, `CliClient` core, structured `Error`, and timeouts.
 processkit.workspace = true
+# Shared git-format unified-diff model + parser and the `Version` type (`git diff`
+# and `jj diff --git` are byte-identical, so the parser is shared not duplicated).
+vcs-diff = { path = "../diff", version = "0.1" }
+# Shared processkit-coupled plumbing: the argv injection guard, fetch-retry
+# policy, and the error classifiers (re-exported below).
+vcs-cli-support = { path = "../cli-support", version = "0.1" }
 # `async fn` in the object-safe `GitApi` trait (dyn + mockall friendly).
 async-trait = "0.1"
 # Auto-generated `MockGitApi` for consumers' tests. Test-only — enabled only via

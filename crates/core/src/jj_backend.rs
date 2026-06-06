@@ -90,12 +90,8 @@ pub(crate) async fn changed_files<R: ProcessRunner>(
 }
 
 pub(crate) async fn diff_stat<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result<DiffStat> {
-    let stat = jj.diff_stat(dir, "@").await?;
-    Ok(DiffStat {
-        files_changed: stat.files_changed,
-        insertions: stat.insertions,
-        deletions: stat.deletions,
-    })
+    // `jj.diff_stat` already returns the shared `vcs_diff::DiffStat` — no remap.
+    jj.diff_stat(dir, "@").await.map_err(Into::into)
 }
 
 pub(crate) async fn commit_paths<R: ProcessRunner>(

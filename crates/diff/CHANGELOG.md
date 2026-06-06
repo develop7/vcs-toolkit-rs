@@ -1,0 +1,27 @@
+# Changelog — vcs-diff
+
+All notable changes to the `vcs-diff` crate are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+This crate is versioned and published independently of the other workspace
+crates; tag releases as `vcs-diff-v<version>`.
+
+## [Unreleased]
+
+### Added
+- Initial release: the shared git-format unified-diff model and parser —
+  `ChangeKind`, `DiffLine`, `Hunk`, `FileDiff`, `DiffStat`, and `parse_diff` —
+  plus the `Version` type and `parse_dotted_version`. Extracted from the
+  byte-identical copies previously carried by `vcs-git` and `vcs-jj` (and the
+  third `ChangeKind`/`DiffStat` copy in `vcs-core`), so the parser and the
+  version `Ord` can no longer drift between backends. Dependency-free (std
+  only); property-tested for panic-freedom.
+
+### Changed
+-
+
+### Fixed
+-
+
+[Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/diff

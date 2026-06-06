@@ -33,7 +33,14 @@ crates; tag releases as `vcs-core-v<version>`.
   nothing is ever paused; roll back via `Jj::transaction` / `op_restore`.
 
 ### Changed
--
+- **Renamed the `Error` classifiers** for one name per concept across the
+  workspace: `Error::is_conflict` → `is_merge_conflict` and
+  `Error::is_transient_fetch` → `is_transient_fetch_error` (matching the wrapper
+  classifiers); `is_nothing_to_commit` is unchanged.
+- Internal: `ChangeKind`/`DiffStat` are now the shared `vcs-diff` types
+  (re-exported, so `vcs_core::ChangeKind` still resolves), eliminating the third
+  copy and the per-backend `DiffStat` remap; the classifiers delegate to
+  `vcs-cli-support`.
 
 ### Fixed
 -

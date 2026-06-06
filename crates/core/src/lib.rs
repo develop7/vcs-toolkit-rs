@@ -462,7 +462,7 @@ impl<R: ProcessRunner> Repo<R> {
     /// knowing the backend's model. Note the asymmetry: *this method* reports
     /// `Merge`/`Rebase` (never `Conflict`) on git — a git conflict *is* that
     /// paused state, and the conflict itself surfaces on the failed op via
-    /// [`Error::is_conflict`] (or as `Conflict` from
+    /// [`Error::is_merge_conflict`] (or as `Conflict` from
     /// [`continue_in_progress`](Self::continue_in_progress)) — while jj has no
     /// paused op and reports `Conflict` directly.
     pub async fn in_progress_state(&self) -> Result<OperationState> {
@@ -1291,9 +1291,9 @@ mod tests {
             stdout: "CONFLICT (content): Merge conflict in a.rs".into(),
             stderr: String::new(),
         });
-        assert!(conflict.is_conflict());
+        assert!(conflict.is_merge_conflict());
         assert!(!conflict.is_nothing_to_commit());
         // A non-Vcs error classifies as none of them.
-        assert!(!Error::NotARepository("/x".into()).is_conflict());
+        assert!(!Error::NotARepository("/x".into()).is_merge_conflict());
     }
 }

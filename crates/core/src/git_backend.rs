@@ -95,13 +95,9 @@ pub(crate) async fn changed_files<R: ProcessRunner>(
 }
 
 pub(crate) async fn diff_stat<R: ProcessRunner>(git: &Git<R>, dir: &Path) -> Result<DiffStat> {
-    // Working tree vs the last commit.
-    let stat = git.diff_stat(dir, "HEAD").await?;
-    Ok(DiffStat {
-        files_changed: stat.files_changed,
-        insertions: stat.insertions,
-        deletions: stat.deletions,
-    })
+    // Working tree vs the last commit. `git.diff_stat` already returns the shared
+    // `vcs_diff::DiffStat` the facade exposes — no remap.
+    git.diff_stat(dir, "HEAD").await.map_err(Into::into)
 }
 
 pub(crate) async fn commit_paths<R: ProcessRunner>(

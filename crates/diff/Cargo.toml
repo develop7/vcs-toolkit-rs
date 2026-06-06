@@ -1,0 +1,19 @@
+[package]
+name = "vcs-diff"
+version = "0.1.0"
+description = "Shared git-format unified-diff model + parser and a version type for the vcs-toolkit-rs wrappers."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+# Deliberately dependency-free (std only): the diff types and parser are pure
+# data + pure functions, so this foundational crate stays light and `vcs-git` /
+# `vcs-jj` / `vcs-core` can all depend on it without pulling anything in.
+[dependencies]
+
+[dev-dependencies]
+# Property-based fuzzing of the pure parser (panic-freedom on arbitrary input).
+# Stable Rust, dev-only — stripped on publish.
+proptest = "1"

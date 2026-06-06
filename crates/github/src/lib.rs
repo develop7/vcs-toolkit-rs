@@ -41,19 +41,7 @@ const RELEASE_VIEW_FIELDS: &str = "tagName,name,body,url,publishedAt,isDraft,isP
 /// (`--body <b>`, `--branch <b>`) need no guard — gh consumes the next token
 /// verbatim there (verified).
 fn reject_flag_like(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') {
-        return Err(Error::Spawn {
-            program: BINARY.to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{what} {value:?} would be parsed as a flag (or is empty) — \
-                     refusing to pass it as a positional argument"
-                ),
-            ),
-        });
-    }
-    Ok(())
+    vcs_cli_support::reject_flag_like(BINARY, what, value)
 }
 
 /// How [`GitHubApi::pr_merge`] merges the PR — exactly one of gh's mutually

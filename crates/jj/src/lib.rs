@@ -26,10 +26,16 @@ pub use processkit::{Error, ProcessResult, Result};
 
 pub mod conflict;
 mod parse;
-pub use parse::{
-    AnnotationLine, Bookmark, BookmarkRef, Change, ChangeKind, ChangedPath, DiffLine, DiffStat,
-    FileDiff, Hunk, JjVersion, Operation, Workspace,
+pub use parse::{AnnotationLine, Bookmark, BookmarkRef, Change, ChangedPath, Operation, Workspace};
+// The git-format diff model + parser and the version type are shared with
+// `vcs-git` (identical output) — re-exported so `vcs_jj::FileDiff`,
+// `vcs_jj::parse_diff`, `vcs_jj::JjVersion`, … still resolve.
+pub use vcs_diff::{
+    ChangeKind, DiffLine, DiffStat, FileDiff, Hunk, Version as JjVersion, parse_diff,
 };
+// The transient-fetch classifier lives in the shared plumbing crate — re-exported
+// so `vcs_jj::is_transient_fetch_error` still resolves.
+pub use vcs_cli_support::is_transient_fetch_error;
 
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "jj";
@@ -139,19 +145,7 @@ fn first_bookmark(rendered: &str) -> Option<String> {
 /// (`-r <revset>`, `-m <msg>`) need no guard — jj itself rejects dash-values
 /// there with a clear error rather than misparsing them.
 fn reject_flag_like(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') {
-        return Err(Error::Spawn {
-            program: BINARY.to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{what} {value:?} would be parsed as a flag (or is empty) — \
-                     refusing to pass it as a positional argument"
-                ),
-            ),
-        });
-    }
-    Ok(())
+    vcs_cli_support::reject_flag_like(BINARY, what, value)
 }
 
 /// A pre-validated revset expression, for callers that accept revsets from
@@ -767,7 +761,7 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
 
     async fn diff(&self, dir: &Path, spec: DiffSpec) -> Result<Vec<FileDiff>> {
         let text = self.diff_text(dir, spec).await?;
-        Ok(parse::parse_diff(&text))
+        Ok(parse_diff(&text))
     }
 
     async fn commit_count(&self, dir: &Path, revset: &str) -> Result<usize> {
@@ -1173,48 +1167,10 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     }
 }
 
-// --- Error classification ----------------------------------------------------
-
-/// Total attempts for a transient-retried fetch (1 try + 2 retries).
-const FETCH_ATTEMPTS: u32 = 3;
-/// Fixed backoff between fetch retries.
-const FETCH_BACKOFF: Duration = Duration::from_millis(500);
-
-/// Lower-case substrings marking a transient (retryable) network/fetch failure.
-/// `jj git fetch` surfaces the underlying git transport error.
-const TRANSIENT_FETCH_MARKERS: &[&str] = &[
-    "could not resolve host",
-    "couldn't resolve host",
-    "temporary failure in name resolution",
-    "connection timed out",
-    "connection refused",
-    "operation timed out",
-    "timed out",
-    "network is unreachable",
-    "failed to connect",
-    "could not read from remote repository",
-    "the remote end hung up",
-    "early eof",
-    "rpc failed",
-];
-
-/// Whether a failed `git_fetch`/`git_fetch_branch` looks transient (DNS, timeout,
-/// dropped connection) and is worth retrying. Mirrors `vcs_git`'s classifier.
-pub fn is_transient_fetch_error(err: &Error) -> bool {
-    // A processkit-level timeout carries no captured output but is inherently
-    // transient; treat it as retryable too.
-    if matches!(err, Error::Timeout { .. }) {
-        return true;
-    }
-    let Error::Exit { stdout, stderr, .. } = err else {
-        return false;
-    };
-    let out = stdout.to_ascii_lowercase();
-    let errt = stderr.to_ascii_lowercase();
-    TRANSIENT_FETCH_MARKERS
-        .iter()
-        .any(|m| out.contains(m) || errt.contains(m))
-}
+/// Total attempts / fixed backoff for a transient-retried fetch — the shared
+/// policy from `vcs-cli-support`, aliased so the retry call sites read locally.
+const FETCH_ATTEMPTS: u32 = vcs_cli_support::FETCH_ATTEMPTS;
+const FETCH_BACKOFF: Duration = vcs_cli_support::FETCH_BACKOFF;
 
 impl<R: ProcessRunner> Jj<R> {
     /// Run `jj <args>` over string slices — `jj.run_args(&["log", "-r", "@"])`
@@ -1788,31 +1744,6 @@ mod tests {
     async fn run_args_forwards_str_slices() {
         let jj = Jj::with_runner(ScriptedRunner::new().on(["root"], Reply::ok("/r\n")));
         assert_eq!(jj.run_args(&["root"]).await.unwrap(), "/r");
-    }
-
-    #[test]
-    fn classifies_transient_fetch() {
-        let dns = Error::Exit {
-            program: "jj".into(),
-            code: 1,
-            stdout: String::new(),
-            stderr: "Error: Could not resolve host: example.com".into(),
-        };
-        assert!(is_transient_fetch_error(&dns));
-        let other = Error::Exit {
-            program: "jj".into(),
-            code: 1,
-            stdout: String::new(),
-            stderr: "Error: No such revision".into(),
-        };
-        assert!(!is_transient_fetch_error(&other));
-
-        // A processkit timeout (no captured output) is transient too.
-        let timeout = Error::Timeout {
-            program: "jj".into(),
-            timeout: std::time::Duration::from_secs(10),
-        };
-        assert!(is_transient_fetch_error(&timeout));
     }
 
     #[tokio::test]

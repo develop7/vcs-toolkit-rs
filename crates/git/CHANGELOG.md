@@ -69,7 +69,14 @@ crates; tag releases as `vcs-git-v<version>`.
   parses files materialized by jj's `git` conflict-marker style.
 
 ### Changed
--
+- Internal: the diff model + parser (`ChangeKind`/`DiffLine`/`Hunk`/`FileDiff`/
+  `DiffStat`/`parse_diff`) and the version type now come from the shared
+  `vcs-diff` crate, and the error classifiers (`is_merge_conflict`/
+  `is_nothing_to_commit`/`is_transient_fetch_error`) + the argv injection guard
+  from `vcs-cli-support` — both re-exported, so the public API is unchanged
+  (`vcs_git::FileDiff`, `vcs_git::is_merge_conflict`, … still resolve; `GitVersion`
+  is now an alias of `vcs_diff::Version`). Removes the byte-identical duplication
+  with `vcs-jj`. `parse_diff` is now part of the public surface.
 
 ### Fixed
 -

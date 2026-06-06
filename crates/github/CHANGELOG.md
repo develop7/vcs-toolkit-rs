@@ -40,7 +40,8 @@ crates; tag releases as `vcs-github-v<version>`.
   guard — gh consumes the next token verbatim there.
 
 ### Changed
--
+- Internal: the argv injection guard (`reject_flag_like`) now comes from the
+  shared `vcs-cli-support` crate. No public API change.
 
 ### Fixed
 -

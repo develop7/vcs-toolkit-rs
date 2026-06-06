@@ -662,6 +662,13 @@ directly (no async, no job-containment), so reserve it for short-lived cleanup.
 All result structs/enums are `#[non_exhaustive]` (except `GitVersion`) — match with
 a trailing `..` and construct via the crate, not struct literals.
 
+The diff types (`ChangeKind`, `DiffLine`, `Hunk`, `FileDiff`, `DiffStat`,
+`parse_diff`) and `GitVersion` actually live in the shared
+[`vcs-diff`](https://crates.io/crates/vcs-diff) crate — `git diff` and
+`jj diff --git` are byte-identical, so `vcs-git` and `vcs-jj` share one parser.
+They're re-exported here, so `vcs_git::FileDiff` etc. still resolve (`GitVersion`
+is an alias of `vcs_diff::Version`).
+
 ### `StatusEntry`
 
 One entry from `git status --porcelain=v1 -z`.

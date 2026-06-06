@@ -10,11 +10,12 @@ name: Release
 # A crate's first release (no `<crate>-v*` tag yet) ships its current `Cargo.toml`
 # version as-is, ignoring the bump.
 #
-# Each wrapper is versioned and published independently (see AGENTS.md
-# "Releasing"). The leaf wrappers (vcs-git/vcs-jj/vcs-github) depend only on the
-# already-published external `processkit` crate. The `vcs-core` facade is the one
-# exception: it depends on `vcs-git`/`vcs-jj`, so `all` publishes it LAST (after
-# its deps), and its `^MAJOR.MINOR` dependency must stay in range when those cross a
+# Each crate is versioned and published independently (see AGENTS.md
+# "Releasing"). Two foundational crates publish FIRST — `vcs-diff` (std-only diff
+# model) and `vcs-cli-support` (the processkit-coupled plumbing) — since the
+# wrappers depend on them. The wrappers (vcs-git/vcs-jj/vcs-github) then publish,
+# and the `vcs-core` facade LAST (it additionally depends on vcs-git/vcs-jj). Each
+# such `^MAJOR.MINOR` dependency must stay in range when a dep crosses a
 # minor/major boundary. `all` releases every crate in one run — each bumped by the
 # same chosen type, from its own current version — in a single commit + atomic
 # push, then published and tagged one by one.
@@ -37,6 +38,8 @@ on:
         type: choice
         options:
           - all
+          - vcs-diff
+          - vcs-cli-support
           - vcs-git
           - vcs-jj
           - vcs-github
@@ -104,11 +107,12 @@ jobs:
           PLAN: ${{ runner.temp }}/plan.tsv
         run: |
           set -euo pipefail
-          declare -A DIR=( [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-testkit]=crates/testkit [vcs-core]=crates/core )
+          declare -A DIR=( [vcs-diff]=crates/diff [vcs-cli-support]=crates/cli-support [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-testkit]=crates/testkit [vcs-core]=crates/core )
           if [ "$SELECTED" = "all" ]; then
-            # vcs-core last: it depends on vcs-git/vcs-jj, so they publish first.
-            # vcs-testkit has no workspace deps (any position); vcs-core last.
-            NAMES=(vcs-git vcs-jj vcs-github vcs-testkit vcs-core)
+            # Foundational crates first (vcs-diff/vcs-cli-support: git/jj/github/core
+            # depend on them), then the wrappers, then vcs-core LAST (it depends on
+            # vcs-git/vcs-jj). vcs-testkit has no workspace deps (any position).
+            NAMES=(vcs-diff vcs-cli-support vcs-git vcs-jj vcs-github vcs-testkit vcs-core)
           else
             NAMES=("$SELECTED")
           fi
@@ -289,14 +293,15 @@ jobs:
       # uploading — catches build/metadata errors before the irreversible publish.
       # `--locked` asserts Cargo.lock matches the just-bumped manifests.
       #
-      # Exception: `vcs-core` depends (by version) on `vcs-git`/`vcs-jj`. When those
-      # are being released in the SAME run, their just-bumped versions aren't on the
-      # crates.io index yet, so a registry-resolving `--dry-run` for vcs-core can't
-      # pass here (it would fail `failed to select a version for vcs-git = "^0.x"`).
-      # vcs-core publishes LAST — after its deps go live — and `cargo publish` runs
-      # its own verify build then. So for that case we instead compile vcs-core
-      # against the local (path) deps, which proves it builds without needing the
-      # registry; the packaged verify happens at publish time.
+      # Exception: a crate that depends (by version) on another crate released in
+      # the SAME run can't pass a registry-resolving `--dry-run` here — the dep's
+      # just-bumped version isn't on the crates.io index yet (it would fail e.g.
+      # `failed to select a version for vcs-diff = "^0.x"`). Those deps publish
+      # earlier in the ordered run, and `cargo publish` runs its own verify build
+      # at publish time. So when an in-run dependency is present we instead compile
+      # the crate against its local (path) deps, proving it builds without the
+      # registry. The intra-workspace dep edges: vcs-core → vcs-git/vcs-jj, and
+      # everything except vcs-testkit → the foundational vcs-diff/vcs-cli-support.
       - name: Verify crates publish (dry run)
         shell: bash
         env:
@@ -304,8 +309,16 @@ jobs:
         run: |
           set -euo pipefail
           while IFS=$'\t' read -r name dir version prev; do
+            # Does this crate have a workspace dependency also being released now?
+            in_run_dep=""
             if [ "$name" = "vcs-core" ] && grep -qP '^(vcs-git|vcs-jj)\t' "$PLAN"; then
-              echo "verify vcs-core v$version against local path deps (deps publish earlier this run; registry dry-run runs at publish time)"
+              in_run_dep="vcs-git/vcs-jj"
+            elif [ "$name" != "vcs-diff" ] && [ "$name" != "vcs-cli-support" ] && \
+                 [ "$name" != "vcs-testkit" ] && grep -qP '^(vcs-diff|vcs-cli-support)\t' "$PLAN"; then
+              in_run_dep="vcs-diff/vcs-cli-support"
+            fi
+            if [ -n "$in_run_dep" ]; then
+              echo "verify $name v$version against local path deps ($in_run_dep publish earlier this run; registry dry-run runs at publish time)"
               cargo build -p "$name" --locked
               continue
             fi

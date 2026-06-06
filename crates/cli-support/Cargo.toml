@@ -1,0 +1,15 @@
+[package]
+name = "vcs-cli-support"
+version = "0.1.0"
+description = "Shared CLI-wrapper plumbing for vcs-toolkit-rs: the argv injection guard, fetch-retry policy, and processkit::Error classifiers."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+# The structured error these helpers guard against / classify, and the program
+# launcher the wrappers share. This is the one dependency — it's why this
+# plumbing lives here and not in the std-only `vcs-diff`.
+processkit.workspace = true

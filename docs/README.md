@@ -24,6 +24,13 @@ types, and the validating newtypes — with worked examples throughout.
 | [vcs-core](core.md) | `vcs-core` | a backend-agnostic facade that detects git-vs-jj and dispatches the operations both share |
 | [vcs-testkit](testkit.md) | `vcs-testkit` | throwaway git/jj sandboxes and a bare remote for integration tests |
 
+Two **foundational crates** sit below the wrappers (no guide of their own — their
+types are re-exported by the wrappers, so you rarely name them directly):
+`vcs-diff` (the std-only git-format diff model + parser and the `Version` type —
+`git diff` and `jj diff --git` are byte-identical) and `vcs-cli-support` (the
+`processkit`-coupled plumbing: the argv injection guard, fetch-retry policy, and
+the error classifiers).
+
 ## Cross-cutting topics
 
 These apply across the wrapper crates:

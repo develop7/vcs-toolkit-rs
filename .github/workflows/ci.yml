@@ -106,13 +106,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The wrappers depend on the published `processkit` crate (and vcs-testkit
-      # on nothing), so each packages and verify-builds fully — catching missing
+      # Only crates with no *unpublished* workspace dependency can be packaged here:
+      # vcs-diff (no deps), vcs-cli-support (only the published `processkit`), and
+      # vcs-testkit (no deps). They package and verify-build fully — catching missing
       # files or bad metadata before publish.
-      - run: cargo package -p vcs-git -p vcs-jj -p vcs-github -p vcs-testkit
-      # `vcs-core` depends on the in-workspace `vcs-git`/`vcs-jj`; a verify-build
-      # here would resolve those from crates.io, which can lag the local tree. So
-      # check its file list + metadata only (`--no-verify`) — the workspace test
-      # job already verify-builds it against the local path deps, and the release
-      # dry-run does a full verify against the published deps at release time.
-      - run: cargo package -p vcs-core --no-verify
+      - run: cargo package -p vcs-diff -p vcs-cli-support -p vcs-testkit
+      # vcs-git/vcs-jj/vcs-github/vcs-core depend (by version) on in-workspace crates
+      # not yet on crates.io — vcs-diff/vcs-cli-support, and vcs-core also on
+      # vcs-git/vcs-jj. `cargo package` (even `--no-verify`) refuses to prepare a
+      # crate whose deps it can't resolve for upload, so they can't be packaged until
+      # those deps publish. Their compile is covered by the `test`/`clippy` jobs
+      # (against the local path deps), and the release workflow verify-builds each
+      # against the local tree (or the published deps) at release time.

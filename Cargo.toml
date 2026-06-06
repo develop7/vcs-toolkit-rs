@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/git", "crates/jj", "crates/github", "crates/core", "crates/testkit"]
+members = [
+    "crates/diff",
+    "crates/cli-support",
+    "crates/git",
+    "crates/jj",
+    "crates/github",
+    "crates/core",
+    "crates/testkit",
+]
 # `fuzz/` is a cargo-fuzz crate (nightly + libFuzzer); excluded so it never
 # touches the stable build, MSRV, or the CI gate. Run it manually — see
 # fuzz/README.md.

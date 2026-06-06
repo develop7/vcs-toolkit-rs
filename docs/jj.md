@@ -557,6 +557,13 @@ let res = jj.run_raw(&["status".into()]).await?;                    // ProcessRe
 
 ## Result types
 
+The diff types (`ChangeKind`, `DiffLine`, `Hunk`, `FileDiff`, `DiffStat`,
+`parse_diff`) and `JjVersion` actually live in the shared
+[`vcs-diff`](https://crates.io/crates/vcs-diff) crate — `jj diff --git` and
+`git diff` are byte-identical, so `vcs-jj` and `vcs-git` share one parser. They're
+re-exported here, so `vcs_jj::FileDiff` etc. still resolve (`JjVersion` is an
+alias of `vcs_diff::Version`).
+
 ### `Change`
 A jj change, parsed from a tab-delimited template row.
 
