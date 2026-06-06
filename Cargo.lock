@@ -696,6 +696,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcs-forge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "processkit",
+ "tokio",
+ "vcs-cli-support",
+ "vcs-gitea",
+ "vcs-github",
+ "vcs-gitlab",
+]
+
+[[package]]
 name = "vcs-git"
 version = "0.4.0"
 dependencies = [
@@ -710,6 +723,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcs-gitea"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mockall",
+ "processkit",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "vcs-github"
 version = "0.4.0"
 dependencies = [
@@ -720,6 +745,18 @@ dependencies = [
  "serde_json",
  "tokio",
  "vcs-cli-support",
+]
+
+[[package]]
+name = "vcs-gitlab"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mockall",
+ "processkit",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

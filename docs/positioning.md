@@ -73,14 +73,14 @@ they cover *only git*. Neither knows anything about jj or GitHub.
 
 | | vcs-toolkit | gitoxide (`gix`) | git2 (`libgit2`) |
 |---|---|---|---|
-| Model | subprocess — shells out to `git`/`jj`/`gh` | in-process, pure Rust | in-process, Rust bindings to C |
+| Model | subprocess — shells out to `git`/`jj`/`gh`/`glab`/`tea` | in-process, pure Rust | in-process, Rust bindings to C |
 | Honours user config / credentials / hooks | yes — it *is* the user's binary | no — its own config/cred handling | no — its own config/cred handling |
 | Covers **jj** (Jujutsu) | yes (`vcs-jj`) | no — git only | no — git only |
-| Covers **GitHub** (`gh`) | yes (`vcs-github`) | no | no |
+| Covers **forges** (GitHub/GitLab/Gitea) | yes (`vcs-github`/`vcs-gitlab`/`vcs-gitea`, unified by `vcs-forge`) | no | no |
 | Per-operation cost | a process spawn (contained; batched where it counts) | none — in-process call | none — in-process call |
-| Binary dependency | yes — needs `git`/`jj`/`gh` on `PATH` | none | none (links `libgit2`; C, not pure Rust) |
+| Binary dependency | yes — needs `git`/`jj`/`gh`/`glab`/`tea` on `PATH` | none | none (links `libgit2`; C, not pure Rust) |
 | Behavioural fidelity to the CLI | exact — same binary, same version, same output | independent reimplementation | independent reimplementation |
-| Scope / maturity | workflow automation across three tools; young, consumer-driven | broad git internals, fast, pure-Rust, maturing | mature, battle-tested C core; broad git coverage |
+| Scope / maturity | workflow automation across five tools; young, consumer-driven | broad git internals, fast, pure-Rust, maturing | mature, battle-tested C core; broad git coverage |
 
 Read it as: the libraries trade the user's *exact* git for speed and
 independence; vcs-toolkit trades speed and independence for the user's exact git —

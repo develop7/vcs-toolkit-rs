@@ -6,6 +6,9 @@ members = [
     "crates/git",
     "crates/jj",
     "crates/github",
+    "crates/gitlab",
+    "crates/gitea",
+    "crates/forge",
     "crates/core",
     "crates/testkit",
 ]

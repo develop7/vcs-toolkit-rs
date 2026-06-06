@@ -4,10 +4,11 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/index.html)
 
-A Rust toolkit for automating **Git**, **Jujutsu**, and **GitHub** through CLI
-process execution. Rather than reimplementing each tool's protocol, these crates
-shell out to the official binaries (`git`, `jj`, `gh`) and capture their output —
-thin, predictable wrappers you can compose into automation.
+A Rust toolkit for automating **Git**, **Jujutsu**, **GitHub**, **GitLab**, and
+**Gitea** through CLI process execution. Rather than reimplementing each tool's
+protocol, these crates shell out to the official binaries
+(`git`, `jj`, `gh`, `glab`, `tea`) and capture their output — thin, predictable
+wrappers you can compose into automation.
 
 Every command is **async** (tokio) and runs inside an OS **job** (a Windows Job
 Object or a Linux cgroup v2) so the whole process tree dies with the parent — no
@@ -17,8 +18,9 @@ timeouts, the structured `Error`, and the test seams these wrappers build on.
 
 ## Why
 
-- **No reinvented protocols.** You get exactly the behaviour of the `git`/`jj`/`gh`
-  you already have installed — same config, credentials, and version semantics.
+- **No reinvented protocols.** You get exactly the behaviour of the
+  `git`/`jj`/`gh`/`glab`/`tea` you already have installed — same config,
+  credentials, and version semantics.
 - **No leaked subprocesses.** A crashing, panicking, or `Ctrl-C`'d parent never
   leaves a `git gc` or a hung `gh` behind: the OS job reaps the entire tree on
   close (see the platform table below).
@@ -34,16 +36,19 @@ timeouts, the structured `Error`, and the test seams these wrappers build on.
 ## Crates
 
 This is a Cargo workspace, each crate **versioned and published independently**:
-three CLI wrappers built on the external
-[`processkit`](https://crates.io/crates/processkit) crate, a facade over the
-git/jj pair, two foundational crates the wrappers share, and a dependency-free
-test-fixture crate:
+five CLI wrappers built on the external
+[`processkit`](https://crates.io/crates/processkit) crate, two facades (over the
+git/jj pair and over the three forges), two foundational crates the wrappers
+share, and a dependency-free test-fixture crate:
 
 | Crate | Drives | crates.io name |
 |---|---|---|
 | [`crates/git`](crates/git) | the `git` binary | `vcs-git` |
 | [`crates/jj`](crates/jj) | the `jj` (Jujutsu) binary | `vcs-jj` |
 | [`crates/github`](crates/github) | the `gh` (GitHub CLI) binary | `vcs-github` |
+| [`crates/gitlab`](crates/gitlab) | the `glab` (GitLab CLI) binary | `vcs-gitlab` |
+| [`crates/gitea`](crates/gitea) | the `tea` (Gitea CLI) binary | `vcs-gitea` |
+| [`crates/forge`](crates/forge) | — (facade over `vcs-github`/`vcs-gitlab`/`vcs-gitea`) | `vcs-forge` |
 | [`crates/core`](crates/core) | — (facade over `vcs-git`/`vcs-jj`) | `vcs-core` |
 | [`crates/diff`](crates/diff) | — (shared std-only diff model + parser, `Version`) | `vcs-diff` |
 | [`crates/cli-support`](crates/cli-support) | — (shared argv guard, fetch policy, error classifiers) | `vcs-cli-support` |
@@ -54,12 +59,15 @@ test-fixture crate:
 `vcs_git::is_merge_conflict`, … still resolve), since `git diff` and
 `jj diff --git` are byte-identical and the wrappers share one parser/guard.
 
-Each **CLI wrapper** exposes an **interface trait** (`GitApi`/`JjApi`/`GitHubApi`) and a
-real client (`Git`/`Jj`/`GitHub`) with typed, repo-scoped async commands that
-return parsed structs and fail with the structured `processkit::Error`. They build
-on `processkit` (its `CliClient` core, the `cli_client!` macro, the `ProcessRunner`
-seam) and depend on `async-trait`; `vcs-github` additionally adds
-`serde`/`serde_json` to deserialize `gh … --json` output.
+Each **CLI wrapper** exposes an **interface trait** (`GitApi`/`JjApi`/`GitHubApi`/
+`GitLabApi`/`GiteaApi`) and a real client (`Git`/`Jj`/`GitHub`/`GitLab`/`Gitea`)
+with typed, repo-scoped async commands that return parsed structs and fail with
+the structured `processkit::Error`. They build on `processkit` (its `CliClient`
+core, the `cli_client!` macro, the `ProcessRunner` seam) and depend on
+`async-trait`; the forge wrappers add `serde`/`serde_json` to deserialize the
+CLIs' `--json` output. **Two facades** unify a family behind one handle:
+`vcs-core` over git/jj (a `Repo`), and `vcs-forge` over the three forges (a
+`Forge`).
 
 ### Process containment
 
@@ -81,7 +89,9 @@ parsed result types, the builder and validating-newtype APIs, and worked
 examples — see the **[guide set in `docs/`](docs/README.md)**:
 
 - Per-crate references: [vcs-git](docs/git.md) · [vcs-jj](docs/jj.md) ·
-  [vcs-github](docs/github.md) · [vcs-core](docs/core.md) (the facade) ·
+  [vcs-github](docs/github.md) · [vcs-gitlab](docs/gitlab.md) ·
+  [vcs-gitea](docs/gitea.md) · [vcs-core](docs/core.md) (the git/jj facade) ·
+  [vcs-forge](docs/forge.md) (the forge facade) ·
   [vcs-testkit](docs/testkit.md) (fixtures).
 - Cross-cutting topics: [Conflict resolution](docs/conflicts.md) ·
   [Testing & mocking](docs/testing.md) · [Security & hardening](docs/security.md) ·
@@ -373,7 +383,8 @@ Releases go through the **`Release` GitHub Action** (`workflow_dispatch`) — yo
 never type a version. Click *Run workflow* and pick:
 
 - **Crate** — `vcs-diff`, `vcs-cli-support`, `vcs-git`, `vcs-jj`, `vcs-github`,
-  `vcs-testkit`, `vcs-core`, or **`all`** (release every crate in one run).
+  `vcs-gitlab`, `vcs-gitea`, `vcs-forge`, `vcs-testkit`, `vcs-core`, or **`all`**
+  (release every crate in one run).
 - **Bump** — `patch` / `minor` / `major`.
 
 For each selected crate it reads the current version from that crate's
@@ -387,8 +398,9 @@ The dependency layers drive the publish order. The two foundational crates
 (`vcs-diff` — std-only — and `vcs-cli-support`, which depends only on the
 already-published [`processkit`](https://crates.io/crates/processkit)) publish
 **first**; the CLI wrappers depend on them (plus `processkit`), so they publish
-next; and the **`vcs-core` facade publishes last** since it additionally depends
-on `vcs-git`/`vcs-jj`. `vcs-testkit` depends on nothing and can go anywhere. So
+next; and the **facades publish last** — `vcs-forge` (depends on the
+github/gitlab/gitea wrappers) and `vcs-core` (depends on `vcs-git`/`vcs-jj`).
+`vcs-testkit` depends on nothing and can go anywhere. So
 `all` releases in that order, and each `^MAJOR.MINOR` requirement on an
 in-workspace dependency must stay in range when that dependency crosses a
 minor/major boundary.

@@ -1,0 +1,34 @@
+[package]
+name = "vcs-gitea"
+version = "0.1.0"
+description = "Automate the Gitea CLI (tea) from Rust through process execution."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+# Runs `tea` inside an OS job (Windows Job Object / Linux cgroup) so the process
+# tree is killed on close — no orphaned subprocesses. Also the `ProcessRunner`
+# seam, `CliClient` core, and structured `Error`.
+processkit.workspace = true
+# Deserialize `tea … --output json` output into typed structs (PullRequest).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `async fn` in the object-safe `GiteaApi` trait (dyn + mockall friendly).
+async-trait = "0.1"
+# Auto-generated `MockGiteaApi` for consumers' tests. Test-only — enabled only
+# via the `mock` feature, never compiled into production builds.
+mockall = { version = "0.13", optional = true }
+
+[features]
+# Expose the `mockall`-generated `MockGiteaApi` (and pull in processkit's mocks).
+mock = ["dep:mockall", "processkit/mock"]
+# Emit a `tracing` event per command run (forwards to processkit's `tracing`).
+tracing = ["processkit/tracing"]
+
+[dev-dependencies]
+# `#[tokio::test]` for the async unit/integration tests.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -4,23 +4,26 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project
 
-`vcs-toolkit-rs` is a Rust toolkit for automating **Git**, **Jujutsu**, and
-**GitHub** through CLI process execution — the crates shell out to the official
-`git`, `jj`, and `gh` binaries and capture their output rather than
-reimplementing each tool's protocol.
+`vcs-toolkit-rs` is a Rust toolkit for automating **Git**, **Jujutsu**,
+**GitHub**, **GitLab**, and **Gitea** through CLI process execution — the crates
+shell out to the official `git`, `jj`, `gh`, `glab`, and `tea` binaries and
+capture their output rather than reimplementing each tool's protocol.
 
-It is a Cargo workspace of **independently versioned and published** crates: three
+It is a Cargo workspace of **independently versioned and published** crates: five
 CLI wrappers, all built on the external
 [`processkit`](https://crates.io/crates/processkit) crate (the job-backed process
 launcher + `CliClient` core; was the prototype internal `vcs-process` crate), plus
-one facade:
+two facades:
 
 | Path | crates.io name | Drives |
 |---|---|---|
 | `crates/git` | `vcs-git` | `git` |
 | `crates/jj` | `vcs-jj` | `jj` |
 | `crates/github` | `vcs-github` | `gh` (GitHub CLI) |
+| `crates/gitlab` | `vcs-gitlab` | `glab` (GitLab CLI) |
+| `crates/gitea` | `vcs-gitea` | `tea` (Gitea CLI) |
 | `crates/core` | `vcs-core` | — (facade over `vcs-git`/`vcs-jj`) |
+| `crates/forge` | `vcs-forge` | — (facade over `vcs-github`/`vcs-gitlab`/`vcs-gitea`) |
 | `crates/diff` | `vcs-diff` | — (shared std-only git-format diff model + parser + `Version`) |
 | `crates/cli-support` | `vcs-cli-support` | — (shared processkit-coupled plumbing: argv guard, fetch-retry policy, error classifiers) |
 
@@ -35,9 +38,10 @@ a guide per crate plus cross-cutting topic guides (conflicts, testing, security,
 process model). When you change a public API, update the matching `docs/*.md`
 guide alongside the crate's `CHANGELOG.md`.
 
-Each **CLI wrapper** (`vcs-git`/`vcs-jj`/`vcs-github`) exposes the same shape — an **interface trait**
-(`GitApi`/`JjApi`/`GitHubApi`) and a real client struct
-(`Git`/`Jj`/`GitHub`) generic over a `processkit::ProcessRunner`. Methods are
+Each **CLI wrapper** (`vcs-git`/`vcs-jj`/`vcs-github`/`vcs-gitlab`/`vcs-gitea`)
+exposes the same shape — an **interface trait**
+(`GitApi`/`JjApi`/`GitHubApi`/`GitLabApi`/`GiteaApi`) and a real client struct
+(`Git`/`Jj`/`GitHub`/`GitLab`/`Gitea`) generic over a `processkit::ProcessRunner`. Methods are
 **`async`** (tokio, via `#[async_trait]`), take `dir: &Path`, return parsed structs,
 and fail with the structured `processkit::Error`; pure parsers live in each crate's
 `parse.rs`. Each client wraps a single `core: processkit::CliClient<R>` field that
@@ -111,8 +115,10 @@ compiled as its own crate; prefer shared helpers in `tests/common/mod.rs`.
   comments explain the non-obvious reason — a workaround, a wire contract, a
   performance trade-off. Don't narrate obvious lines.
 - **Match the surrounding code.** Follow the existing module's naming, idioms,
-  error-handling style, and comment density. Keep the three wrapper crates
-  parallel: new wrappers should look the same in `vcs-git`, `vcs-jj`, and `vcs-github`.
+  error-handling style, and comment density. Keep the wrapper crates
+  parallel: they should look the same across `vcs-git`, `vcs-jj`, `vcs-github`,
+  `vcs-gitlab`, and `vcs-gitea` (and the two facades, `vcs-core`/`vcs-forge`,
+  mirror each other).
 - **Reuse before you add.** Search for an existing helper before writing a new
   one; avoid duplicating logic.
 - **Conventional-commit subjects.** Write commit subjects as
@@ -128,8 +134,12 @@ This workspace fixes **no** allow-list of crates — add whatever a crate
 genuinely needs. The wrappers stay lean: `vcs-git` and `vcs-jj` depend on
 `processkit` + `async-trait` + the two foundational crates (`vcs-diff`,
 `vcs-cli-support`); `vcs-github` depends on `processkit` + `async-trait` +
-`vcs-cli-support` and additionally adds `serde`/`serde_json` to deserialize
-`gh … --json`. `processkit` (external) brings the job FFI, the `tokio` runtime,
+`vcs-cli-support` and adds `serde`/`serde_json` to deserialize `gh … --json`.
+The forge wrappers `vcs-gitlab`/`vcs-gitea` are leaner still — `processkit` +
+`async-trait` + `serde`/`serde_json` only (their lean surface has no bare
+positional argv slot, so they don't even pull in `vcs-cli-support`'s guard). The
+`vcs-forge` facade depends on the three forge wrappers + `vcs-cli-support` (for
+the transient-error classifier) + `async-trait`. `processkit` (external) brings the job FFI, the `tokio` runtime,
 and the structured `Error`, so the wrappers don't depend on `tokio` directly
 except as a `dev-dependency` (`macros`, `rt-multi-thread`) for `#[tokio::test]`.
 Don't add more to a wrapper unless there's a real reason. The convention is about
@@ -177,12 +187,13 @@ live in **[docs/stability.md](docs/stability.md)**.
   crate's history and compare links stay independent.
 - **Publish order follows the dependency layers.** The two foundational crates
   publish **first**: `vcs-diff` (std-only) and `vcs-cli-support` (depends only on
-  the already-published external `processkit`). The three CLI wrappers depend on
-  those two (plus `processkit`), so they publish **next**. The **`vcs-core` facade
-  publishes last** since it additionally depends on `vcs-git`/`vcs-jj`.
+  the already-published external `processkit`). The five CLI wrappers depend on
+  those (plus `processkit`), so they publish **next**. The **two facades publish
+  last**: `vcs-forge` (depends on `vcs-github`/`vcs-gitlab`/`vcs-gitea`) and
+  `vcs-core` (depends on `vcs-git`/`vcs-jj`).
   `vcs-testkit` depends on nothing (a published, dev-dependency-only fixtures
   crate) and can go anywhere. The `all` plan orders them
-  `vcs-diff, vcs-cli-support, vcs-git, vcs-jj, vcs-github, vcs-testkit, vcs-core`,
+  `vcs-diff, vcs-cli-support, vcs-git, vcs-jj, vcs-github, vcs-gitlab, vcs-gitea, vcs-forge, vcs-testkit, vcs-core`,
   and each `^MAJOR.MINOR` requirement on an in-workspace dependency must be kept
   in range when that dependency crosses a minor/major boundary (and the new
   version must be live on crates.io first). If a crate needs a newer `processkit`,
@@ -191,7 +202,7 @@ live in **[docs/stability.md](docs/stability.md)**.
 - **Release workflow.** `.github/workflows/release.yml` (`workflow_dispatch`,
   needs the `CRATES_IO_TOKEN` secret) is the only way to release. Pick **which
   crate** (`vcs-diff`/`vcs-cli-support`/`vcs-git`/`vcs-jj`/`vcs-github`/
-  `vcs-testkit`/`vcs-core`, or **`all`**) and a **bump**
+  `vcs-gitlab`/`vcs-gitea`/`vcs-forge`/`vcs-testkit`/`vcs-core`, or **`all`**) and a **bump**
   (`patch`/`minor`/`major`) — the version is **never typed by hand**. For each
   selected crate it derives the next version from that crate's current
   `Cargo.toml` (a crate's **first release** — no `<crate>-v*` tag yet — ships the

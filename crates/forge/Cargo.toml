@@ -1,0 +1,31 @@
+[package]
+name = "vcs-forge"
+version = "0.1.0"
+description = "A backend-agnostic facade over the GitHub/GitLab/Gitea CLI wrappers (gh/glab/tea)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+# The `ProcessRunner` seam (so a fake runner can drive the wrapped clients in
+# tests) and the structured `Error` the wrappers return.
+processkit.workspace = true
+# The transient-fetch-error classifier reused by the facade `Error`.
+vcs-cli-support = { path = "../cli-support", version = "0.1" }
+# The three forge wrappers this facade dispatches across.
+vcs-github = { path = "../github", version = "0.4" }
+vcs-gitlab = { path = "../gitlab", version = "0.1" }
+vcs-gitea = { path = "../gitea", version = "0.1" }
+# `async fn` in the object-safe `ForgeApi` trait (dyn-friendly).
+async-trait = "0.1"
+
+[features]
+# Emit a `tracing` event per command run (forwards to each wrapper's `tracing`).
+tracing = ["vcs-github/tracing", "vcs-gitlab/tracing", "vcs-gitea/tracing"]
+
+[dev-dependencies]
+# `#[tokio::test]` for the async dispatch tests.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

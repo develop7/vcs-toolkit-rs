@@ -35,10 +35,15 @@ All crates are **pre-1.0** today — the API may still change. Relative maturity
 | `vcs-git` | 0.4 | **maturing** | Broad surface, consumer-validated; new typed methods still land (additive). |
 | `vcs-jj` | 0.4 | **maturing** | Tracks jj, whose CLI/template surface churns — see the CI version matrix. |
 | `vcs-github` | 0.4 | **maturing** | The `gh` PR/issue/run/release surface; additive growth. |
+| `vcs-gitlab` | 0.1 | **new** | The `glab` lean MR lifecycle; argv/JSON pinned by hermetic fixtures, only version/auth smoke-tested against the real binary — expect movement. |
+| `vcs-gitea` | 0.1 | **new** | The `tea` lean PR lifecycle (narrower — see its capability notes); expect movement. |
+| `vcs-forge` | 0.1 | **new** | The forge facade + unified DTOs; the unification will grow as the wrappers do. |
 | `vcs-core` | 0.2 | **evolving** | The facade's common surface grows as cross-backend needs surface (e.g. `snapshot`). |
 
 "Settling" = close to its 1.0 shape; "maturing" = the surface is broad and
-proven but still grows additively; "evolving" = expect the most movement.
+proven but still grows additively; "evolving" = expect the most movement; "new" =
+just landed, the surface and the empirically-validated CLI argv/JSON may still
+shift.
 
 ## MSRV policy
 

@@ -139,14 +139,24 @@ Where the toolkit could go as a general-purpose "typed CLI automation" SDK,
 regardless of what the current consumers need. Being executed as a program of
 waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
 (✅ done), **C** = 6.4+6.5+6.11+6.12 (✅ done; 6.5 spec-only), **D** = 6.1
-(forges), **E** = 6.6 (watching), **F** = 6.8 (vcs-mcp; depends on Wave A).
+(forges — ✅ done), **E** = 6.6 (watching), **F** = 6.8 (vcs-mcp; depends on Wave A).
 
 ### New forges
 
-- **6.1 Forge wrappers beyond GitHub:** `vcs-gitlab` (`glab`), `vcs-gitea`
-  (`tea`). Their PR/MR surfaces map closely onto `vcs-github`'s; a
-  `ForgeApi` facade over them (the way `vcs-core` sits over git/jj) would let
-  a tool target "the forge" instead of GitHub specifically.
+- **6.1 ✅ Forge wrappers beyond GitHub.** Shipped `vcs-gitlab` (`glab`) and
+  `vcs-gitea` (`tea`), mirroring `vcs-github`'s shape, plus a `vcs-forge` facade
+  (`Forge` + the object-safe `ForgeApi`) that dispatches the **lean PR/MR
+  lifecycle** — auth, repo view, list/view/create/merge/mark-ready/close, CI
+  status — across all three with unified DTOs (`ForgePr`/`ForgePrState`/
+  `ForgeRepo`/`CiStatus`), the way `vcs-core` sits over git/jj. A forge has no
+  filesystem marker, so `Forge` is constructed explicitly (optionally via
+  `ForgeKind::from_remote_url`). Gitea's `tea` lacks a repo view, draft toggle,
+  and checks command, so those return `Error::Unsupported` for that backend. The
+  argv + JSON shapes are pinned by hermetic fixtures; the `#[ignore]` smoke tests
+  check real-binary integration (`version`/`auth_status`, CI installs `glab`/`tea`
+  best-effort). The create/merge lifecycle argv tracks the documented CLIs but
+  isn't exercised end-to-end in CI (needs a live forge). Future, additive: issues,
+  releases, reviews/comments per forge.
 
 ### Safety for untrusted input and untrusted repos
 

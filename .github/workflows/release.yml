@@ -13,8 +13,9 @@ name: Release
 # Each crate is versioned and published independently (see AGENTS.md
 # "Releasing"). Two foundational crates publish FIRST — `vcs-diff` (std-only diff
 # model) and `vcs-cli-support` (the processkit-coupled plumbing) — since the
-# wrappers depend on them. The wrappers (vcs-git/vcs-jj/vcs-github) then publish,
-# and the `vcs-core` facade LAST (it additionally depends on vcs-git/vcs-jj). Each
+# wrappers depend on them. The wrappers (vcs-git/vcs-jj/vcs-github/vcs-gitlab/
+# vcs-gitea) then publish, and the facades LAST — `vcs-forge` (depends on the
+# github/gitlab/gitea wrappers) and `vcs-core` (depends on vcs-git/vcs-jj). Each
 # such `^MAJOR.MINOR` dependency must stay in range when a dep crosses a
 # minor/major boundary. `all` releases every crate in one run — each bumped by the
 # same chosen type, from its own current version — in a single commit + atomic
@@ -43,6 +44,9 @@ on:
           - vcs-git
           - vcs-jj
           - vcs-github
+          - vcs-gitlab
+          - vcs-gitea
+          - vcs-forge
           - vcs-testkit
           - vcs-core
         default: all
@@ -107,12 +111,13 @@ jobs:
           PLAN: ${{ runner.temp }}/plan.tsv
         run: |
           set -euo pipefail
-          declare -A DIR=( [vcs-diff]=crates/diff [vcs-cli-support]=crates/cli-support [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-testkit]=crates/testkit [vcs-core]=crates/core )
+          declare -A DIR=( [vcs-diff]=crates/diff [vcs-cli-support]=crates/cli-support [vcs-git]=crates/git [vcs-jj]=crates/jj [vcs-github]=crates/github [vcs-gitlab]=crates/gitlab [vcs-gitea]=crates/gitea [vcs-forge]=crates/forge [vcs-testkit]=crates/testkit [vcs-core]=crates/core )
           if [ "$SELECTED" = "all" ]; then
-            # Foundational crates first (vcs-diff/vcs-cli-support: git/jj/github/core
-            # depend on them), then the wrappers, then vcs-core LAST (it depends on
-            # vcs-git/vcs-jj). vcs-testkit has no workspace deps (any position).
-            NAMES=(vcs-diff vcs-cli-support vcs-git vcs-jj vcs-github vcs-testkit vcs-core)
+            # Foundational crates first (vcs-diff/vcs-cli-support: the wrappers/facades
+            # depend on them), then the wrappers, then the facades LAST: vcs-forge
+            # depends on vcs-github/vcs-gitlab/vcs-gitea, and vcs-core on vcs-git/vcs-jj.
+            # vcs-testkit has no workspace deps (any position).
+            NAMES=(vcs-diff vcs-cli-support vcs-git vcs-jj vcs-github vcs-gitlab vcs-gitea vcs-forge vcs-testkit vcs-core)
           else
             NAMES=("$SELECTED")
           fi
@@ -313,8 +318,13 @@ jobs:
             in_run_dep=""
             if [ "$name" = "vcs-core" ] && grep -qP '^(vcs-git|vcs-jj)\t' "$PLAN"; then
               in_run_dep="vcs-git/vcs-jj"
+            elif [ "$name" = "vcs-forge" ] && grep -qP '^(vcs-github|vcs-gitlab|vcs-gitea)\t' "$PLAN"; then
+              in_run_dep="vcs-github/vcs-gitlab/vcs-gitea"
             elif [ "$name" != "vcs-diff" ] && [ "$name" != "vcs-cli-support" ] && \
-                 [ "$name" != "vcs-testkit" ] && grep -qP '^(vcs-diff|vcs-cli-support)\t' "$PLAN"; then
+                 [ "$name" != "vcs-testkit" ] && [ "$name" != "vcs-gitlab" ] && \
+                 [ "$name" != "vcs-gitea" ] && grep -qP '^(vcs-diff|vcs-cli-support)\t' "$PLAN"; then
+              # vcs-gitlab/vcs-gitea depend only on the external processkit (no
+              # foundational path deps), so they always get a real dry-run publish.
               in_run_dep="vcs-diff/vcs-cli-support"
             fi
             if [ -n "$in_run_dep" ]; then

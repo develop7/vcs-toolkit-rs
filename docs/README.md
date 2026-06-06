@@ -1,8 +1,9 @@
 # vcs-toolkit-rs documentation
 
 The full guide set for [vcs-toolkit-rs](../README.md) — a Rust toolkit that
-automates **Git**, **Jujutsu**, and **GitHub** by shelling out to the official
-`git` / `jj` / `gh` binaries and capturing their output. Every command is async
+automates **Git**, **Jujutsu**, **GitHub**, **GitLab**, and **Gitea** by shelling
+out to the official `git` / `jj` / `gh` / `glab` / `tea` binaries and capturing
+their output. Every command is async
 (tokio), runs inside an OS **job** (so the process tree dies with the parent via
 [`processkit`](https://crates.io/crates/processkit)), and fails with a
 structured `processkit::Error`.
@@ -21,6 +22,9 @@ types, and the validating newtypes — with worked examples throughout.
 | [vcs-git](git.md) | `vcs-git` | the `git` binary — status, commits, branches, worktrees, diff, blame, merge/rebase, remotes, tags |
 | [vcs-jj](jj.md) | `vcs-jj` | the `jj` (Jujutsu) binary — changes, bookmarks, the operation log, workspaces, squash/split/absorb, git sync |
 | [vcs-github](github.md) | `vcs-github` | the `gh` CLI — pull requests, issues, Actions runs, releases, reviews |
+| [vcs-gitlab](gitlab.md) | `vcs-gitlab` | the `glab` CLI — the lean merge-request lifecycle (list/view/create/merge/ready/close) + pipeline status |
+| [vcs-gitea](gitea.md) | `vcs-gitea` | the `tea` CLI — the lean pull-request lifecycle (list/view/create/merge/close) |
+| [vcs-forge](forge.md) | `vcs-forge` | a forge-agnostic facade over GitHub/GitLab/Gitea — one PR/MR lifecycle across all three |
 | [vcs-core](core.md) | `vcs-core` | a backend-agnostic facade that detects git-vs-jj and dispatches the operations both share |
 | [vcs-testkit](testkit.md) | `vcs-testkit` | throwaway git/jj sandboxes and a bare remote for integration tests |
 
@@ -64,15 +68,17 @@ These apply across the wrapper crates:
                               │
                        docs/README.md  (you are here)
                               │
-        ┌──────────┬──────────┼──────────┬───────────┐
-     git.md     jj.md     github.md    core.md     testkit.md
-        │          │                      │            │
-        └────┬─────┴──────────┬───────────┴─────┬──────┘
-        conflicts.md     security.md       testing.md
-                         process-model.md
+   ┌─────────┬─────────┬──────┴───┬─────────┬─────────┬──────────┐
+ git.md    jj.md   github.md  gitlab.md  gitea.md  core.md   testkit.md
+   │         │     └────┬─────────┴────┬────┘         │
+   │         │       forge.md (over the three forges) │
+   └────┬────┴───────────┬─────────────┬──────────────┘
+   conflicts.md     security.md    testing.md
+                    process-model.md
 ```
 
-`core.md` sits over `git.md` / `jj.md` (it dispatches to them); the cross-cutting
+`core.md` sits over `git.md` / `jj.md`, and `forge.md` over `github.md` /
+`gitlab.md` / `gitea.md` (each facade dispatches to them); the cross-cutting
 guides are referenced from every per-crate guide's *See also* footer.
 
 ## Reference

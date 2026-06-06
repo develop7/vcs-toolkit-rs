@@ -90,6 +90,35 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: jj --version
       - run: git --version
+      # Install the forge CLIs so the vcs-gitlab/vcs-gitea integration smoke tests
+      # run for real. Best-effort: the tests skip gracefully when a binary is
+      # absent, so a download hiccup doesn't fail the build.
+      - name: Install glab + tea (best-effort)
+        continue-on-error: true
+        run: |
+          # No `set -e`: glab and tea install independently, and a hiccup in one
+          # (or in the version-resolve curl) must not skip the other. The smoke
+          # tests skip gracefully when a binary is absent.
+          set -uo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # glab: resolve the latest release and grab its linux-amd64 tarball
+          # (the release "downloads" permalink carries the asset by name).
+          glab_ver="$(curl -fsSL 'https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases?per_page=1' \
+            | grep -oP '"tag_name":"v\K[^"]+' | head -1)" || true
+          if [ -n "${glab_ver:-}" ] \
+            && curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${glab_ver}/downloads/glab_${glab_ver}_linux_amd64.tar.gz" -o glab.tar.gz; then
+            tar -xzf glab.tar.gz -C "$HOME/.local/bin" --strip-components=1 "bin/glab" && chmod +x "$HOME/.local/bin/glab"
+          fi
+          # tea: a single static binary published under dl.gitea.com.
+          tea_ver="$(curl -fsSL 'https://gitea.com/api/v1/repos/gitea/tea/releases?limit=1' \
+            | grep -oP '"tag_name":"v?\K[^"]+' | head -1)" || true
+          if [ -n "${tea_ver:-}" ] \
+            && curl -fsSL "https://dl.gitea.com/tea/${tea_ver}/tea-${tea_ver}-linux-amd64" -o "$HOME/.local/bin/tea"; then
+            chmod +x "$HOME/.local/bin/tea"
+          fi
+      - run: glab --version || echo "glab not installed (tests will skip)"
+      - run: tea --version || echo "tea not installed (tests will skip)"
       # The integration suites are `#[ignore]`d (need the real binaries); run them.
       - run: cargo test --workspace --all-features -- --ignored
 
