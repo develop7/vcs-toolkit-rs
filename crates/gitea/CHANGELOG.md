@@ -30,6 +30,11 @@ crates; tag releases as `vcs-gitea-v<version>`.
   as `Unsupported` for the Gitea backend).
 
 ### Changed
+- Bumped `processkit` to **0.7** — the re-exported `Error` is now
+  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
+  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
+  and `ProcessResult` gains `program()`. Breaking for consumers that match
+  the re-exported types exhaustively.
 - `auth_status` tolerates a non-zero `tea login list` exit (e.g. no config file
   yet) and reports `false` instead of erroring, matching its "reports the bool,
   must not error" contract.

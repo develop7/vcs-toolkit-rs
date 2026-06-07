@@ -31,6 +31,11 @@ crates; tag releases as `vcs-gitlab-v<version>`.
   method.
 
 ### Changed
+- Bumped `processkit` to **0.7** — the re-exported `Error` is now
+  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
+  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
+  and `ProcessResult` gains `program()`. Breaking for consumers that match
+  the re-exported types exhaustively.
 - `Project.visibility` is now `Option<String>` (absent in the JSON → `None`
   instead of a misleading empty string).
 - `auth_status` reports `false` on **any** non-zero exit (was: errored on exits

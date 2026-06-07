@@ -44,6 +44,10 @@ crates; tag releases as `vcs-core-v<version>`.
   **Off by default.**
 
 ### Changed
+- Bumped `processkit` to **0.7** — `Error::Vcs` wraps the now-`#[non_exhaustive]`
+  `processkit::Error`, which gains variants (`NotReady`, `Unsupported`; more
+  behind features). Breaking for consumers matching the wrapped error
+  exhaustively.
 - **Renamed the `Error` classifiers** for one name per concept across the
   workspace: `Error::is_conflict` → `is_merge_conflict` and
   `Error::is_transient_fetch` → `is_transient_fetch_error` (matching the wrapper

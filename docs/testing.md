@@ -262,6 +262,15 @@ use vcs_git::{Git, GitApi};
 Pair it with a `RecordingRunner` (`RecordingRunner::new(scripted)`) when you also
 want to assert *which* commands the flow would have run.
 
+> **What about processkit's `record` cassettes?** processkit 0.7 ships a
+> `RecordReplayRunner` (behind the off-by-default `record` feature) that records
+> real runs to JSON and replays them without subprocesses. This workspace
+> deliberately doesn't use it: the replay key includes the **cwd**, so
+> throwaway-temp-repo scenarios never match a recorded cassette; and a cassette
+> freezes the CLI's output at record time — masking exactly the CLI drift the
+> `#[ignore]` real-binary suites below exist to catch. Consumers with stable
+> working directories (e.g. `gh api` flows) may find cassettes a good fit.
+
 ---
 
 ## Integration tests with real binaries

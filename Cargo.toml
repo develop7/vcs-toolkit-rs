@@ -48,5 +48,6 @@ authors = ["Anton Zhelezniakou"]
 # git/jj/gh subprocess tree dies on close), with the `CliClient` core, the
 # `cli_client!` macro, structured `Error`, and the `ScriptedRunner`/`RecordingRunner`
 # test seams the wrappers build on. Was the internal `vcs-process` crate; now the
-# published `processkit`.
-processkit = "0.6"
+# published `processkit`. 0.7.1 floor: `Error` is `#[non_exhaustive]` (gained
+# NotReady/Unsupported + feature-gated variants) and `Command` is `#[must_use]`.
+processkit = "0.7.1"

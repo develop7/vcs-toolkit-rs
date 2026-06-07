@@ -33,6 +33,9 @@ crates; tag releases as `vcs-forge-v<version>`.
   default.**
 
 ### Changed
+- Bumped `processkit` to **0.7** — `Error::Forge` wraps the now-`#[non_exhaustive]`
+  `processkit::Error`, which gains variants. Breaking for consumers matching
+  the wrapped error exhaustively.
 - `pr_create` doc honesty: it returns the CLI's success output — a URL on
   GitHub/GitLab, but a textual summary on Gitea (tea prints no URL and has no
   flag to shape the create output).

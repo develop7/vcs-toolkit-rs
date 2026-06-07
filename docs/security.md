@@ -51,6 +51,12 @@ What is **not** guarded, by design:
 - **The `run` / `run_raw` escape hatches** — you build the whole argv, so you own
   its safety.
 
+One hard rule on top: **never compose commands through a shell**
+(`sh -c "git … | grep …"`) — that reopens the entire injection surface the
+guards close. If output composition is ever genuinely needed, processkit 0.7's
+`Command::pipe` chains commands in one kill-on-close group with no shell in
+between; until then, parse in-process like the wrappers do.
+
 ## Validating newtypes (eager, at your input boundary)
 
 The guards above run inside each method. When you take a name or revision from a

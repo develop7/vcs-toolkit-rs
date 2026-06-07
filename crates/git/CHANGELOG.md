@@ -73,6 +73,11 @@ crates; tag releases as `vcs-git-v<version>`.
   parses files materialized by jj's `git` conflict-marker style.
 
 ### Changed
+- Bumped `processkit` to **0.7** — the re-exported `Error` is now
+  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
+  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
+  and `ProcessResult` gains `program()`. Breaking for consumers that match
+  the re-exported types exhaustively.
 - Internal: the diff model + parser (`ChangeKind`/`DiffLine`/`Hunk`/`FileDiff`/
   `DiffStat`/`parse_diff`) and the version type now come from the shared
   `vcs-diff` crate, and the error classifiers (`is_merge_conflict`/

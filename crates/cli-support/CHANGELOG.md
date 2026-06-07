@@ -19,6 +19,10 @@ crates; tag releases as `vcs-cli-support-v<version>`.
   classifiers can no longer drift between backends.
 
 ### Changed
+- Bumped `processkit` to **0.7** — `Error` (taken by the classifiers) is now
+  `#[non_exhaustive]` with new variants; an unfamiliar variant classifies as
+  "no" on every classifier (covered by a test). Breaking for consumers
+  matching `processkit::Error` exhaustively.
 - `reject_flag_like` also refuses whitespace-only values (as meaning-changing as
   empty ones), not just empty and leading-`-`.
 

@@ -112,7 +112,7 @@ colocates by default depends on the jj version *and* `git.colocate` config, so
   init-helper duplication is gone); consumers use it as a crates.io
   dev-dependency.
 - **5.2 ✅ Streaming / progress hooks — spec delivered upstream** (toolkit
-  adoption pending a processkit release). Finding: processkit 0.6 already
+  adoption pending a processkit release). Finding: processkit (0.6+) already
   ships per-line callbacks (`Command::on_stdout_line`/`on_stderr_line`), so
   the requirements note handed to the ProcessKit project asks for
   hardening, not streaming: callback panic isolation (primary), documented
@@ -129,7 +129,7 @@ colocates by default depends on the jj version *and* `git.colocate` config, so
 - **5.4 ✅ Command observation** — satisfied by existing seams, documented in
   the README ("Observing commands"): wrap-the-runner argv observation
   (`RecordingRunner::new(JobRunner::new())`), live per-line streaming
-  (processkit 0.6), the `tracing` feature, and `ScriptedRunner::fallback` as
+  (processkit 0.6+), the `tracing` feature, and `ScriptedRunner::fallback` as
   a dry-run harness. A first-class `on_command` hook is listed in the 5.2
   spec as a secondary, optional upstream ask.
 
@@ -273,6 +273,23 @@ additive follow-ups, not a blocking wave.
   `rust-version`, bumps are minor), and a public-API review checklist for the
   1.0 gate (object-safety + mockability, `#[non_exhaustive]` coverage, structured
   errors, injection guards, no leaked internals, docs+tests).
+
+### Upstream-gated (specs delivered to ProcessKit-rs)
+
+- **6.13 Cancellable operations — spec delivered upstream** (toolkit adoption
+  pending a processkit release). processkit 0.7 ships per-command
+  `Command::cancel_on`, but the typed wrappers consume their `Command`
+  internally, so adopting it would mean either `CancellationToken` parameters
+  in the object-safe `*Api` traits or per-call plumbing at every construction
+  site — both rejected. The requirements note
+  (`Ideas/Requests/processkit-client-cancellation-spec.md`, sibling of the 5.2
+  streaming spec) asks for a **client-level** `CliClient::default_cancel_on`
+  (+ `cli_client!` emission, + a doubles story so cancellation is hermetically
+  testable). Once shipped, adoption needs **zero new vcs-* API** — consumers
+  pass a pre-configured client through the existing
+  `Repo::from_git`/`Forge::for_github` constructors; we add only a classifier
+  test (`Cancelled` → not transient) and a cookbook recipe. Until then,
+  drop-the-future (kill-on-close) remains the supported cancellation path.
 
 ## Deliberately out of scope
 

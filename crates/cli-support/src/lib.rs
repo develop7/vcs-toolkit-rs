@@ -168,4 +168,25 @@ mod tests {
         };
         assert!(is_transient_fetch_error(&timeout));
     }
+
+    // processkit 0.7's `Error` is `#[non_exhaustive]` and grows variants over
+    // time (`NotReady`/`Unsupported` now; `Cancelled`/`ResourceLimit` behind
+    // features). Unfamiliar variants must fall through every classifier to
+    // "no" — a cancelled or unsupported run is neither a conflict, nor a clean
+    // tree, nor worth a fetch retry.
+    #[test]
+    fn unfamiliar_error_variants_are_not_classified() {
+        let not_ready = Error::NotReady {
+            program: "git".into(),
+            timeout: Duration::from_secs(5),
+        };
+        let unsupported = Error::Unsupported {
+            operation: "suspend".into(),
+        };
+        for err in [&not_ready, &unsupported] {
+            assert!(!is_merge_conflict(err));
+            assert!(!is_nothing_to_commit(err));
+            assert!(!is_transient_fetch_error(err));
+        }
+    }
 }

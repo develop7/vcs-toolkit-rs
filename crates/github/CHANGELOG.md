@@ -40,6 +40,11 @@ crates; tag releases as `vcs-github-v<version>`.
   guard — gh consumes the next token verbatim there.
 
 ### Changed
+- Bumped `processkit` to **0.7** — the re-exported `Error` is now
+  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
+  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
+  and `ProcessResult` gains `program()`. Breaking for consumers that match
+  the re-exported types exhaustively.
 - Internal: the argv injection guard (`reject_flag_like`) now comes from the
   shared `vcs-cli-support` crate. No public API change.
 - `auth_status` reports `false` on **any** non-zero exit (was: errored on exits

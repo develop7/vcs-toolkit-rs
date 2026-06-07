@@ -67,6 +67,13 @@ is `#[non_exhaustive]`, so keep a catch-all arm. The variants:
   `--json`).
 - **`Io(std::io::Error)`** — an IO error while driving the process (a pipe, a
   stdin write, waiting for exit).
+- **`NotReady { program, timeout }`** / **`Unsupported { operation }`** — added
+  in processkit 0.7 (readiness probes; platform-unsupported operations). The
+  wrappers never raise them today, but they can reach you when you drive
+  processkit directly. More variants exist behind processkit features
+  (`Cancelled` under `cancellation`, `ResourceLimit` under `limits`) — one more
+  reason the catch-all arm is mandatory. The toolkit's error classifiers treat
+  every unfamiliar variant as "no" (not a conflict, not transient).
 
 > There is **no** dedicated signal variant: a child killed by a signal surfaces
 > through the exit path / containment, not a separate enum arm.
@@ -88,7 +95,9 @@ match git.checkout(repo, "does-not-exist").await {
 **Exit code as data.** When a non-zero exit is an *answer*, not a failure (e.g.
 `gh pr checks` signalling pending via exit 8), reach for `run_raw`: it returns a
 `processkit::ProcessResult<String>` and does **not** error on a non-zero exit.
-Read the code with its `code()` accessor (`Option<i32>`):
+Read the code with its `code()` accessor (`Option<i32>`); `program()`
+(processkit 0.7+) names the binary the result came from — handy where one
+facade runs both git and jj:
 
 ```rust
 # use vcs_git::{Git, GitApi};
