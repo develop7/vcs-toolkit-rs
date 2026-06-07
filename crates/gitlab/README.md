@@ -30,7 +30,7 @@ let authed = glab.auth_status().await?; // bool — true when `glab auth status`
 
 ```rust
 use std::path::Path;
-use vcs_gitlab::{GitLab, GitLabApi};
+use vcs_gitlab::{GitLab, GitLabApi, MrCreate};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
     let glab = GitLab::new();
@@ -43,14 +43,13 @@ use vcs_gitlab::{GitLab, GitLabApi};
     }
 
     // Open an MR from an explicit source into an explicit target (both optional —
-    // `None` source = current branch, `None` target = project default).
+    // omit `.source(…)` for the current branch, `.target(…)` for the project default).
     let url = glab
         .mr_create(
             repo,
-            "Add streaming",
-            "Implements …",
-            Some("feat/streaming".to_string()),
-            Some("main".to_string()),
+            MrCreate::new("Add streaming", "Implements …")
+                .source("feat/streaming")
+                .target("main"),
         )
         .await?;
     println!("opened {url}");

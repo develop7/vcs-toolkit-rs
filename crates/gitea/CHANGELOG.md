@@ -18,7 +18,7 @@ crates; tag releases as `vcs-gitea-v<version>`.
   `tea … --output json` (the Gitea REST shape): `auth_status` (a non-empty
   `login list`), `pr_list` (`PullRequest`), `pr_view` (synthesized by listing
   with `--state all` and filtering by number — `tea` has no single-PR view),
-  `pr_create(title, body, head, base)`, `pr_merge(number, MergeStrategy)`
+  `pr_create(PrCreate)`, `pr_merge(number, MergeStrategy)`
   (`--style merge|rebase|squash`), and `pr_close`.
 - Raw escape hatches `run`/`run_raw` (+ inherent `run_args`/`run_raw_args`), and
   a `Gitea::at(dir)` → `GiteaAt` bound view mirroring every repo-scoped method.
@@ -40,6 +40,10 @@ crates; tag releases as `vcs-gitea-v<version>`.
   must not error" contract.
 - `pr_create` doc: tea prints a textual summary (no URL) and has no flag to
   shape the create output — documented instead of implied parity with gh/glab.
+- `pr_create` now takes a `PrCreate` spec
+  (`PrCreate::new(title, body).head(…).base(…)`) instead of positional
+  `title, body, head, base` arguments, mirroring `vcs-git`'s `GitPush` builder
+  style. The built argv is unchanged.
 
 ### Fixed
 - `pr_list` passes `--limit 100` (tea's default page of 30 silently truncated

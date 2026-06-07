@@ -19,20 +19,26 @@ crates; tag releases as `vcs-mcp-v<version>`.
   `repo_info`, `repo_status`, `repo_diff_stat`, `repo_branches`,
   `repo_current_branch`, `repo_conflicts`, `repo_worktrees`, `repo_try_merge`
   (a rollback merge probe); forge: `forge_auth_status`, `forge_repo_view`,
-  `forge_pr_list`, `forge_pr_view`, `forge_pr_checks`. Each returns the facade DTO
-  as JSON (via the facades' optional `serde` feature).
-- **Mutating tools** (gated behind `--allow-write`, annotated `destructiveHint`):
-  `repo_commit`, `repo_checkout`, `repo_fetch`, `repo_create_worktree`,
+  `forge_pr_list`, `forge_pr_view`, `forge_pr_checks`, `forge_issue_list`,
+  `forge_issue_view`, `forge_release_list`, `forge_release_view`. Each returns
+  the facade DTO as JSON (via the facades' optional `serde` feature).
+- **Mutating tools** (gated, annotated `destructiveHint`): `repo_commit`,
+  `repo_checkout`, `repo_fetch`, `repo_push`, `repo_create_worktree`,
   `repo_remove_worktree`; forge: `forge_pr_create`, `forge_pr_merge`,
-  `forge_pr_close`. With writes disabled they reject up front
-  ("write tools are disabled; restart the server with --allow-write") before
-  spawning anything.
+  `forge_pr_close`, `forge_issue_create`. Outside the write gate they reject up
+  front — naming the tool — before spawning anything.
+- **`WriteGate`** — the server's write policy (`None` / `All` /
+  `Set(HashSet<tool name>)`), checked by every mutating tool under its own name.
+  `VcsMcpServer::new` takes it in place of a coarse bool.
 - **CLI:** `--repo <path>` (default cwd), `--forge github|gitlab|gitea` (override),
-  `--allow-write` (off by default → read-only), `--timeout <seconds>` (per-command
-  deadline, default 120; `0` disables), `--help`. The forge is auto-detected from
-  the `origin` remote (`ForgeKind::from_remote_url`) — works on a colocated jj
-  repo; a pure-jj repo with no git remote has no forge, and the `forge_*` tools
-  then return a clear "no forge configured" error.
+  `--allow-write` (every mutation), `--allow-tools <name,…>` (a per-tool
+  allowlist; comma-separated, repeatable, accumulates; `--allow-write` wins when
+  both are given), `--timeout <seconds>` (per-command deadline, default 120; `0`
+  disables), `--help`. With neither write flag the server is read-only. The
+  forge is auto-detected from the `origin` remote (`ForgeKind::from_remote_url`)
+  — works on a colocated jj repo; a pure-jj repo with no git remote has no
+  forge, and the `forge_*` tools then return a clear "no forge configured"
+  error.
 - **Hardened by default:** the binary opens the repo with a hardened git client
   (`Git::hardened()` — repo hooks and `core.fsmonitor` disabled, repo-redirecting
   `GIT_*` scrubbed, system config skipped), so serving a repository you didn't
@@ -48,14 +54,7 @@ crates; tag releases as `vcs-mcp-v<version>`.
 
 ### Notes
 - Built on [`rmcp`](https://crates.io/crates/rmcp) (the official MCP Rust SDK).
-  Read-only by default; one coarse `--allow-write` flag enables all mutations
-  (a per-tool allowlist and more tools — issues/releases — are future, additive
-  work). The wrappers' argv injection guards apply under every tool.
-
-### Changed
--
-
-### Fixed
--
+  Read-only by default. The wrappers' argv injection guards apply under every
+  tool.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/mcp

@@ -65,6 +65,16 @@ through your code — validate it up front with a newtype. These are **optional*
 method signatures stay `&str` and guard internally either way; the newtypes are
 for early, explicit validation, not a required wrapper.
 
+When to reach for one — a short decision note:
+
+- **`&str` straight through** when the value is program-internal (a constant, a
+  name you just listed from the repo): the in-method guard at the spawn edge is
+  the only check needed.
+- **`RefName` / `RevSpec` / `RevsetExpr`** when the value crosses a trust
+  boundary *early* and an invalid one should fail with context at intake (an
+  HTTP handler, an MCP/agent tool argument, config parsing) rather than three
+  layers down at spawn time — validate once, then pass `.as_str()` everywhere.
+
 `vcs-git`:
 
 ```rust

@@ -66,7 +66,7 @@ best-effort (the next API call is the real test); `false`/timeout are faithful.
 | `repo_view(dir)` | `glab repo view --output json` | [`Project`] |
 | `mr_list(dir)` | `glab mr list --output json` | `Vec<MergeRequest>` |
 | `mr_view(dir, id)` | `glab mr view <id> --output json` | [`MergeRequest`] |
-| `mr_create(dir, title, body, source, target)` | `glab mr create --title … --description … [--source-branch …] [--target-branch …] --yes` | `String` (the MR URL) |
+| `mr_create(dir, spec)` | `glab mr create --title … --description … [--source-branch …] [--target-branch …] --yes` | `String` (the MR URL) |
 | `mr_merge(dir, id, strategy)` | `glab mr merge <id> --yes --auto-merge=false [--squash\|--rebase]` | `()` |
 | `mr_ready(dir, id)` | `glab mr update <id> --ready` | `()` |
 | `mr_close(dir, id)` | `glab mr close <id>` | `()` |
@@ -78,14 +78,14 @@ best-effort (the next API call is the real test); `false`/timeout are faithful.
 
 ```rust
 # use std::path::Path;
-# use vcs_gitlab::{GitLab, GitLabApi, MergeStrategy};
+# use vcs_gitlab::{GitLab, GitLabApi, MergeStrategy, MrCreate};
 # async fn demo(glab: &GitLab, repo: &Path) -> Result<(), processkit::Error> {
 for mr in glab.mr_list(repo).await? {
     println!("!{} [{}] {} — {}", mr.iid, mr.state, mr.title, mr.web_url);
 }
 let url = glab
-    .mr_create(repo, "Add streaming", "Implements …",
-               Some("feat/streaming".into()), Some("main".into()))
+    .mr_create(repo, MrCreate::new("Add streaming", "Implements …")
+        .source("feat/streaming").target("main"))
     .await?;
 glab.mr_merge(repo, 12, MergeStrategy::Squash).await?;
 # let _ = url; Ok(()) }
@@ -95,6 +95,52 @@ glab.mr_merge(repo, 12, MergeStrategy::Squash).await?;
 `mr_merge` passes `--auto-merge=false` so it merges **immediately** rather than
 enabling glab's default merge-when-pipeline-succeeds. [`CiStatus`] buckets the
 pipeline into `Passing` / `Failing` / `Pending` / `None`.
+
+`mr_create` takes an [`MrCreate`] spec — build it through `MrCreate::new(title,
+body)` and chain the optional `.source(b)` (`--source-branch`; `None` = the
+current branch) / `.target(b)` (`--target-branch`; `None` = the project default)
+setters. Public fields: `title: String`, `body: String`, `source: Option<String>`,
+`target: Option<String>`.
+
+## Issues & releases
+
+| Method | Runs | Returns |
+|---|---|---|
+| `issue_list(dir)` | `glab issue list --per-page 100 --output json` | `Vec<Issue>` |
+| `issue_view(dir, number)` | `glab issue view <number> --output json` | [`Issue`] |
+| `issue_create(dir, title, body)` | `glab issue create --title … --description … --yes` | `String` (the issue URL) |
+| `release_list(dir)` | `glab release list --per-page 100 --output json` | `Vec<Release>` |
+| `release_view(dir, tag)` | `glab release view <tag> --output json` | [`Release`] |
+
+The list methods pin `--per-page 100` (the GitLab API per-page max) so glab's
+default page size of 30 can't silently truncate them; reach beyond 100 through
+`run`. `issue_create` passes `--yes` to skip glab's interactive submission prompt,
+mirroring `mr_create`. `release_view`'s bare `<tag>` positional is flag-injection
+guarded (a leading `-` or empty value is refused before any process spawns).
+
+`Issue` carries `number` (the project-scoped `iid` GitLab's `issue` commands take,
+surfaced as `number` for cross-forge consistency with `vcs-github`), `title`,
+`state` (GitLab's `"opened"`/`"closed"`), `body` (GitLab's `description`), and
+`url` (GitLab's `web_url`).
+
+`Release` carries `tag_name` (the `<tag>` `release_view` takes), `name` (the
+release title, may default to the tag), `url` (pulled off GitLab's nested
+`_links.self` — releases have no top-level `web_url`), and `published_at` (GitLab's
+`released_at`, ISO 8601, empty for an unpublished release).
+
+```rust
+# use std::path::Path;
+# use vcs_gitlab::{GitLab, GitLabApi};
+# async fn demo(glab: &GitLab, repo: &Path) -> Result<(), processkit::Error> {
+for issue in glab.issue_list(repo).await? {
+    println!("#{} [{}] {}", issue.number, issue.state, issue.title);
+}
+let url = glab.issue_create(repo, "Flaky pipeline", "fails on …").await?;
+for rel in glab.release_list(repo).await? {
+    println!("{} — {}", rel.tag_name, rel.url);
+}
+# let _ = url; Ok(()) }
+```
 
 ## Escape hatch
 

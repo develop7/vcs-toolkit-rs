@@ -214,9 +214,11 @@ additive follow-ups, not a blocking wave.
   re-query+diff makes raw-event noise (ref temp-renames, `index.lock`, reflog) a
   no-op. Decisions: raw `notify` + a custom debounce (default 250 ms / 1 s
   ceiling); watch scope configurable (state-dir default, opt-in working-tree).
-  The pure diff is hermetically unit-tested; the notify pipeline by `#[ignore]`
-  real-repo tests. This is the workspace's first runtime-tokio + streaming crate.
-  Future, additive: a `Stream` adapter, `.gitignore`-aware working-tree filtering.
+  The pure diff is hermetically unit-tested; the debounce → re-query pipeline
+  is hermetically fake-time tested (§7 Wave R), with the notify bridge covered
+  by `#[ignore]` real-repo tests. This is the workspace's first runtime-tokio +
+  streaming crate; the `stream` feature adds an `impl futures_core::Stream`
+  (§7 Wave R). Future, additive: `.gitignore`-aware working-tree filtering.
 
 ### Structured conflicts
 
@@ -233,16 +235,17 @@ additive follow-ups, not a blocking wave.
 
 - **6.8 ✅ `vcs-mcp`.** Shipped an MCP server crate (a lib + the `vcs-mcp`
   binary, on the official `rmcp` SDK over stdio) exposing the typed operations
-  of **both facades** — `vcs-core` (git/jj) and `vcs-forge` (PR/MR) — as MCP
-  tools. Read tools are always on (annotated `readOnlyHint`); the eight
-  mutating tools are **gated behind a coarse `--allow-write`** (annotated
-  `destructiveHint`, reject up front when disabled). The forge is auto-detected
-  from the `origin` remote (`--forge` overrides). Returns the facade DTOs as
-  JSON via a new **optional `serde` feature** on `vcs-diff`/`vcs-core`/
-  `vcs-forge` (off by default — default builds stay serde-free). The safety
-  substrate (Wave A: injection guards, hardened profile) applies under every
-  tool. Future, additive: more tools (issues/releases), a per-tool allowlist,
-  and an HTTP transport.
+  of **both facades** — `vcs-core` (git/jj) and `vcs-forge` (PR/MR, issues,
+  releases) — as MCP tools. Read tools are always on (annotated
+  `readOnlyHint`); the ten mutating tools are **gated behind a `WriteGate`**
+  (annotated `destructiveHint`, reject up front when outside the gate):
+  `--allow-write` enables all mutations, `--allow-tools <name,…>` a per-tool
+  allowlist (§7 Wave A). The forge is auto-detected from the `origin` remote
+  (`--forge` overrides). Returns the facade DTOs as JSON via a new **optional
+  `serde` feature** on `vcs-diff`/`vcs-core`/`vcs-forge` (off by default —
+  default builds stay serde-free). The safety substrate (injection guards,
+  hardened profile) applies under every tool. Future, additive: more tools, an
+  HTTP transport.
 
 ### Quality and project maturity
 
@@ -290,6 +293,52 @@ additive follow-ups, not a blocking wave.
   `Repo::from_git`/`Forge::for_github` constructors; we add only a classifier
   test (`Cancelled` → not transient) and a cookbook recipe. Until then,
   drop-the-future (kill-on-close) remains the supported cancellation path.
+
+## 7. Architecture program R → A → S (post-§6 fresh-eyes review)
+
+A whole-workspace architecture review (2026-06-07; no users yet → breaking
+changes free) found the design sound and focused the program on testability,
+API completion, and extension-ritual cost. Three waves, each gated by the full
+matrix + ≥2-pass adversarial review:
+
+- **7.1 ✅ Wave R — reliability.** The vcs-watch debounce → ceiling → re-query
+  pipeline became a free function over injected seams and is **hermetically
+  fake-time tested** (9 paused-clock tests: coalescing, exact `max_wait`
+  ceiling, transient skip + recovery, re-query deadline, teardown, backpressure,
+  stream adapter); added `Builder::requery_timeout` (default 30 s, kills a
+  wedged re-query as transient), `RepoWatcher::stats()` (lock-free health
+  counters), and the `stream` feature. CI gained a **feature-isolation job**
+  (each optional feature compiled solo per crate); classifier regression tests
+  run against the real CLIs in the integration lane; forge host-classification
+  and state mappers got proptests; `vcs-mcp` argv parsing became a testable
+  function with a bin-test seed. Plus a real `diff3` parser fix the proptests
+  surfaced (repeated base-marker line; seed committed).
+- **7.2 ✅ Wave A — API completion (breaking).** Facade `Repo::push(branch)`
+  (honest LCD; git `push -u origin` / jj `git push -b`); forge issues +
+  releases unified end-to-end (`glab`/`tea` wrapper methods verified against
+  the official docs → `ForgeIssue`/`ForgeRelease` DTOs → five `Forge`/`ForgeApi`
+  methods → five MCP tools, `Unsupported` where `tea` can't); the **builder
+  rule** ("≥2 options or any bare bool → spec/builder", now in AGENTS.md)
+  applied across both levels (`CommitPaths`, `MergeCommit`, `MergeNoCommit`,
+  `AnnotatedTag`, `SquashPaths`, gh/forge `PrCreate`, glab `MrCreate`, tea
+  `PrCreate`; `ReviewAction` → kind+body struct keeping
+  request-changes-requires-body unrepresentable); MCP `WriteGate` with
+  `--allow-tools` per-tool allowlist; docs (escape-hatch routers in
+  core.md/forge.md, the three call shapes, security decision notes).
+- **7.3 Wave S — structural dedup (pending).** Macro-mirrored trait/impl
+  dispatch in vcs-core/vcs-forge (one table generates the trait decl + the
+  delegating impl; the macro never owns a non-trivial body), At-forwarder
+  co-generation with an automock spike (documented fallback if the spike
+  fails), optional marker-primitive extraction into vcs-diff (stop-the-line if
+  either conflict model would bend).
+
+**Consciously rejected** (one line each, so the next reviewer doesn't re-litigate):
+codegen/templating across the five wrappers (heavy machinery vs the AGENTS.md
+convention, for ~150 lines); a `Backend` trait instead of the enum (the enum +
+free-fn modules *is* the adapter, monomorphised); trait-only `Repo` (kills
+rustdoc/ergonomics); broad serde-JSON proptests (serde doesn't panic);
+Windows/macOS integration lanes (cost; revisit separately); retry jitter (needs
+processkit support — goes in an upstream spec if wanted).
 
 ## Deliberately out of scope
 

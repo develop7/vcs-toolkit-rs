@@ -8,7 +8,7 @@ use std::path::PathBuf;
 // (initialisation IS the subject), so they use `TempDir` + `configure_identity`
 // rather than `GitSandbox::init`. Note `configure_identity` also pins
 // `core.autocrlf=false`, keeping byte-exact content assertions valid on Windows.
-use vcs_git::{Git, GitApi, WorktreeAdd};
+use vcs_git::{AnnotatedTag, Git, GitApi, MergeCommit, WorktreeAdd};
 use vcs_testkit::{BareRemote, TempDir, configure_identity as configure};
 
 #[tokio::test]
@@ -271,7 +271,11 @@ async fn conflicted_files_and_status_tracked() {
     );
 
     // The conflicting merge fails and leaves a.txt unmerged.
-    assert!(git.merge_commit(dir, &main, false, None).await.is_err());
+    assert!(
+        git.merge_commit(dir, MergeCommit::branch(main.as_str()))
+            .await
+            .is_err()
+    );
     assert_eq!(
         git.conflicted_files(dir).await.expect("conflicted_files"),
         ["a.txt"]
@@ -315,9 +319,14 @@ async fn merge_commit_no_ff_creates_a_merge_commit() {
     git.commit(dir, "feature work").await.expect("commit");
     git.checkout(dir, &main).await.expect("checkout");
 
-    git.merge_commit(dir, "feature", true, Some("merge feature".into()))
-        .await
-        .expect("merge_commit");
+    git.merge_commit(
+        dir,
+        MergeCommit::branch("feature")
+            .no_ff()
+            .message("merge feature"),
+    )
+    .await
+    .expect("merge_commit");
 
     // A 2-parent merge commit resolves `HEAD^2`; a fast-forward would not.
     assert!(
@@ -354,9 +363,12 @@ async fn is_merged_distinguishes_merged_and_unmerged() {
     git.add(dir, &[PathBuf::from("b.txt")]).await.expect("add");
     git.commit(dir, "done work").await.expect("commit");
     git.checkout(dir, &main).await.expect("checkout");
-    git.merge_commit(dir, "done", true, Some("merge done".into()))
-        .await
-        .expect("merge_commit");
+    git.merge_commit(
+        dir,
+        MergeCommit::branch("done").no_ff().message("merge done"),
+    )
+    .await
+    .expect("merge_commit");
 
     // `pending` has a commit that was never merged into main.
     git.create_branch(dir, "pending").await.expect("branch");
@@ -461,7 +473,7 @@ async fn tags_show_config_and_remotes_round_trip() {
 
     // Tags: lightweight + annotated, list, delete.
     git.tag_create(dir, "v1", None).await.expect("tag");
-    git.tag_create_annotated(dir, "v1.1", "first release", None)
+    git.tag_create_annotated(dir, AnnotatedTag::new("v1.1", "first release"))
         .await
         .expect("tag -a");
     assert_eq!(git.tag_list(dir).await.expect("list"), ["v1", "v1.1"]);
@@ -688,7 +700,7 @@ async fn classifier_matches_real_merge_conflict() {
     git.commit(dir, "main edit").await.expect("commit");
 
     let err = git
-        .merge_commit(dir, "a", false, None)
+        .merge_commit(dir, MergeCommit::branch("a"))
         .await
         .expect_err("conflicting merge must fail");
     assert!(
@@ -779,7 +791,9 @@ async fn conflict_model_resolves_a_real_conflict() {
     let main = "-"; // previous branch
     let _ = main;
     assert!(
-        git.merge_commit(dir, "@{-1}", false, None).await.is_err(),
+        git.merge_commit(dir, MergeCommit::branch("@{-1}"))
+            .await
+            .is_err(),
         "conflict expected"
     );
 

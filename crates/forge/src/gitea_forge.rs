@@ -1,17 +1,22 @@
 //! Gitea-backed implementations of the facade operations: thin calls to the
 //! `vcs-gitea` client plus pure mappers from its types into the unified DTOs.
 //!
-//! `tea` has no current-repo view, draft toggle, or PR-checks command, so
-//! `repo_view` / `pr_mark_ready` / `pr_checks` have no function here — the
-//! [`Forge`](crate::Forge) dispatch returns [`Unsupported`](crate::Error::Unsupported)
-//! for the Gitea backend instead.
+//! `tea` has no current-repo view, draft toggle, PR-checks command, or
+//! single-release view, so `repo_view` / `pr_mark_ready` / `pr_checks` /
+//! `release_view` have no function here — the [`Forge`](crate::Forge) dispatch
+//! returns [`Unsupported`](crate::Error::Unsupported) for the Gitea backend
+//! instead.
 
 use std::path::Path;
 
 use processkit::ProcessRunner;
-use vcs_gitea::{Gitea, GiteaApi, MergeStrategy as GtMs, PullRequest};
+use vcs_gitea::{
+    Gitea, GiteaApi, Issue, MergeStrategy as GtMs, PrCreate as GtPrCreate, PullRequest, Release,
+};
 
-use crate::dto::{ForgePr, ForgePrState, MergeStrategy};
+use crate::dto::{
+    ForgeIssue, ForgeIssueState, ForgePr, ForgePrState, ForgeRelease, MergeStrategy, PrCreate,
+};
 use crate::error::Result;
 
 pub(crate) async fn auth_status<R: ProcessRunner>(tea: &Gitea<R>) -> Result<bool> {
@@ -33,12 +38,17 @@ pub(crate) async fn pr_view<R: ProcessRunner>(
 pub(crate) async fn pr_create<R: ProcessRunner>(
     tea: &Gitea<R>,
     dir: &Path,
-    title: &str,
-    body: &str,
-    source: Option<String>,
-    target: Option<String>,
+    spec: PrCreate,
 ) -> Result<String> {
-    Ok(tea.pr_create(dir, title, body, source, target).await?)
+    // The unified source/target map onto tea's head/base.
+    let mut create = GtPrCreate::new(spec.title, spec.body);
+    if let Some(source) = spec.source {
+        create = create.head(source);
+    }
+    if let Some(target) = spec.target {
+        create = create.base(target);
+    }
+    Ok(tea.pr_create(dir, create).await?)
 }
 
 pub(crate) async fn pr_merge<R: ProcessRunner>(
@@ -64,6 +74,73 @@ pub(crate) async fn pr_close<R: ProcessRunner>(
 ) -> Result<()> {
     tea.pr_close(dir, number).await?;
     Ok(())
+}
+
+pub(crate) async fn issue_list<R: ProcessRunner>(
+    tea: &Gitea<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeIssue>> {
+    Ok(tea
+        .issue_list(dir)
+        .await?
+        .into_iter()
+        .map(map_issue)
+        .collect())
+}
+
+pub(crate) async fn issue_view<R: ProcessRunner>(
+    tea: &Gitea<R>,
+    dir: &Path,
+    number: u64,
+) -> Result<ForgeIssue> {
+    Ok(map_issue(tea.issue_view(dir, number).await?))
+}
+
+pub(crate) async fn issue_create<R: ProcessRunner>(
+    tea: &Gitea<R>,
+    dir: &Path,
+    title: &str,
+    body: &str,
+) -> Result<String> {
+    Ok(tea.issue_create(dir, title, body).await?)
+}
+
+pub(crate) async fn release_list<R: ProcessRunner>(
+    tea: &Gitea<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeRelease>> {
+    Ok(tea
+        .release_list(dir)
+        .await?
+        .into_iter()
+        .map(map_release)
+        .collect())
+}
+
+fn map_issue(i: Issue) -> ForgeIssue {
+    ForgeIssue {
+        number: i.number,
+        title: i.title,
+        // Gitea spells it "closed"; anything unknown reads as live (Open),
+        // matching `map_pr` below.
+        state: if i.state.eq_ignore_ascii_case("closed") {
+            ForgeIssueState::Closed
+        } else {
+            ForgeIssueState::Open
+        },
+        body: i.body,
+        url: i.url,
+    }
+}
+
+fn map_release(r: Release) -> ForgeRelease {
+    ForgeRelease {
+        tag: r.tag,
+        title: r.title,
+        url: r.url,
+        // An empty `published_at` (an unpublished draft) surfaces as None.
+        published_at: Some(r.published_at).filter(|s| !s.is_empty()),
+    }
 }
 
 fn map_pr(pr: PullRequest) -> ForgePr {

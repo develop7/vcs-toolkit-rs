@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use processkit::ProcessRunner;
-use vcs_git::{Git, GitApi, StatusEntry, WorktreeAdd};
+use vcs_git::{Git, GitApi, GitPush, StatusEntry, WorktreeAdd};
 
 use crate::dto::{
     ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
@@ -153,8 +153,11 @@ pub(crate) async fn commit_paths<R: ProcessRunner>(
     paths: &[String],
     message: &str,
 ) -> Result<()> {
-    let pathbufs: Vec<std::path::PathBuf> = paths.iter().map(Into::into).collect();
-    git.commit_paths(dir, &pathbufs, message, false).await?;
+    git.commit_paths(
+        dir,
+        vcs_git::CommitPaths::new(paths.iter().map(String::as_str), message),
+    )
+    .await?;
     Ok(())
 }
 
@@ -181,6 +184,14 @@ pub(crate) async fn fetch_remote_branch<R: ProcessRunner>(
     Ok(())
 }
 
+pub(crate) async fn push<R: ProcessRunner>(git: &Git<R>, dir: &Path, branch: &str) -> Result<()> {
+    // `-u` so the first facade push also records the upstream — the facade has
+    // no separate set-upstream step, and `-u` on later pushes is idempotent.
+    git.push(dir, GitPush::branch(branch).set_upstream())
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn checkout<R: ProcessRunner>(
     git: &Git<R>,
     dir: &Path,
@@ -202,7 +213,9 @@ pub(crate) async fn try_merge<R: ProcessRunner>(
 ) -> Result<MergeProbe> {
     // `--no-ff` so even a fast-forwardable merge stages a real (abortable) merge
     // instead of moving HEAD; `--no-commit` so nothing is committed either way.
-    let merged = git.merge_no_commit(dir, source, false, true).await;
+    let merged = git
+        .merge_no_commit(dir, vcs_git::MergeNoCommit::branch(source).no_ff())
+        .await;
     match merged {
         Ok(()) => {
             // "Already up to date." exits 0 *without* MERGE_HEAD — `merge

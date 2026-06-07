@@ -231,13 +231,13 @@ use vcs_jj::{Jj, JjApi};
 
 ```rust
 use std::path::Path;
-use vcs_github::{GitHub, GitHubApi};
+use vcs_github::{GitHub, GitHubApi, PrCreate};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
     let gh = GitHub::new();
     if gh.auth_status().await? {
-        // head / base optional: `None` head = current branch, `None` base = repo default.
-        let url = gh.pr_create(repo, "My change", "Body", None, None).await?;
+        // .head()/.base() optional: omitted = current branch / repo default.
+        let url = gh.pr_create(repo, PrCreate::new("My change", "Body")).await?;
         println!("opened {url}");
     }
 # Ok(()) }

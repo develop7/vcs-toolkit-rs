@@ -52,13 +52,23 @@ pub async fn auth_status(&self)  -> Result<bool>;
 pub async fn repo_view(&self)    -> Result<ForgeRepo>;
 pub async fn pr_list(&self)      -> Result<Vec<ForgePr>>;
 pub async fn pr_view(&self, number: u64) -> Result<ForgePr>;
-pub async fn pr_create(&self, title: &str, body: &str,
-                       source: Option<String>, target: Option<String>) -> Result<String>;
+pub async fn pr_create(&self, spec: PrCreate) -> Result<String>;
 pub async fn pr_merge(&self, number: u64, strategy: MergeStrategy) -> Result<()>;
 pub async fn pr_mark_ready(&self, number: u64) -> Result<()>;
 pub async fn pr_close(&self, number: u64, delete_branch: bool) -> Result<()>;
 pub async fn pr_checks(&self, number: u64) -> Result<CiStatus>;
+pub async fn issue_list(&self)   -> Result<Vec<ForgeIssue>>;
+pub async fn issue_view(&self, number: u64) -> Result<ForgeIssue>;
+pub async fn issue_create(&self, title: &str, body: &str) -> Result<String>;
+pub async fn release_list(&self) -> Result<Vec<ForgeRelease>>;
+pub async fn release_view(&self, tag: &str) -> Result<ForgeRelease>;
 ```
+
+[`PrCreate`] is the unified open-a-PR/MR spec —
+`PrCreate::new(title, body).source(branch).target(branch)`, where `source`
+defaults to the current branch and `target` to the repo default; the facade maps
+them to each CLI's own flags (gh/tea `--head`/`--base`, glab
+`--source-branch`/`--target-branch`).
 
 Every method mirrors an inherent method on [`Forge`]; the object-safe `ForgeApi`
 trait adds nothing but the `&dyn` boundary.
@@ -85,21 +95,33 @@ status. [`MergeStrategy`] (`Merge` / `Squash` / `Rebase`) maps to each CLI's fla
 `draft` is **best-effort**: only GitLab reports it on the lean surface; GitHub and
 Gitea report `false` (their lean JSON doesn't carry the flag).
 
+[`ForgeIssue`] generalises the three issue shapes: `number` (GitLab's `iid`),
+`title`, `state` ([`ForgeIssueState`] — `Closed` for any case of "closed",
+everything else reads as `Open`, so an unmodelled state is treated as live),
+`body`, `url`. `body`/`url` are **best-effort**: GitHub's lean `issue_list`
+doesn't fetch them (empty there); `issue_view` fills them on every forge.
+
+[`ForgeRelease`] is `tag` / `title` / `url` / `published_at: Option<String>`
+(`None` for an unpublished draft or when the backend doesn't report one; the URL
+is empty from GitHub's lean `release_list`).
+
 ## Capability matrix
 
-The CLIs differ in coverage. Gitea's `tea` lacks three operations, which return
+The CLIs differ in coverage. Gitea's `tea` lacks four operations, which return
 [`Error::Unsupported { forge, operation }`] (the call does **not** spawn);
 `delete_branch` on `pr_close` is GitHub-only.
 
 | Operation | GitHub | GitLab | Gitea |
 |---|:---:|:---:|:---:|
 | `auth_status` / `pr_list` / `pr_view` / `pr_create` / `pr_merge` / `pr_close` | ✅ | ✅ | ✅ |
+| `issue_list` / `issue_view` / `issue_create` / `release_list` | ✅ | ✅ | ✅ |
 | `repo_view` | ✅ | ✅ | ❌ Unsupported |
 | `pr_mark_ready` | ✅ | ✅ | ❌ Unsupported |
 | `pr_checks` | ✅ | ✅ | ❌ Unsupported |
+| `release_view` | ✅ | ✅ | ❌ Unsupported (`tea releases` only lists — filter `release_list`) |
 | `pr_close` honours `delete_branch` | ✅ | ignored | ignored |
-| `pr_create` returns the PR/MR **URL** | ✅ | ✅ | textual summary (tea prints no URL) |
-| `pr_list` result cap (explicit, documented) | 100 | 100 | 100 |
+| `pr_create` / `issue_create` return the **URL** | ✅ | ✅ | textual summary (tea ends `issue create` output with the URL; `pr create` prints none) |
+| `pr_list` / `issue_list` / `release_list` result cap (explicit, documented) | 100 | 100 | 100 |
 
 ```rust
 # use vcs_forge::{Forge, ForgeApi, Error};
@@ -114,6 +136,20 @@ match forge.pr_checks(7).await {
 
 `Error` is `Forge(processkit::Error)` or `Unsupported { forge, operation }`, with
 `is_unsupported()` and `is_transient_fetch_error()` classifiers.
+
+## When to drop to the wrapped client (the escape hatch)
+
+The facade carries the **portable intersection**; the wrappers are re-exported
+(`vcs_forge::vcs_github` / `vcs_gitlab` / `vcs_gitea`) so anything beyond it is
+one constructor away — without adding a dependency.
+
+| You need… | Use |
+|---|---|
+| The common lifecycle, portably (list/view/create/merge/close PRs, issues, releases) | the `Forge` facade |
+| An op the facade marks `Unsupported` on *your* forge (e.g. a Gitea release by tag) | there's nothing to call — the CLI can't do it; go through the forge's REST API (`gh api` via `vcs_github::GitHubApi::api`, or your own HTTP) |
+| A forge-specific op (GitHub workflow runs, review submission, draft toggle, gist…) | the wrapper client directly: `GitHub::new().run_list(dir)…` |
+| More than 100 list results, custom JSON fields, exotic flags | the wrapper's raw `run(dir, args)` |
+| A field the unified DTO drops (e.g. a release's draft/prerelease flags) | the wrapper method — its DTO keeps the per-CLI fields |
 
 ## See also
 

@@ -5,10 +5,14 @@ use std::path::Path;
 
 use processkit::ProcessRunner;
 use vcs_gitlab::{
-    CiStatus as GlCi, GitLab, GitLabApi, MergeRequest, MergeStrategy as GlMs, Project,
+    CiStatus as GlCi, GitLab, GitLabApi, Issue, MergeRequest, MergeStrategy as GlMs, MrCreate,
+    Project, Release,
 };
 
-use crate::dto::{CiStatus, ForgePr, ForgePrState, ForgeRepo, MergeStrategy};
+use crate::dto::{
+    CiStatus, ForgeIssue, ForgeIssueState, ForgePr, ForgePrState, ForgeRelease, ForgeRepo,
+    MergeStrategy, PrCreate,
+};
 use crate::error::Result;
 
 pub(crate) async fn auth_status<R: ProcessRunner>(glab: &GitLab<R>) -> Result<bool> {
@@ -37,12 +41,17 @@ pub(crate) async fn pr_view<R: ProcessRunner>(
 pub(crate) async fn pr_create<R: ProcessRunner>(
     glab: &GitLab<R>,
     dir: &Path,
-    title: &str,
-    body: &str,
-    source: Option<String>,
-    target: Option<String>,
+    spec: PrCreate,
 ) -> Result<String> {
-    Ok(glab.mr_create(dir, title, body, source, target).await?)
+    // The unified source/target ARE glab's naming — a 1:1 field map.
+    let mut create = MrCreate::new(spec.title, spec.body);
+    if let Some(source) = spec.source {
+        create = create.source(source);
+    }
+    if let Some(target) = spec.target {
+        create = create.target(target);
+    }
+    Ok(glab.mr_create(dir, create).await?)
 }
 
 pub(crate) async fn pr_merge<R: ProcessRunner>(
@@ -86,6 +95,85 @@ pub(crate) async fn pr_checks<R: ProcessRunner>(
     number: u64,
 ) -> Result<CiStatus> {
     Ok(map_ci(glab.mr_checks(dir, number).await?))
+}
+
+pub(crate) async fn issue_list<R: ProcessRunner>(
+    glab: &GitLab<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeIssue>> {
+    Ok(glab
+        .issue_list(dir)
+        .await?
+        .into_iter()
+        .map(map_issue)
+        .collect())
+}
+
+pub(crate) async fn issue_view<R: ProcessRunner>(
+    glab: &GitLab<R>,
+    dir: &Path,
+    number: u64,
+) -> Result<ForgeIssue> {
+    Ok(map_issue(glab.issue_view(dir, number).await?))
+}
+
+pub(crate) async fn issue_create<R: ProcessRunner>(
+    glab: &GitLab<R>,
+    dir: &Path,
+    title: &str,
+    body: &str,
+) -> Result<String> {
+    Ok(glab.issue_create(dir, title, body).await?)
+}
+
+pub(crate) async fn release_list<R: ProcessRunner>(
+    glab: &GitLab<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeRelease>> {
+    Ok(glab
+        .release_list(dir)
+        .await?
+        .into_iter()
+        .map(map_release)
+        .collect())
+}
+
+pub(crate) async fn release_view<R: ProcessRunner>(
+    glab: &GitLab<R>,
+    dir: &Path,
+    tag: &str,
+) -> Result<ForgeRelease> {
+    Ok(map_release(glab.release_view(dir, tag).await?))
+}
+
+fn map_issue(i: Issue) -> ForgeIssue {
+    ForgeIssue {
+        number: i.number,
+        title: i.title,
+        state: issue_state_of(&i.state),
+        body: i.body,
+        url: i.url,
+    }
+}
+
+fn issue_state_of(state: &str) -> ForgeIssueState {
+    // GitLab spells it "closed" (note: open is "opened"); anything unknown
+    // reads as live (Open), the same documented fallback as `state_of` below.
+    if state.eq_ignore_ascii_case("closed") {
+        ForgeIssueState::Closed
+    } else {
+        ForgeIssueState::Open
+    }
+}
+
+fn map_release(r: Release) -> ForgeRelease {
+    ForgeRelease {
+        tag: r.tag_name,
+        title: r.name,
+        url: r.url,
+        // An empty `released_at` (unpublished/upcoming release) surfaces as None.
+        published_at: Some(r.published_at).filter(|s| !s.is_empty()),
+    }
 }
 
 fn map_mr(mr: MergeRequest) -> ForgePr {
@@ -152,6 +240,18 @@ mod proptests {
     use proptest::prelude::*;
 
     proptest! {
+        // Same contract for issues: only "closed" (any case) maps off Open —
+        // GitLab's "opened" and any future state both read as live.
+        #[test]
+        fn issue_state_mapping_never_panics_and_unknowns_default(s in any::<String>()) {
+            let mapped = issue_state_of(&s);
+            if s.eq_ignore_ascii_case("closed") {
+                prop_assert_eq!(mapped, ForgeIssueState::Closed);
+            } else {
+                prop_assert_eq!(mapped, ForgeIssueState::Open, "unknown must default to Open: {:?}", s);
+            }
+        }
+
         #[test]
         fn pr_state_mapping_never_panics_and_unknowns_default(s in any::<String>()) {
             let mapped = state_of(&s);

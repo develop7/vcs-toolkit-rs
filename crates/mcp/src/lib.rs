@@ -7,18 +7,19 @@
 //! [`vcs_forge::Forge`] (GitHub/GitLab/Gitea) — and serializes their DTOs to JSON.
 //! **Read tools are always available; mutating tools are gated**: they're
 //! registered (and annotated `destructiveHint`) but reject calls unless the
-//! server was started with writes allowed ([`VcsMcpServer::new`]'s `allow_write`).
+//! server's [`WriteGate`] covers them — all of them (`--allow-write`) or a
+//! per-tool allowlist (`--allow-tools repo_commit,forge_pr_create`).
 //!
 //! Build a [`VcsMcpServer`] and serve it over a transport (the `vcs-mcp` binary
 //! uses stdio):
 //!
 //! ```no_run
 //! # use vcs_core::Repo;
-//! # use vcs_mcp::VcsMcpServer;
+//! # use vcs_mcp::{VcsMcpServer, WriteGate};
 //! # use rmcp::{ServiceExt, transport::stdio};
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let repo = Repo::open(".")?;
-//! let server = VcsMcpServer::new(repo, None, /* allow_write */ false);
+//! let server = VcsMcpServer::new(repo, None, WriteGate::None);
 //! server.serve(stdio()).await?.waiting().await?;
 //! # Ok(()) }
 //! ```
@@ -51,6 +52,13 @@ pub struct CommitParams {
     pub paths: Vec<String>,
     /// The commit message.
     pub message: String,
+}
+
+/// Push a branch/bookmark to `origin`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PushParams {
+    /// The existing local branch (git) / bookmark (jj) to push.
+    pub branch: String,
 }
 
 /// Probe a merge.
@@ -122,6 +130,29 @@ pub struct PrCloseParams {
     pub delete_branch: bool,
 }
 
+/// An issue by number.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IssueNumberParams {
+    /// The issue number (GitLab uses the project-scoped `iid`).
+    pub number: u64,
+}
+
+/// Open an issue.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IssueCreateParams {
+    /// Title.
+    pub title: String,
+    /// Body / description.
+    pub body: String,
+}
+
+/// A release by tag.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReleaseTagParams {
+    /// The release's Git tag.
+    pub tag: String,
+}
+
 /// How [`forge_pr_merge`](VcsMcpServer::forge_pr_merge) merges.
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +177,34 @@ impl From<MergeStrategyArg> for vcs_forge::MergeStrategy {
 
 // --- The server --------------------------------------------------------------
 
+/// Which mutating tools are callable — the server's write policy.
+///
+/// Read tools are always available; every mutating tool checks this gate by its
+/// own tool name before doing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WriteGate {
+    /// No mutating tool is callable (the default).
+    #[default]
+    None,
+    /// Every mutating tool is callable (`--allow-write`).
+    All,
+    /// Only the named mutating tools are callable (`--allow-tools a,b,c`).
+    /// Tool names are the method names (e.g. `"repo_commit"`); read tools are
+    /// unaffected (always available) and unknown names simply never match.
+    Set(std::collections::HashSet<String>),
+}
+
+impl WriteGate {
+    /// Whether the mutating tool `name` may run under this gate.
+    pub fn allows(&self, name: &str) -> bool {
+        match self {
+            WriteGate::All => true,
+            WriteGate::None => false,
+            WriteGate::Set(tools) => tools.contains(name),
+        }
+    }
+}
+
 /// An MCP server over a single repository (and, optionally, its forge). Held as
 /// object-safe trait handles, so it's runner-agnostic; clone is cheap (`Arc`).
 /// Construct with [`new`](Self::new).
@@ -153,18 +212,18 @@ impl From<MergeStrategyArg> for vcs_forge::MergeStrategy {
 pub struct VcsMcpServer {
     repo: Arc<dyn VcsRepo>,
     forge: Option<Arc<dyn ForgeApi>>,
-    allow_write: bool,
+    writes: WriteGate,
     tool_router: ToolRouter<Self>,
 }
 
 impl VcsMcpServer {
     /// Build a server bound to `repo`, with an optional `forge` (PR/MR tools), and
-    /// `allow_write` controlling whether the mutating tools are callable.
-    pub fn new(repo: Repo, forge: Option<Forge>, allow_write: bool) -> Self {
+    /// a [`WriteGate`] controlling which mutating tools are callable.
+    pub fn new(repo: Repo, forge: Option<Forge>, writes: WriteGate) -> Self {
         Self::from_handles(
             Arc::new(repo),
             forge.map(|f| Arc::new(f) as Arc<dyn ForgeApi>),
-            allow_write,
+            writes,
         )
     }
 
@@ -173,23 +232,26 @@ impl VcsMcpServer {
     fn from_handles(
         repo: Arc<dyn VcsRepo>,
         forge: Option<Arc<dyn ForgeApi>>,
-        allow_write: bool,
+        writes: WriteGate,
     ) -> Self {
         Self {
             repo,
             forge,
-            allow_write,
+            writes,
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Reject a mutating tool call when writes are disabled.
-    fn require_write(&self) -> Result<(), ErrorData> {
-        if self.allow_write {
+    /// Reject the mutating tool `tool` when the write gate doesn't cover it.
+    fn require_write(&self, tool: &str) -> Result<(), ErrorData> {
+        if self.writes.allows(tool) {
             Ok(())
         } else {
             Err(ErrorData::invalid_params(
-                "write tools are disabled; restart the server with --allow-write".to_string(),
+                format!(
+                    "write tool {tool:?} is disabled; restart the server with --allow-write \
+                     (all mutations) or --allow-tools naming it"
+                ),
                 None,
             ))
         }
@@ -324,14 +386,14 @@ impl VcsMcpServer {
     // --- repo: mutations (gated) ------------------------------------------
 
     #[tool(
-        description = "Commit exactly the given paths with a message (git commit --only / jj commit <filesets>). Requires --allow-write.",
+        description = "Commit exactly the given paths with a message (git commit --only / jj commit <filesets>). Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn repo_commit(
         &self,
         Parameters(p): Parameters<CommitParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("repo_commit")?;
         self.repo
             .commit_paths(&p.paths, &p.message)
             .await
@@ -340,37 +402,50 @@ impl VcsMcpServer {
     }
 
     #[tool(
-        description = "Switch the working copy to a branch/bookmark/revision (git checkout / jj edit). Requires --allow-write.",
+        description = "Switch the working copy to a branch/bookmark/revision (git checkout / jj edit). Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn repo_checkout(
         &self,
         Parameters(p): Parameters<CheckoutParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("repo_checkout")?;
         self.repo.checkout(&p.reference).await.map_err(core_err)?;
         ok_json(&serde_json::json!({ "checked_out": p.reference }))
     }
 
     #[tool(
-        description = "Fetch from the default remote (git fetch / jj git fetch). Requires --allow-write.",
+        description = "Fetch from the default remote (git fetch / jj git fetch). Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn repo_fetch(&self) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("repo_fetch")?;
         self.repo.fetch().await.map_err(core_err)?;
         ok_json(&serde_json::json!({ "fetched": true }))
     }
 
     #[tool(
-        description = "Create a worktree/workspace at `path` on a new `branch` from `base`. Requires --allow-write.",
+        description = "Push an existing branch/bookmark to origin (git push -u origin <branch> / jj git push -b <branch>). Requires write access (--allow-write, or --allow-tools naming this tool).",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn repo_push(
+        &self,
+        Parameters(p): Parameters<PushParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.require_write("repo_push")?;
+        self.repo.push(&p.branch).await.map_err(core_err)?;
+        ok_json(&serde_json::json!({ "pushed": p.branch }))
+    }
+
+    #[tool(
+        description = "Create a worktree/workspace at `path` on a new `branch` from `base`. Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn repo_create_worktree(
         &self,
         Parameters(p): Parameters<CreateWorktreeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("repo_create_worktree")?;
         let outcome = self
             .repo
             .create_worktree(Path::new(&p.path), &p.branch, &p.base)
@@ -380,14 +455,14 @@ impl VcsMcpServer {
     }
 
     #[tool(
-        description = "Remove the worktree/workspace at `path`. Requires --allow-write.",
+        description = "Remove the worktree/workspace at `path`. Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn repo_remove_worktree(
         &self,
         Parameters(p): Parameters<RemoveWorktreeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("repo_remove_worktree")?;
         self.repo
             .remove_worktree(Path::new(&p.path), p.force)
             .await
@@ -443,34 +518,104 @@ impl VcsMcpServer {
         ok_json(&self.forge()?.pr_checks(p.number).await.map_err(forge_err)?)
     }
 
+    #[tool(
+        description = "Open issues on the configured forge (up to 100).",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn forge_issue_list(&self) -> Result<CallToolResult, ErrorData> {
+        ok_json(&self.forge()?.issue_list().await.map_err(forge_err)?)
+    }
+
+    #[tool(
+        description = "A single issue by number, with body and URL filled.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn forge_issue_view(
+        &self,
+        Parameters(p): Parameters<IssueNumberParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ok_json(
+            &self
+                .forge()?
+                .issue_view(p.number)
+                .await
+                .map_err(forge_err)?,
+        )
+    }
+
+    #[tool(
+        description = "Releases on the configured forge, newest first (up to 100).",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn forge_release_list(&self) -> Result<CallToolResult, ErrorData> {
+        ok_json(&self.forge()?.release_list().await.map_err(forge_err)?)
+    }
+
+    #[tool(
+        description = "A single release by tag (Unsupported on Gitea — filter forge_release_list instead).",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn forge_release_view(
+        &self,
+        Parameters(p): Parameters<ReleaseTagParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ok_json(
+            &self
+                .forge()?
+                .release_view(&p.tag)
+                .await
+                .map_err(forge_err)?,
+        )
+    }
+
     // --- forge: mutations (gated) -----------------------------------------
 
     #[tool(
-        description = "Open a pull/merge request, returning the CLI's output (the URL on success). Requires --allow-write.",
+        description = "Open an issue, returning the CLI's output (the URL on success). Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
-    pub async fn forge_pr_create(
+    pub async fn forge_issue_create(
         &self,
-        Parameters(p): Parameters<PrCreateParams>,
+        Parameters(p): Parameters<IssueCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("forge_issue_create")?;
         let out = self
             .forge()?
-            .pr_create(&p.title, &p.body, p.source, p.target)
+            .issue_create(&p.title, &p.body)
             .await
             .map_err(forge_err)?;
         ok_json(&serde_json::json!({ "output": out }))
     }
 
     #[tool(
-        description = "Merge a pull/merge request with a strategy (merge|squash|rebase). Requires --allow-write.",
+        description = "Open a pull/merge request, returning the CLI's output (the URL on success). Requires write access (--allow-write, or --allow-tools naming this tool).",
+        annotations(destructive_hint = true)
+    )]
+    pub async fn forge_pr_create(
+        &self,
+        Parameters(p): Parameters<PrCreateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.require_write("forge_pr_create")?;
+        let mut spec = vcs_forge::PrCreate::new(p.title, p.body);
+        if let Some(source) = p.source {
+            spec = spec.source(source);
+        }
+        if let Some(target) = p.target {
+            spec = spec.target(target);
+        }
+        let out = self.forge()?.pr_create(spec).await.map_err(forge_err)?;
+        ok_json(&serde_json::json!({ "output": out }))
+    }
+
+    #[tool(
+        description = "Merge a pull/merge request with a strategy (merge|squash|rebase). Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn forge_pr_merge(
         &self,
         Parameters(p): Parameters<PrMergeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("forge_pr_merge")?;
         self.forge()?
             .pr_merge(p.number, p.strategy.into())
             .await
@@ -479,14 +624,14 @@ impl VcsMcpServer {
     }
 
     #[tool(
-        description = "Close a pull/merge request without merging. Requires --allow-write.",
+        description = "Close a pull/merge request without merging. Requires write access (--allow-write, or --allow-tools naming this tool).",
         annotations(destructive_hint = true)
     )]
     pub async fn forge_pr_close(
         &self,
         Parameters(p): Parameters<PrCloseParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.require_write()?;
+        self.require_write("forge_pr_close")?;
         self.forge()?
             .pr_close(p.number, p.delete_branch)
             .await
@@ -506,7 +651,8 @@ impl ServerHandler for VcsMcpServer {
             .with_instructions(
                 "Drive a git/jj repository (and its forge) through typed tools. Read tools \
                  (repo_*/forge_* queries) are always available; mutating tools require the server \
-                 to have been started with --allow-write, and reject calls otherwise.",
+                 to have been started with --allow-write (all mutations) or --allow-tools \
+                 name,... (a per-tool allowlist), and reject calls otherwise.",
             )
     }
 }
@@ -518,10 +664,10 @@ mod tests {
     use vcs_core::vcs_git::Git;
 
     /// A git-backed server over a scripted runner — no real binary, no forge.
-    fn git_server(runner: ScriptedRunner, allow_write: bool) -> VcsMcpServer {
+    fn git_server(runner: ScriptedRunner, writes: WriteGate) -> VcsMcpServer {
         let repo: Arc<dyn VcsRepo> =
             Arc::new(Repo::from_git("/repo", "/repo", Git::with_runner(runner)));
-        VcsMcpServer::from_handles(repo, None, allow_write)
+        VcsMcpServer::from_handles(repo, None, writes)
     }
 
     /// The JSON of a successful tool result (serialised wire form).
@@ -534,7 +680,7 @@ mod tests {
     async fn read_tool_returns_dto_json() {
         let server = git_server(
             ScriptedRunner::new().on(["rev-parse"], Reply::ok("main\n")),
-            false,
+            WriteGate::None,
         );
         let out = server.repo_current_branch().await.expect("tool ok");
         assert!(result_json(&out).contains("main"), "{}", result_json(&out));
@@ -545,7 +691,7 @@ mod tests {
     async fn read_tool_works_in_readonly_mode() {
         let server = git_server(
             ScriptedRunner::new().on(["status"], Reply::ok(" M a.rs\0")),
-            false,
+            WriteGate::None,
         );
         let out = server.repo_status().await.expect("status ok");
         assert!(result_json(&out).contains("a.rs"));
@@ -557,7 +703,7 @@ mod tests {
     // gate's `--allow-write` message.
     #[tokio::test]
     async fn mutation_is_gated_without_allow_write() {
-        let server = git_server(ScriptedRunner::new(), /* allow_write */ false);
+        let server = git_server(ScriptedRunner::new(), WriteGate::None);
         let err = server
             .repo_checkout(Parameters(CheckoutParams {
                 reference: "feat".into(),
@@ -573,7 +719,10 @@ mod tests {
     // With writes enabled, the same tool reaches the runner and returns success.
     #[tokio::test]
     async fn mutation_reaches_runner_with_allow_write() {
-        let server = git_server(ScriptedRunner::new().on(["checkout"], Reply::ok("")), true);
+        let server = git_server(
+            ScriptedRunner::new().on(["checkout"], Reply::ok("")),
+            WriteGate::All,
+        );
         let out = server
             .repo_checkout(Parameters(CheckoutParams {
                 reference: "feat".into(),
@@ -583,12 +732,71 @@ mod tests {
         assert!(result_json(&out).contains("feat"));
     }
 
+    // repo_push is a gated mutation: blocked read-only, and with writes enabled
+    // it drives the facade's `push -u origin <branch>` (only ["push"] is
+    // scripted, so a different argv shape would error).
+    #[tokio::test]
+    async fn repo_push_is_gated_and_pushes_branch() {
+        let server = git_server(ScriptedRunner::new(), WriteGate::None);
+        let err = server
+            .repo_push(Parameters(PushParams {
+                branch: "feature".into(),
+            }))
+            .await
+            .expect_err("gated");
+        assert!(format!("{err:?}").contains("allow-write"), "{err:?}");
+
+        let server = git_server(
+            ScriptedRunner::new().on(["push"], Reply::ok("")),
+            WriteGate::All,
+        );
+        let out = server
+            .repo_push(Parameters(PushParams {
+                branch: "feature".into(),
+            }))
+            .await
+            .expect("push ok");
+        assert!(result_json(&out).contains("feature"));
+    }
+
+    // A Set gate admits exactly the named mutations: the listed tool runs, an
+    // unlisted one is rejected (naming itself), and read tools stay available.
+    #[tokio::test]
+    async fn allow_tools_set_gates_per_tool() {
+        let gate = WriteGate::Set(
+            ["repo_checkout".to_string()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        );
+        let server = git_server(
+            ScriptedRunner::new()
+                .on(["checkout"], Reply::ok(""))
+                .on(["rev-parse"], Reply::ok("main\n")),
+            gate,
+        );
+
+        // Listed mutation runs.
+        server
+            .repo_checkout(Parameters(CheckoutParams {
+                reference: "feat".into(),
+            }))
+            .await
+            .expect("listed tool allowed");
+
+        // Unlisted mutation is rejected, naming the tool.
+        let err = server.repo_fetch().await.expect_err("unlisted gated");
+        assert!(format!("{err:?}").contains("repo_fetch"), "{err:?}");
+
+        // Read tools are unaffected by the allowlist.
+        server.repo_current_branch().await.expect("read tool ok");
+    }
+
     // The facade's refused-input errors (here: an empty `paths` set, which the
     // facade rejects up front) surface as INVALID_PARAMS — the client's mistake
     // to fix — not as an internal server error.
     #[tokio::test]
     async fn refused_input_surfaces_as_invalid_params() {
-        let server = git_server(ScriptedRunner::new(), true);
+        let server = git_server(ScriptedRunner::new(), WriteGate::All);
         let err = server
             .repo_commit(Parameters(CommitParams {
                 paths: vec![],
@@ -607,12 +815,64 @@ mod tests {
     // Forge tools report a clear error when no forge was configured.
     #[tokio::test]
     async fn forge_tools_error_without_a_forge() {
-        let server = git_server(ScriptedRunner::new(), true);
+        let server = git_server(ScriptedRunner::new(), WriteGate::All);
         let err = server.forge_pr_list().await.expect_err("no forge");
         assert!(
             format!("{err:?}").contains("no forge"),
             "should mention no forge: {err:?}"
         );
+    }
+
+    // The forge issue tools route to the forge handle: the read tool works in
+    // read-only mode and returns the unified DTO JSON; the create tool is gated.
+    #[tokio::test]
+    async fn forge_issue_tools_route_and_gate() {
+        let json = r#"[{"number":3,"title":"Bug","state":"OPEN"}]"#;
+        let gh = vcs_forge::vcs_github::GitHub::with_runner(
+            ScriptedRunner::new().on(["issue", "list"], Reply::ok(json)),
+        );
+        let repo: Arc<dyn VcsRepo> = Arc::new(Repo::from_git(
+            "/repo",
+            "/repo",
+            Git::with_runner(ScriptedRunner::new()),
+        ));
+        let forge: Arc<dyn ForgeApi> = Arc::new(Forge::for_github("/repo", gh));
+        let server = VcsMcpServer::from_handles(repo, Some(forge), WriteGate::None);
+
+        let out = server.forge_issue_list().await.expect("issue list ok");
+        assert!(result_json(&out).contains("Bug"));
+
+        let err = server
+            .forge_issue_create(Parameters(IssueCreateParams {
+                title: "t".into(),
+                body: "b".into(),
+            }))
+            .await
+            .expect_err("gated");
+        assert!(format!("{err:?}").contains("allow-write"), "{err:?}");
+    }
+
+    // A forge op the backend can't do (tea has no single-release view) surfaces
+    // as INVALID_PARAMS — the client's "this forge can't do that" — without
+    // spawning anything (the runner has no rules, so a spawn would error
+    // differently).
+    #[tokio::test]
+    async fn forge_release_view_unsupported_maps_to_invalid_params() {
+        let tea = vcs_forge::vcs_gitea::Gitea::with_runner(ScriptedRunner::new());
+        let repo: Arc<dyn VcsRepo> = Arc::new(Repo::from_git(
+            "/repo",
+            "/repo",
+            Git::with_runner(ScriptedRunner::new()),
+        ));
+        let forge: Arc<dyn ForgeApi> = Arc::new(Forge::for_gitea("/repo", tea));
+        let server = VcsMcpServer::from_handles(repo, Some(forge), WriteGate::None);
+
+        let err = server
+            .forge_release_view(Parameters(ReleaseTagParams { tag: "v1".into() }))
+            .await
+            .expect_err("unsupported on gitea");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("release_view"), "{}", err.message);
     }
 
     // The macro-generated tool definitions carry the right MCP annotations: read
@@ -629,7 +889,7 @@ mod tests {
     // build-env identity (which would say "rmcp").
     #[test]
     fn server_info_identifies_as_vcs_mcp() {
-        let server = git_server(ScriptedRunner::new(), false);
+        let server = git_server(ScriptedRunner::new(), WriteGate::None);
         let info = server.get_info();
         assert_eq!(info.server_info.name, "vcs-mcp");
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
@@ -654,7 +914,7 @@ mod tests {
 
         let server = git_server(
             ScriptedRunner::new().on(["rev-parse"], Reply::ok("main\n")),
-            false,
+            WriteGate::None,
         );
         let (server_t, client_t) = tokio::io::duplex(4096);
         let server_handle = tokio::spawn(async move {

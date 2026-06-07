@@ -28,7 +28,7 @@ let authed = gh.auth_status().await?; // bool — true when `gh auth status` exi
 
 ```rust
 use std::path::Path;
-use vcs_github::{GitHub, GitHubApi};
+use vcs_github::{GitHub, GitHubApi, PrCreate};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
     let gh = GitHub::new();
@@ -41,15 +41,14 @@ use vcs_github::{GitHub, GitHubApi};
         println!("#{} [{}] {} — {}", pr.number, pr.state, pr.title, pr.url);
     }
 
-    // Open a PR from an explicit head into an explicit base (both optional —
-    // `None` head = current branch, `None` base = repo default). Returns the URL.
+    // Open a PR with `PrCreate`. `head`/`base` are optional — omit them for the
+    // current branch / repo default. Returns the URL.
     let url = gh
         .pr_create(
             repo,
-            "Add streaming",
-            "Implements …",
-            Some("feat/streaming".to_string()),
-            Some("main".to_string()),
+            PrCreate::new("Add streaming", "Implements …")
+                .head("feat/streaming")
+                .base("main"),
         )
         .await?;
     println!("opened {url}");

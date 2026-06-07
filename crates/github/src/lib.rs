@@ -121,18 +121,122 @@ impl PrMerge {
     }
 }
 
-/// What [`GitHubApi::pr_review`] submits (`gh pr review`). The body lives in
-/// the variant because gh *requires* one for request-changes/comment reviews —
-/// an empty-body request-changes is unrepresentable here.
+/// Options for [`GitHubApi::pr_create`] (`gh pr create`).
+///
+/// `#[non_exhaustive]`, so build it through [`PrCreate::new`] (title + body)
+/// and the chained [`head`](PrCreate::head) / [`base`](PrCreate::base) setters
+/// rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct PrCreate {
+    /// The PR title (`--title`).
+    pub title: String,
+    /// The PR body (`--body`).
+    pub body: String,
+    /// The source branch (`--head`); `None` = the current branch.
+    pub head: Option<String>,
+    /// The target branch (`--base`); `None` = the repo default.
+    pub base: Option<String>,
+}
+
+impl PrCreate {
+    /// A PR with the given title and body, opened from the current branch into
+    /// the repo default (`gh pr create --title <title> --body <body>`).
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            head: None,
+            base: None,
+        }
+    }
+
+    /// Set the source branch (`--head`).
+    pub fn head(mut self, head: impl Into<String>) -> Self {
+        self.head = Some(head.into());
+        self
+    }
+
+    /// Set the target branch (`--base`).
+    pub fn base(mut self, base: impl Into<String>) -> Self {
+        self.base = Some(base.into());
+        self
+    }
+}
+
+/// Which kind of review [`GitHubApi::pr_review`] submits — match on
+/// [`ReviewAction::kind`] to read it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReviewKind {
+    /// Approve (`--approve`).
+    Approve,
+    /// Request changes (`--request-changes`).
+    RequestChanges,
+    /// A comment-only review (`--comment`).
+    Comment,
+}
+
+/// What [`GitHubApi::pr_review`] submits (`gh pr review`).
+///
+/// The fields are **private** so the invariant holds by construction: gh
+/// *requires* a body for request-changes/comment reviews, so those are only
+/// reachable through [`request_changes`](ReviewAction::request_changes) /
+/// [`comment`](ReviewAction::comment), which both take the body — an empty-body
+/// request-changes is unrepresentable. Approve's body is optional
+/// ([`approve`](ReviewAction::approve) starts with none; attach one with
+/// [`with_body`](ReviewAction::with_body)). Read the parts back via
+/// [`kind`](ReviewAction::kind) / [`body`](ReviewAction::body).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ReviewAction {
-    /// Approve, with an optional body (`--approve [--body <body>]`).
-    Approve(Option<String>),
-    /// Request changes; gh requires the body (`--request-changes --body <body>`).
-    RequestChanges(String),
+pub struct ReviewAction {
+    kind: ReviewKind,
+    body: Option<String>,
+}
+
+impl ReviewAction {
+    /// Approve, with no body (`--approve`). Attach one with
+    /// [`with_body`](ReviewAction::with_body).
+    pub fn approve() -> Self {
+        Self {
+            kind: ReviewKind::Approve,
+            body: None,
+        }
+    }
+
+    /// Request changes; gh requires the body
+    /// (`--request-changes --body <body>`).
+    pub fn request_changes(body: impl Into<String>) -> Self {
+        Self {
+            kind: ReviewKind::RequestChanges,
+            body: Some(body.into()),
+        }
+    }
+
     /// A comment-only review; gh requires the body (`--comment --body <body>`).
-    Comment(String),
+    pub fn comment(body: impl Into<String>) -> Self {
+        Self {
+            kind: ReviewKind::Comment,
+            body: Some(body.into()),
+        }
+    }
+
+    /// Attach or replace the body — mainly to give an [`approve`](ReviewAction::approve)
+    /// a message.
+    pub fn with_body(mut self, body: impl Into<String>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    /// Which kind of review this is.
+    pub fn kind(&self) -> ReviewKind {
+        self.kind
+    }
+
+    /// The review body, if any.
+    pub fn body(&self) -> Option<&str> {
+        self.body.as_deref()
+    }
 }
 
 /// The GitHub operations this crate exposes — the interface consumers code
@@ -171,18 +275,10 @@ pub trait GitHubApi: Send + Sync {
     /// Issues for `dir` (`gh issue list --limit 100 --json …`). Returns up to 100
     /// open issues; use [`run`](GitHubApi::run) for more.
     async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>>;
-    /// Open a pull request, returning its URL (`gh pr create`). `head` (the
-    /// source branch; `None` = the current branch) and `base` (the target;
-    /// `None` = the repo default) are owned `Option<String>`s to keep the trait
-    /// `mockall`-friendly.
-    async fn pr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        head: Option<String>,
-        base: Option<String>,
-    ) -> Result<String>;
+    /// Open a pull request, returning its URL (`gh pr create`) — see
+    /// [`PrCreate`] for the title/body and the optional `head` (source branch;
+    /// `None` = current branch) / `base` (target; `None` = repo default).
+    async fn pr_create(&self, dir: &Path, spec: PrCreate) -> Result<String>;
     /// Raw GitHub REST/GraphQL response body (`gh api <endpoint>`).
     async fn api(&self, endpoint: &str) -> Result<String>;
 
@@ -204,7 +300,8 @@ pub trait GitHubApi: Send + Sync {
     /// exit). Any other exit (no such PR, auth required, …) errors.
     async fn pr_checks(&self, dir: &Path, number: u64) -> Result<Vec<CheckRun>>;
     /// Submit a review (`gh pr review <n> --approve|--request-changes|--comment
-    /// [--body <body>]`) — see [`ReviewAction`] (the body travels in the variant).
+    /// [--body <body>]`) — see [`ReviewAction`] (request-changes/comment carry a
+    /// required body by construction).
     async fn pr_review(&self, dir: &Path, number: u64, action: ReviewAction) -> Result<()>;
     /// Add a conversation comment, returning its URL
     /// (`gh pr comment <n> --body <body>`).
@@ -362,20 +459,20 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
             .await
     }
 
-    async fn pr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        head: Option<String>,
-        base: Option<String>,
-    ) -> Result<String> {
-        let mut args = vec!["pr", "create", "--title", title, "--body", body];
-        if let Some(head) = head.as_deref() {
+    async fn pr_create(&self, dir: &Path, spec: PrCreate) -> Result<String> {
+        let mut args = vec![
+            "pr",
+            "create",
+            "--title",
+            spec.title.as_str(),
+            "--body",
+            spec.body.as_str(),
+        ];
+        if let Some(head) = spec.head.as_deref() {
             args.push("--head");
             args.push(head);
         }
-        if let Some(base) = base.as_deref() {
+        if let Some(base) = spec.base.as_deref() {
             args.push("--base");
             args.push(base);
         }
@@ -448,21 +545,12 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     async fn pr_review(&self, dir: &Path, number: u64, action: ReviewAction) -> Result<()> {
         let n = number.to_string();
         let mut args = vec!["pr", "review", n.as_str()];
-        let body = match &action {
-            ReviewAction::Approve(body) => {
-                args.push("--approve");
-                body.as_deref()
-            }
-            ReviewAction::RequestChanges(body) => {
-                args.push("--request-changes");
-                Some(body.as_str())
-            }
-            ReviewAction::Comment(body) => {
-                args.push("--comment");
-                Some(body.as_str())
-            }
-        };
-        if let Some(body) = body {
+        args.push(match action.kind() {
+            ReviewKind::Approve => "--approve",
+            ReviewKind::RequestChanges => "--request-changes",
+            ReviewKind::Comment => "--comment",
+        });
+        if let Some(body) = action.body() {
             args.push("--body");
             args.push(body);
         }
@@ -674,7 +762,7 @@ github_at_forwarders! {
         fn pr_list_for_branch(head: &str, base: &str) -> Result<Vec<PullRequest>>;
         fn pr_view(number: u64) -> Result<PullRequest>;
         fn issue_list() -> Result<Vec<Issue>>;
-        fn pr_create(title: &str, body: &str, head: Option<String>, base: Option<String>) -> Result<String>;
+        fn pr_create(spec: PrCreate) -> Result<String>;
         fn pr_merge(number: u64, merge: PrMerge) -> Result<()>;
         fn pr_ready(number: u64) -> Result<()>;
         fn pr_close(number: u64, delete_branch: bool) -> Result<()>;
@@ -786,7 +874,7 @@ mod tests {
             Reply::ok("https://gh/pr/1\n"),
         ));
         let url = gh
-            .pr_create(Path::new("."), "T", "B", None, Some("main".to_string()))
+            .pr_create(Path::new("."), PrCreate::new("T", "B").base("main"))
             .await
             .expect("should build `pr create … --base main`");
         assert_eq!(url, "https://gh/pr/1");
@@ -801,10 +889,7 @@ mod tests {
         let gh = GitHub::with_runner(&rec);
         gh.pr_create(
             Path::new("/repo"),
-            "T",
-            "B",
-            Some("feat/x".to_string()),
-            Some("main".to_string()),
+            PrCreate::new("T", "B").head("feat/x").base("main"),
         )
         .await
         .expect("pr_create");
@@ -890,7 +975,7 @@ mod tests {
         let rec = RecordingRunner::replying(Reply::ok("https://gh/pr/2\n"));
         let gh = GitHub::with_runner(&rec);
         let url = gh
-            .pr_create(Path::new("/repo"), "T", "B", None, None)
+            .pr_create(Path::new("/repo"), PrCreate::new("T", "B"))
             .await
             .expect("pr_create");
         assert_eq!(url, "https://gh/pr/2");
@@ -1009,23 +1094,23 @@ mod tests {
         ));
     }
 
-    // Each review action maps to its flag; the body is embedded in the variant
-    // (approve's is optional and omitted when None).
+    // Each review action maps to its flag; the body is carried on the action
+    // (approve's is optional and omitted when absent).
     #[tokio::test]
     async fn pr_review_builds_action_args() {
         let rec = RecordingRunner::replying(Reply::ok(""));
         let gh = GitHub::with_runner(&rec);
-        gh.pr_review(Path::new("/r"), 7, ReviewAction::Approve(None))
+        gh.pr_review(Path::new("/r"), 7, ReviewAction::approve())
             .await
             .expect("approve");
         gh.pr_review(
             Path::new("/r"),
             7,
-            ReviewAction::RequestChanges("fix the parser".into()),
+            ReviewAction::request_changes("fix the parser"),
         )
         .await
         .expect("request changes");
-        gh.pr_review(Path::new("/r"), 7, ReviewAction::Comment("nice".into()))
+        gh.pr_review(Path::new("/r"), 7, ReviewAction::comment("nice"))
             .await
             .expect("comment");
         let calls = rec.calls();
@@ -1045,6 +1130,25 @@ mod tests {
         assert_eq!(
             calls[2].args_str(),
             ["pr", "review", "7", "--comment", "--body", "nice"]
+        );
+    }
+
+    // `approve().with_body(..)` attaches the optional approve message, emitting
+    // `--approve --body <body>`; the accessors read the parts back.
+    #[tokio::test]
+    async fn pr_review_approve_with_body() {
+        let action = ReviewAction::approve().with_body("LGTM");
+        assert_eq!(action.kind(), ReviewKind::Approve);
+        assert_eq!(action.body(), Some("LGTM"));
+
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let gh = GitHub::with_runner(&rec);
+        gh.pr_review(Path::new("/r"), 7, action)
+            .await
+            .expect("approve with body");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["pr", "review", "7", "--approve", "--body", "LGTM"]
         );
     }
 

@@ -74,12 +74,13 @@ generous (or no) timeout — see [github.md](github.md).
 
 ```rust
 # use std::path::Path;
-# use vcs_github::{GitHub, GitHubApi};
+# use vcs_github::{GitHub, GitHubApi, PrCreate};
 # async fn demo(gh: &GitHub, repo: &Path) -> Result<(), processkit::Error> {
 if !gh.auth_status().await? {                                   // bool
     return Ok(()); // not logged in — `gh auth login` first
 }
-let url = gh.pr_create(repo, "Add the thing", "Body.", Some("feat/x".into()), Some("main".into())).await?; // String — PR url
+let spec = PrCreate::new("Add the thing", "Body.").head("feat/x").base("main");
+let url = gh.pr_create(repo, spec).await?;                      // String — PR url
 println!("opened {url}");
 
 // The newest run on the head branch carries the id `run_watch` needs.
@@ -96,7 +97,7 @@ if let Some(run) = runs.first() {
 
 Notes: `run_watch` deliberately omits `--exit-status`, so the outcome travels in
 `WorkflowRun.conclusion` (a failed run can't be told from a cancelled one by exit
-code). `pr_create`'s `head`/`base` are `Option<String>` — `None` means the current
+code). `PrCreate`'s `.head()`/`.base()` are optional — omitted means the current
 branch / repo default. `run_list`'s `limit` is a `u64`. **Targeting GitLab or
 Gitea instead of GitHub?** Use the [`vcs-forge`](forge.md) facade — one
 `Forge::pr_create`/`pr_merge`/`pr_checks` lifecycle across all three forges, with

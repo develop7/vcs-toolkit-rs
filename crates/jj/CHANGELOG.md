@@ -71,6 +71,10 @@ crates; tag releases as `vcs-jj-v<version>`.
   `Git` client instead.
 
 ### Changed
+- `squash_paths(dir, from, into, filesets, use_destination_message)` now takes a
+  single `SquashPaths` spec — `squash_paths(dir, SquashPaths::new(from, into)
+  .filesets(…).use_destination_message())` — mirroring `WorkspaceAdd`. *Breaking*
+  for the `squash_paths` signature; argv is byte-identical.
 - Bumped `processkit` to **0.7** — the re-exported `Error` is now
   `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
   `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,

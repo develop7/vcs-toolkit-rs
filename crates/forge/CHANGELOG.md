@@ -20,17 +20,27 @@ crates; tag releases as `vcs-forge-v<version>`.
   marker, so there is no auto-detection).
 - Unified DTOs (`#[non_exhaustive]`): `ForgePr` + `ForgePrState`
   (`Open`/`Closed`/`Merged`, normalising the three forges' state spellings),
-  `ForgeRepo`, `CiStatus` (`Passing`/`Failing`/`Pending`/`None`), `MergeStrategy`.
+  `ForgeRepo`, `CiStatus` (`Passing`/`Failing`/`Pending`/`None`), `MergeStrategy`,
+  and the `PrCreate` spec (`PrCreate::new(title, body).source(b).target(b)` —
+  mapped to each CLI's own head/base flags).
 - The lean lifecycle: `auth_status`, `repo_view`, `pr_list`, `pr_view`,
-  `pr_create`, `pr_merge`, `pr_mark_ready`, `pr_close`, `pr_checks`.
+  `pr_create(PrCreate)`, `pr_merge`, `pr_mark_ready`, `pr_close`, `pr_checks`.
+- **Issues + releases**: `issue_list` / `issue_view(number)` /
+  `issue_create(title, body)` and `release_list` / `release_view(tag)`, with the
+  unified `ForgeIssue` (+ `ForgeIssueState` — any case of "closed" maps to
+  `Closed`, every other state reads as live `Open`) and `ForgeRelease`
+  (`published_at: Option<String>`, `None` for an unpublished draft) DTOs.
+  `body`/`url` on `ForgeIssue` are best-effort (empty from GitHub's lean
+  `issue_list`; filled by `issue_view` everywhere).
 - An `Error::Unsupported { forge, operation }` variant: Gitea's `tea` has no
-  current-repo view, draft toggle, or checks command, so `repo_view`,
-  `pr_mark_ready`, and `pr_checks` return it for the Gitea backend (the call does
-  not spawn). `Error::is_unsupported()` / `is_transient_fetch_error()` classifiers.
+  current-repo view, draft toggle, checks command, or single-release view, so
+  `repo_view`, `pr_mark_ready`, `pr_checks`, and `release_view` return it for the
+  Gitea backend (the call does not spawn). `Error::is_unsupported()` /
+  `is_transient_fetch_error()` classifiers.
 - Optional `serde` feature: derives `serde::Serialize` on the public DTOs
-  (`ForgeKind`, `ForgePr`, `ForgePrState`, `ForgeRepo`, `CiStatus`,
-  `MergeStrategy`) so a consumer (e.g. `vcs-mcp`) can emit them as JSON. **Off by
-  default.**
+  (`ForgeKind`, `ForgePr`, `ForgePrState`, `ForgeIssue`, `ForgeIssueState`,
+  `ForgeRelease`, `ForgeRepo`, `CiStatus`, `MergeStrategy`, `PrCreate`) so a
+  consumer (e.g. `vcs-mcp`) can emit them as JSON. **Off by default.**
 
 ### Changed
 - Bumped `processkit` to **0.7** — `Error::Forge` wraps the now-`#[non_exhaustive]`
@@ -38,7 +48,8 @@ crates; tag releases as `vcs-forge-v<version>`.
   the wrapped error exhaustively.
 - `pr_create` doc honesty: it returns the CLI's success output — a URL on
   GitHub/GitLab, but a textual summary on Gitea (tea prints no URL and has no
-  flag to shape the create output).
+  flag to shape the create output). `issue_create` mirrors the contract (tea
+  ends its textual summary with the URL).
 
 ### Fixed
 - GitLab `repo_view` no longer reports a project with **absent** `visibility`

@@ -177,6 +177,18 @@ pub(crate) async fn fetch_remote_branch<R: ProcessRunner>(
     Ok(())
 }
 
+pub(crate) async fn push<R: ProcessRunner>(jj: &Jj<R>, dir: &Path, branch: &str) -> Result<()> {
+    // jj pushes *bookmark state* (`git push -b <name>`); jj configures the
+    // tracking relationship itself, so there is no `-u` analogue to mirror.
+    // The bookmark rides the `-b` flag-VALUE slot, so it is deliberately not
+    // guarded (the documented convention — same as `rebase`/`fetch_from`'s jj
+    // paths): jj consumes the token as a name and errors on a nonexistent
+    // bookmark. Only the git path guards, because there the branch lands in a
+    // *bare positional* refspec slot where a `--flag` would be parsed as one.
+    jj.git_push(dir, Some(branch.to_string())).await?;
+    Ok(())
+}
+
 pub(crate) async fn checkout<R: ProcessRunner>(
     jj: &Jj<R>,
     dir: &Path,

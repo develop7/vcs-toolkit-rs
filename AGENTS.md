@@ -59,6 +59,15 @@ crates and **keep the traits object-safe and `mockall`-friendly**
 not `&[&Path]`/`&[&str]`; use `Option<String>`, not `Option<&str>`) so `&dyn Api`,
 `async-trait`, and `mockall` all work.
 
+**Builder rule:** a method that would take **two or more optional arguments, or
+any bare `bool`**, takes a spec/builder struct instead — `#[non_exhaustive]`,
+documented pub fields naming the CLI flag, a constructor for the required parts
+plus chained setters (`GitPush::branch(b).set_upstream()`, `MergeCommit`,
+`CommitPaths`, `PrCreate`, `SquashPaths`…). Bare positional bools and
+`Option`-pile signatures don't pass review; specs are passed **by value** (keeps
+the traits object-safe). Injection guards (`reject_flag_like`) stay in the
+method body at the spawn edge, never in the builder.
+
 **Mockability is a first-class requirement.** Consumers depend on the trait and,
 in tests, either enable the `mock` feature for a `mockall`-generated mock
 (`MockGitApi`) or call `Git::with_runner(processkit::ScriptedRunner::new()…)` to
@@ -137,9 +146,11 @@ genuinely needs. The wrappers stay lean: `vcs-git` and `vcs-jj` depend on
 `processkit` + `async-trait` + the two foundational crates (`vcs-diff`,
 `vcs-cli-support`); `vcs-github` depends on `processkit` + `async-trait` +
 `vcs-cli-support` and adds `serde`/`serde_json` to deserialize `gh … --json`.
-The forge wrappers `vcs-gitlab`/`vcs-gitea` are leaner still — `processkit` +
-`async-trait` + `serde`/`serde_json` only (their lean surface has no bare
-positional argv slot, so they don't even pull in `vcs-cli-support`'s guard). The
+`vcs-gitlab` matches that set (`processkit` + `async-trait` + `serde`/`serde_json`
++ `vcs-cli-support`) — it guards the one bare positional it has, `release_view`'s
+`<tag>`, exactly as `vcs-github` does. `vcs-gitea` is leaner still — `processkit`
++ `async-trait` + `serde`/`serde_json` only (its surface has no bare positional
+argv slot, so it doesn't even pull in `vcs-cli-support`'s guard). The
 `vcs-forge` facade depends on the three forge wrappers + `vcs-cli-support` (for
 the transient-error classifier) + `async-trait`. `processkit` (external) brings the job FFI, the `tokio` runtime,
 and the structured `Error`, so the wrappers don't depend on `tokio` directly

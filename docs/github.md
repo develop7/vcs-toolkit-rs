@@ -124,20 +124,20 @@ for an empty repository).
 async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>>;
 async fn pr_list_for_branch(&self, dir: &Path, head: &str, base: &str) -> Result<Vec<PullRequest>>;
 async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest>;
-async fn pr_create(&self, dir: &Path, title: &str, body: &str, head: Option<String>, base: Option<String>) -> Result<String>;
+async fn pr_create(&self, dir: &Path, spec: PrCreate) -> Result<String>;
 ```
 
 `pr_list` returns open PRs (gh's default). `pr_list_for_branch` passes
 `--state all`, so a closed or merged PR for the `head`→`base` pair is reported
 too — branch on each entry's `state`. Empty when none match.
 
-`pr_create` returns the new PR's **URL** (trimmed stdout). `head` (`None` = the
-current branch) and `base` (`None` = the repo default) are owned
-`Option<String>` to keep the trait `mockall`-friendly; each is appended as
-`--head <b>` / `--base <b>` only when `Some`.
+`pr_create` returns the new PR's **URL** (trimmed stdout). It takes a
+[`PrCreate`](#prcreate) spec carrying the title/body and the optional `head`
+(`None` = the current branch) and `base` (`None` = the repo default) branches;
+each branch is appended as `--head <b>` / `--base <b>` only when set.
 
 ```rust
-# use vcs_github::{GitHub, GitHubApi};
+# use vcs_github::{GitHub, GitHubApi, PrCreate};
 use std::path::Path;
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
 let gh = GitHub::new();
@@ -147,8 +147,8 @@ for pr in gh.pr_list_for_branch(repo, "feat/streaming", "main").await? {
 }
 
 let url = gh
-    .pr_create(repo, "Add streaming", "Implements …",
-               Some("feat/streaming".to_string()), Some("main".to_string()))
+    .pr_create(repo, PrCreate::new("Add streaming", "Implements …")
+        .head("feat/streaming").base("main"))
     .await?;
 println!("opened {url}");
 # Ok(()) }
@@ -224,7 +224,7 @@ account's `null` author becomes an empty login).
 use std::path::Path;
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
 let gh = GitHub::new();
-gh.pr_review(repo, 7, ReviewAction::RequestChanges("fix the parser".into())).await?;
+gh.pr_review(repo, 7, ReviewAction::request_changes("fix the parser")).await?;
 
 let fb = gh.pr_feedback(repo, 7).await?;
 for r in &fb.reviews { println!("{} {}", r.author, r.state); }
@@ -420,21 +420,64 @@ let _ = PrMerge::squash().auto().delete_branch();  // --squash --auto --delete-b
 met); `delete_branch()` enables `--delete-branch`. Public fields: `strategy:
 MergeStrategy`, `auto: bool`, `delete_branch: bool`.
 
-### `ReviewAction`
+### `PrCreate`
 
-What [`pr_review`](#pull-requests--review--feedback) submits. `#[non_exhaustive]`;
-the body lives in the variant because gh requires one for the last two — an
-empty-body request-changes is unrepresentable:
+The [`pr_create`](#pull-requests--listing--creation) options. `#[non_exhaustive]`
+with private-by-spec ergonomics — build through `PrCreate::new(title, body)` and
+chain the optional branch setters rather than a struct literal:
 
 ```rust
-pub enum ReviewAction {
-    Approve(Option<String>), // --approve [--body <body>]
-    RequestChanges(String),  // --request-changes --body <body>
-    Comment(String),         // --comment --body <body>
-}
+# use vcs_github::PrCreate;
+let _ = PrCreate::new("Add streaming", "Implements …");        // current branch → repo default
+let _ = PrCreate::new("Add streaming", "Implements …")
+    .head("feat/streaming").base("main");                      // --head feat/streaming --base main
 ```
 
-`Approve(None)` omits `--body` entirely.
+`new(title, body)` takes `impl Into<String>` (source/target left to gh's
+defaults); `.head(b)` sets `--head` (the source branch), `.base(b)` sets `--base`
+(the target). Public fields: `title: String`, `body: String`,
+`head: Option<String>`, `base: Option<String>`.
+
+### `ReviewAction`
+
+What [`pr_review`](#pull-requests--review--feedback) submits. Now a
+`#[non_exhaustive]` **struct** with private fields, so the invariant holds by
+construction — gh *requires* a body for request-changes/comment reviews, so those
+are only reachable through the constructors that take one, and an empty-body
+request-changes is unrepresentable. The review kind is a separate
+[`ReviewKind`](#reviewkind) enum read back via `.kind()`.
+
+```rust
+# use vcs_github::{ReviewAction, ReviewKind};
+let _ = ReviewAction::approve();                          // --approve (no body)
+let _ = ReviewAction::approve().with_body("LGTM");        // --approve --body LGTM
+let _ = ReviewAction::request_changes("fix the parser");  // --request-changes --body <body>
+let _ = ReviewAction::comment("nice");                    // --comment --body <body>
+
+let a = ReviewAction::approve().with_body("LGTM");
+assert_eq!(a.kind(), ReviewKind::Approve);
+assert_eq!(a.body(), Some("LGTM"));
+```
+
+- `approve()` — approve with no body; attach one with `.with_body(b)`.
+- `request_changes(body)` / `comment(body)` — gh requires the body, so it is
+  taken by construction.
+- `.with_body(body)` — attach or replace the body (mainly to give an approve a
+  message).
+- `.kind() -> ReviewKind` / `.body() -> Option<&str>` — read the parts back.
+
+### `ReviewKind`
+
+`#[non_exhaustive]`, `Copy` enum naming which review `ReviewAction` submits, read
+back via [`ReviewAction::kind`](#reviewaction):
+
+```rust
+pub enum ReviewKind {
+    Approve,         // --approve
+    RequestChanges,  // --request-changes
+    Comment,         // --comment
+}
+```
 
 ## See also
 

@@ -58,6 +58,71 @@ pub struct Project {
     pub visibility: Option<String>,
 }
 
+/// An issue (`glab issue list/view --output json`). The fields are GitLab's
+/// REST `Issue` object, which `glab` passes through unchanged. Mirrors
+/// [`MergeRequest`]'s shape (project-scoped `iid`, tolerant optional fields).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct Issue {
+    /// The **project-scoped** id (`iid`) — the `<id>` other `glab issue`
+    /// commands take. (GitLab's global `id` is deliberately not surfaced.)
+    /// Surfaced through the public field name `number` for cross-forge
+    /// consistency with [`vcs-github`](https://crates.io/crates/vcs-github)'s
+    /// `Issue`.
+    #[serde(rename = "iid")]
+    pub number: u64,
+    /// Issue title.
+    pub title: String,
+    /// State, e.g. `"opened"`, `"closed"` (GitLab's lower-case spelling — note
+    /// it is `"opened"`, not `"open"`).
+    pub state: String,
+    /// Issue body (GitLab's `description`, markdown). `glab issue list` does
+    /// include it, but it can be absent/null, so it is tolerant.
+    #[serde(rename = "description", default)]
+    pub body: String,
+    /// Web URL.
+    #[serde(rename = "web_url", default)]
+    pub url: String,
+}
+
+/// A release (`glab release list/view --output json`) — GitLab's REST
+/// `Release` object, which `glab` passes through unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct Release {
+    /// The Git tag the release is attached to (the `<tag>`
+    /// [`release_view`](crate::GitLabApi::release_view) takes).
+    pub tag_name: String,
+    /// Release title (may be empty/absent — GitLab defaults it to the tag).
+    #[serde(default)]
+    pub name: String,
+    /// Web URL of the release page. GitLab carries it as `_links.self` (there
+    /// is no top-level `web_url` on a release), so it is pulled off that nested
+    /// object; empty when absent.
+    #[serde(rename = "_links", default, deserialize_with = "self_link")]
+    pub url: String,
+    /// Publication timestamp (GitLab's `released_at`, ISO 8601); empty when
+    /// absent (e.g. an upcoming/unpublished release).
+    #[serde(rename = "released_at", default)]
+    pub published_at: String,
+}
+
+/// Deserialize a `Release`'s `url` from GitLab's `_links.self`. The links object
+/// can be absent or have a null/missing `self`; any of those yield an empty
+/// string rather than erroring (matching the tolerant `#[serde(default)]` style).
+fn self_link<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct Links {
+        #[serde(rename = "self", default)]
+        self_url: String,
+    }
+    let links = Option::<Links>::deserialize(deserializer)?;
+    Ok(links.map(|l| l.self_url).unwrap_or_default())
+}
+
 /// The coarse CI/pipeline outcome for an MR (`glab mr view … --output json`'s
 /// `head_pipeline.status`), bucketed into the four states a caller acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +233,69 @@ mod tests {
         assert_eq!(mr.source_branch, "");
         assert_eq!(mr.web_url, "");
         assert!(mr.draft);
+    }
+
+    #[test]
+    fn parses_issue_list() {
+        // Field shapes from the GitLab Issues API: iid/title/state/description/web_url.
+        let json = r#"[
+            {"iid": 1, "title": "Fix bug", "state": "opened",
+             "description": "the body", "web_url": "https://gl/i/1"}
+        ]"#;
+        let issues: Vec<Issue> = from_json(json).expect("parse issues");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0],
+            Issue {
+                number: 1,
+                title: "Fix bug".into(),
+                state: "opened".into(),
+                body: "the body".into(),
+                url: "https://gl/i/1".into(),
+            }
+        );
+    }
+
+    // glab/GitLab can omit description/web_url; the DTO must tolerate a minimal
+    // object (only the required `iid`/`title`/`state`).
+    #[test]
+    fn issue_tolerates_missing_optional_fields() {
+        let json = r#"{"iid": 9, "title": "wip", "state": "closed"}"#;
+        let issue: Issue = from_json(json).expect("parse issue");
+        assert_eq!(issue.body, "");
+        assert_eq!(issue.url, "");
+    }
+
+    #[test]
+    fn parses_release_view() {
+        // Field shapes from the GitLab Releases API: tag_name/name/released_at,
+        // and the URL nested under `_links.self` (no top-level web_url).
+        let json = r#"{
+            "tag_name": "v1.0", "name": "Release 1.0",
+            "released_at": "2026-01-02T03:04:05.000Z",
+            "_links": {"self": "https://gl/-/releases/v1.0"}
+        }"#;
+        let rel: Release = from_json(json).expect("parse release");
+        assert_eq!(
+            rel,
+            Release {
+                tag_name: "v1.0".into(),
+                name: "Release 1.0".into(),
+                url: "https://gl/-/releases/v1.0".into(),
+                published_at: "2026-01-02T03:04:05.000Z".into(),
+            }
+        );
+    }
+
+    // A release with no `_links` and no `released_at` (e.g. an upcoming release)
+    // must deserialize with empty url/published_at, not error.
+    #[test]
+    fn release_tolerates_missing_links_and_date() {
+        let json = r#"{"tag_name": "v2.0"}"#;
+        let rel: Release = from_json(json).expect("parse release");
+        assert_eq!(rel.name, "");
+        assert_eq!(rel.url, "");
+        assert_eq!(rel.published_at, "");
     }
 
     #[test]

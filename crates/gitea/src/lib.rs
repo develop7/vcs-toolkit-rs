@@ -5,16 +5,18 @@
 //! run inside an OS job (via [`processkit`]) so a `tea` subprocess is never
 //! orphaned, and honour an optional [timeout](Gitea::default_timeout).
 //!
-//! The surface is the **lean pull-request lifecycle** `tea` actually supports —
-//! auth, and PR list / view / create / merge / close — deserializing
-//! `tea … --output json` (the Gitea REST shape `tea` marshals). It is
-//! deliberately narrower than [`vcs-github`](https://crates.io/crates/vcs-github)
-//! / [`vcs-gitlab`](https://crates.io/crates/vcs-gitlab): `tea` has **no**
-//! single-PR `view`, **no** current-repo view, **no** draft toggle, and **no** PR
-//! checks command, so those operations are simply absent here (the
+//! The surface is the **lean lifecycle** `tea` actually supports — auth, the PR
+//! lifecycle (list / view / create / merge / close), issues (list / view /
+//! create), and release listing — deserializing `tea … --output json` (the
+//! Gitea REST shape `tea` marshals). It is deliberately narrower than
+//! [`vcs-github`](https://crates.io/crates/vcs-github) /
+//! [`vcs-gitlab`](https://crates.io/crates/vcs-gitlab): `tea` has **no**
+//! single-PR `view`, **no** current-repo view, **no** draft toggle, **no** PR
+//! checks command, and **no** single-release view (`tea releases` ignores any
+//! positional and always lists), so those operations are simply absent here (the
 //! [`vcs-forge`](https://crates.io/crates/vcs-forge) facade reports them as
 //! `Unsupported` for the Gitea backend). `pr_view` is synthesized by listing and
-//! filtering.
+//! filtering; `issue_view`, by contrast, is a first-class `tea issues <index>`.
 //!
 //! Two test seams: enable the `mock` feature for a `mockall`-generated
 //! `MockGiteaApi`, or inject a fake runner with
@@ -28,7 +30,49 @@ use processkit::ProcessRunner;
 pub use processkit::{Error, ProcessResult, Result};
 
 mod parse;
-pub use parse::PullRequest;
+pub use parse::{Issue, PullRequest, Release};
+
+/// Options for [`GiteaApi::pr_create`] (`tea pr create`).
+///
+/// `#[non_exhaustive]`, so build it through [`PrCreate::new`] and the chained
+/// setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct PrCreate {
+    /// The PR title (`--title`).
+    pub title: String,
+    /// The PR description (`--description`).
+    pub body: String,
+    /// The source branch (`--head`); `None` = the current branch.
+    pub head: Option<String>,
+    /// The target branch (`--base`); `None` = the repo default.
+    pub base: Option<String>,
+}
+
+impl PrCreate {
+    /// A PR with `title` and `body`, head/base left to tea's defaults
+    /// (current branch → repo default).
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            head: None,
+            base: None,
+        }
+    }
+
+    /// Set the source branch (`--head`) instead of the current branch.
+    pub fn head(mut self, head: impl Into<String>) -> Self {
+        self.head = Some(head.into());
+        self
+    }
+
+    /// Set the target branch (`--base`) instead of the repo default.
+    pub fn base(mut self, base: impl Into<String>) -> Self {
+        self.base = Some(base.into());
+        self
+    }
+}
 
 /// Name of the underlying CLI binary this crate drives.
 ///
@@ -94,22 +138,37 @@ pub trait GiteaApi: Send + Sync {
     /// Open a pull request, returning the command's output (`tea pr create`).
     /// Unlike `gh`/`glab`, `tea` prints a textual summary on success, **not** the
     /// new PR's URL (it has no `--output`/`--fields` flag to shape create output),
-    /// so do not parse this as a URL. `head` (the source branch; `None` = the
-    /// current branch) and `base` (the target; `None` = the repo default) are
-    /// owned `Option<String>`s to keep the trait `mockall`-friendly.
-    async fn pr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        head: Option<String>,
-        base: Option<String>,
-    ) -> Result<String>;
+    /// so do not parse this as a URL. The [`PrCreate`] spec carries the title,
+    /// body, and the optional head (`None` = the current branch) and base
+    /// (`None` = the repo default) branches.
+    async fn pr_create(&self, dir: &Path, spec: PrCreate) -> Result<String>;
     /// Merge a pull request (`tea pr merge <number> --style merge|rebase|squash`)
     /// — see [`MergeStrategy`].
     async fn pr_merge(&self, dir: &Path, number: u64, strategy: MergeStrategy) -> Result<()>;
     /// Close a pull request without merging (`tea pr close <number>`).
     async fn pr_close(&self, dir: &Path, number: u64) -> Result<()>;
+    /// Open issues for `dir` (`tea issues list --limit 100 --output json`).
+    /// Returns up to 100 open issues; use [`run`](GiteaApi::run) for more.
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>>;
+    /// A single issue by number. Unlike PRs, `tea` *does* have a single-issue
+    /// view — `tea issues <number>` (the bare index form), here run as
+    /// `tea issues <number> --output json`, deserializing one object rather than
+    /// listing and filtering.
+    async fn issue_view(&self, dir: &Path, number: u64) -> Result<Issue>;
+    /// Open an issue, returning the command's output (`tea issues create
+    /// --title <t> --description <d>`). Like [`pr_create`](GiteaApi::pr_create),
+    /// `tea` prints a textual summary of the new issue (and, on the final line,
+    /// its URL) — there is no `--output`/`--fields` flag to shape create output —
+    /// so this returns the trimmed stdout verbatim rather than a parsed URL.
+    async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String>;
+    /// Releases for `dir` (`tea releases list --limit 100 --output json`).
+    /// Returns up to 100 releases; use [`run`](GiteaApi::run) for more.
+    ///
+    /// There is intentionally no `release_view`: `tea releases` takes no
+    /// positional and always lists, so a single-release-by-tag view does not
+    /// exist in `tea` (the [`vcs-forge`](https://crates.io/crates/vcs-forge)
+    /// facade reports it `Unsupported`).
+    async fn release_list(&self, dir: &Path) -> Result<Vec<Release>>;
 }
 
 processkit::cli_client!(
@@ -198,20 +257,20 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
             })
     }
 
-    async fn pr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        head: Option<String>,
-        base: Option<String>,
-    ) -> Result<String> {
-        let mut args = vec!["pr", "create", "--title", title, "--description", body];
-        if let Some(head) = head.as_deref() {
+    async fn pr_create(&self, dir: &Path, spec: PrCreate) -> Result<String> {
+        let mut args = vec![
+            "pr",
+            "create",
+            "--title",
+            spec.title.as_str(),
+            "--description",
+            spec.body.as_str(),
+        ];
+        if let Some(head) = spec.head.as_deref() {
             args.push("--head");
             args.push(head);
         }
-        if let Some(base) = base.as_deref() {
+        if let Some(base) = spec.base.as_deref() {
             args.push("--base");
             args.push(base);
         }
@@ -232,6 +291,57 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
         let n = number.to_string();
         self.core
             .unit(self.core.command_in(dir, ["pr", "close", n.as_str()]))
+            .await
+    }
+
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>> {
+        // `--limit 100` overrides tea's default page size (30), mirroring
+        // `pr_list`, so the list is not silently truncated.
+        self.core
+            .try_parse(
+                self.core.command_in(
+                    dir,
+                    ["issues", "list", "--limit", "100", "--output", "json"],
+                ),
+                parse::parse_issue_list,
+            )
+            .await
+    }
+
+    async fn issue_view(&self, dir: &Path, number: u64) -> Result<Issue> {
+        // `tea issues <index>` is the documented bare-index single-issue view;
+        // `--output json` yields one object. `number` is a `u64`, so it can
+        // never look like a flag — nothing to guard with `reject_flag_like`.
+        let n = number.to_string();
+        self.core
+            .try_parse(
+                self.core
+                    .command_in(dir, ["issues", n.as_str(), "--output", "json"]),
+                parse::parse_issue,
+            )
+            .await
+    }
+
+    async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String> {
+        self.core
+            .text(self.core.command_in(
+                dir,
+                ["issues", "create", "--title", title, "--description", body],
+            ))
+            .await
+    }
+
+    async fn release_list(&self, dir: &Path) -> Result<Vec<Release>> {
+        // `--limit 100` overrides tea's default page size (30); `tea releases`
+        // has no `--state`, so this returns the most recent 100 releases.
+        self.core
+            .try_parse(
+                self.core.command_in(
+                    dir,
+                    ["releases", "list", "--limit", "100", "--output", "json"],
+                ),
+                parse::parse_release_list,
+            )
             .await
     }
 }
@@ -312,9 +422,13 @@ gitea_at_forwarders! {
     dir {
         fn pr_list() -> Result<Vec<PullRequest>>;
         fn pr_view(number: u64) -> Result<PullRequest>;
-        fn pr_create(title: &str, body: &str, head: Option<String>, base: Option<String>) -> Result<String>;
+        fn pr_create(spec: PrCreate) -> Result<String>;
         fn pr_merge(number: u64, strategy: MergeStrategy) -> Result<()>;
         fn pr_close(number: u64) -> Result<()>;
+        fn issue_list() -> Result<Vec<Issue>>;
+        fn issue_view(number: u64) -> Result<Issue>;
+        fn issue_create(title: &str, body: &str) -> Result<String>;
+        fn release_list() -> Result<Vec<Release>>;
     }
 }
 
@@ -455,10 +569,7 @@ mod tests {
         let tea = Gitea::with_runner(&rec);
         tea.pr_create(
             Path::new("/repo"),
-            "T",
-            "B",
-            Some("feat/x".to_string()),
-            Some("main".to_string()),
+            PrCreate::new("T", "B").head("feat/x").base("main"),
         )
         .await
         .expect("pr_create");
@@ -496,6 +607,101 @@ mod tests {
         let tea = Gitea::with_runner(&rec);
         tea.pr_close(Path::new("/repo"), 5).await.expect("close");
         assert_eq!(rec.only_call().args_str(), ["pr", "close", "5"]);
+    }
+
+    // issue_list parses the JSON array and pins `--limit 100 --output json`.
+    #[tokio::test]
+    async fn issue_list_parses_scripted_json() {
+        let json = r#"[{"number":12,"title":"Bug","state":"open","body":"broken","html_url":"u"}]"#;
+        let tea = Gitea::with_runner(ScriptedRunner::new().on(["issues", "list"], Reply::ok(json)));
+        let issues = tea.issue_list(Path::new(".")).await.expect("issue_list");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 12);
+        assert_eq!(issues[0].title, "Bug");
+    }
+
+    #[tokio::test]
+    async fn issue_list_pins_limit_100() {
+        let rec = RecordingRunner::replying(Reply::ok("[]"));
+        let tea = Gitea::with_runner(&rec);
+        tea.issue_list(Path::new("/repo"))
+            .await
+            .expect("issue_list");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["issues", "list", "--limit", "100", "--output", "json"]
+        );
+    }
+
+    // issue_view is a first-class `tea issues <index> --output json` returning a
+    // single object — not a list+filter like pr_view.
+    #[tokio::test]
+    async fn issue_view_uses_bare_index_and_parses_object() {
+        let rec = RecordingRunner::replying(Reply::ok(
+            r#"{"number":7,"title":"One","state":"closed","body":"b","html_url":"u"}"#,
+        ));
+        let tea = Gitea::with_runner(&rec);
+        let issue = tea
+            .issue_view(Path::new("/repo"), 7)
+            .await
+            .expect("issue_view");
+        assert_eq!(issue.number, 7);
+        assert_eq!(issue.state, "closed");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["issues", "7", "--output", "json"]
+        );
+    }
+
+    // issue_create assembles title/description; returns the trimmed stdout.
+    #[tokio::test]
+    async fn issue_create_builds_argv_and_returns_output() {
+        let rec = RecordingRunner::replying(Reply::ok("#12 Bug\nhttps://gitea/issues/12\n"));
+        let tea = Gitea::with_runner(&rec);
+        let out = tea
+            .issue_create(Path::new("/repo"), "Bug", "broken")
+            .await
+            .expect("issue_create");
+        assert_eq!(out, "#12 Bug\nhttps://gitea/issues/12");
+        assert_eq!(
+            rec.only_call().args_str(),
+            [
+                "issues",
+                "create",
+                "--title",
+                "Bug",
+                "--description",
+                "broken"
+            ]
+        );
+    }
+
+    // release_list parses the JSON array and pins `--limit 100 --output json`.
+    #[tokio::test]
+    async fn release_list_parses_scripted_json() {
+        let json = r#"[{"tag_name":"0.1","name":"First","draft":false,"prerelease":false,"published_at":"2023-07-26T13:02:36Z","html_url":"u"}]"#;
+        let tea =
+            Gitea::with_runner(ScriptedRunner::new().on(["releases", "list"], Reply::ok(json)));
+        let releases = tea
+            .release_list(Path::new("."))
+            .await
+            .expect("release_list");
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].tag, "0.1");
+        assert_eq!(releases[0].title, "First");
+    }
+
+    #[tokio::test]
+    async fn release_list_pins_limit_100() {
+        let rec = RecordingRunner::replying(Reply::ok("[]"));
+        let tea = Gitea::with_runner(&rec);
+        tea.release_list(Path::new("/repo"))
+            .await
+            .expect("release_list");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["releases", "list", "--limit", "100", "--output", "json"]
+        );
     }
 
     #[cfg(feature = "mock")]

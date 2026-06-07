@@ -16,7 +16,7 @@ crates; tag releases as `vcs-gitlab-v<version>`.
   `GitLab::with_runner` scripted-runner seam).
 - The **lean merge-request lifecycle**, deserializing `glab … --output json`
   (GitLab's REST JSON): `auth_status`, `repo_view` (`Project`),
-  `mr_list`/`mr_view` (`MergeRequest`), `mr_create(title, body, source, target)`
+  `mr_list`/`mr_view` (`MergeRequest`), `mr_create(MrCreate)`
   → URL, `mr_merge(id, MergeStrategy)` (merges **immediately** via
   `--auto-merge=false`, overriding glab's default merge-when-pipeline-succeeds;
   `--squash`/`--rebase`/default merge), `mr_ready`, `mr_close`, and `mr_checks`
@@ -40,6 +40,10 @@ crates; tag releases as `vcs-gitlab-v<version>`.
   instead of a misleading empty string).
 - `auth_status` reports `false` on **any** non-zero exit (was: errored on exits
   other than 0/1), matching its "reports the bool, must not error" contract.
+- `mr_create` now takes an `MrCreate` spec
+  (`MrCreate::new(title, body).source(…).target(…)`) instead of positional
+  `title, body, source, target` arguments, mirroring `vcs-git`'s `GitPush`
+  builder style. The built argv is unchanged.
 
 ### Fixed
 - `mr_list` passes `--per-page 100` — glab's default of 30 silently truncated

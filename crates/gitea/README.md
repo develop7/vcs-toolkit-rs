@@ -35,7 +35,7 @@ let authed = tea.auth_status().await?; // bool — true when a login is configur
 
 ```rust
 use std::path::Path;
-use vcs_gitea::{Gitea, GiteaApi, MergeStrategy};
+use vcs_gitea::{Gitea, GiteaApi, MergeStrategy, PrCreate};
 
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
     let tea = Gitea::new();
@@ -47,10 +47,9 @@ use vcs_gitea::{Gitea, GiteaApi, MergeStrategy};
     let out = tea
         .pr_create(
             repo,
-            "Add streaming",
-            "Implements …",
-            Some("feat/streaming".to_string()),
-            Some("main".to_string()),
+            PrCreate::new("Add streaming", "Implements …")
+                .head("feat/streaming")
+                .base("main"),
         )
         .await?;
     println!("{out}");

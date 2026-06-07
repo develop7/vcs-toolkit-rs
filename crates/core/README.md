@@ -33,9 +33,9 @@ println!("backend: {}", repo.kind().as_str());
 ## Common surface
 
 `current_branch`, `trunk`, `changed_files`, `diff_stat`, `commit_paths`,
-`fetch`, `list_worktrees`, `create_worktree`, `remove_worktree` — each returning
-backend-agnostic DTOs (`FileChange`, `DiffStat`, `WorktreeInfo`, …). Re-anchor a
-handle to a sibling directory with `repo.at(other_dir)`.
+`fetch`, `push`, `list_worktrees`, `create_worktree`, `remove_worktree` — each
+returning backend-agnostic DTOs (`FileChange`, `DiffStat`, `WorktreeInfo`, …).
+Re-anchor a handle to a sibling directory with `repo.at(other_dir)`.
 
 ## Testing
 

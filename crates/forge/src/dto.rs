@@ -144,6 +144,62 @@ pub struct ForgeRepo {
     pub private: bool,
 }
 
+/// An issue, unified across the three forges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct ForgeIssue {
+    /// The issue number a caller passes to the other operations (GitHub/Gitea
+    /// `number`, GitLab `iid`).
+    pub number: u64,
+    /// Title.
+    pub title: String,
+    /// Normalised state (see [`ForgeIssueState`]).
+    pub state: ForgeIssueState,
+    /// Issue body (markdown). **Best-effort:** GitHub's lean `issue_list`
+    /// doesn't fetch it (empty there); [`issue_view`](crate::ForgeApi::issue_view)
+    /// fills it on every forge.
+    pub body: String,
+    /// Web URL. **Best-effort:** empty from GitHub's lean `issue_list`;
+    /// [`issue_view`](crate::ForgeApi::issue_view) fills it on every forge.
+    pub url: String,
+}
+
+/// The normalised state of a [`ForgeIssue`], unifying GitHub's `OPEN`/`CLOSED`,
+/// GitLab's `opened`/`closed`, and Gitea's `open`/`closed`. An unknown state
+/// reads as [`Open`](ForgeIssueState::Open) — a state we don't model is treated
+/// as live, never silently as resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum ForgeIssueState {
+    /// Open / unresolved.
+    Open,
+    /// Closed.
+    Closed,
+}
+
+/// A release, unified across the three forges. (Gitea's `tea` always lists —
+/// it has no single-release view — so
+/// [`release_view`](crate::ForgeApi::release_view) is
+/// [`Unsupported`](crate::Error::Unsupported) there.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct ForgeRelease {
+    /// The Git tag the release is attached to (what
+    /// [`release_view`](crate::ForgeApi::release_view) takes).
+    pub tag: String,
+    /// Release title (may be empty — forges commonly default it to the tag).
+    pub title: String,
+    /// Web URL. **Best-effort:** empty from GitHub's lean `release_list`;
+    /// `release_view` fills it where supported.
+    pub url: String,
+    /// Publication timestamp (ISO 8601); `None` for an unpublished draft or
+    /// when the backend doesn't report one.
+    pub published_at: Option<String>,
+}
+
 /// The coarse CI status for a PR/MR, bucketed into the four states a caller acts
 /// on. GitHub aggregates its per-check buckets into this; GitLab maps its
 /// pipeline status; Gitea's `tea` has no checks command, so
@@ -161,6 +217,50 @@ pub enum CiStatus {
     Pending,
     /// No checks/pipeline ran.
     None,
+}
+
+/// Options for [`pr_create`](crate::ForgeApi::pr_create) — the unified
+/// open-a-PR/MR spec, mapped to each CLI's own flags (gh `--head`/`--base`,
+/// glab `--source-branch`/`--target-branch`, tea `--head`/`--base`).
+///
+/// `#[non_exhaustive]`, so build it through [`PrCreate::new`] and the chained
+/// setters rather than a struct literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct PrCreate {
+    /// Title.
+    pub title: String,
+    /// Body / description.
+    pub body: String,
+    /// Source (head) branch; `None` = the current branch.
+    pub source: Option<String>,
+    /// Target (base) branch; `None` = the repository default.
+    pub target: Option<String>,
+}
+
+impl PrCreate {
+    /// A PR/MR from the current branch into the repository's default branch.
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            source: None,
+            target: None,
+        }
+    }
+
+    /// Open from this source (head) branch instead of the current one.
+    pub fn source(mut self, branch: impl Into<String>) -> Self {
+        self.source = Some(branch.into());
+        self
+    }
+
+    /// Open against this target (base) branch instead of the repo default.
+    pub fn target(mut self, branch: impl Into<String>) -> Self {
+        self.target = Some(branch.into());
+        self
+    }
 }
 
 /// How [`pr_merge`](crate::ForgeApi::pr_merge) merges — mapped to each CLI's own
@@ -323,5 +423,39 @@ mod serde_tests {
         assert_eq!(v["number"], 7);
         assert_eq!(v["state"], "Merged"); // enum → variant name
         assert_eq!(v["source_branch"], "feat");
+    }
+
+    // The Wave-A DTOs are part of vcs-mcp's JSON wire format — pin their shape:
+    // the state enum serializes as the variant name, an absent publish date as
+    // `null`, and the PrCreate spec keeps its field names.
+    #[test]
+    fn issue_release_and_pr_create_serialize_to_clean_json() {
+        let issue = ForgeIssue {
+            number: 3,
+            title: "Bug".into(),
+            state: ForgeIssueState::Closed,
+            body: "b".into(),
+            url: "u".into(),
+        };
+        let v = serde_json::to_value(&issue).unwrap();
+        assert_eq!(v["number"], 3);
+        assert_eq!(v["state"], "Closed");
+        assert_eq!(v["body"], "b");
+
+        let release = ForgeRelease {
+            tag: "v1".into(),
+            title: "One".into(),
+            url: "u".into(),
+            published_at: None,
+        };
+        let v = serde_json::to_value(&release).unwrap();
+        assert_eq!(v["tag"], "v1");
+        assert!(v["published_at"].is_null(), "draft date must be null");
+
+        let spec = PrCreate::new("T", "B").source("feat");
+        let v = serde_json::to_value(&spec).unwrap();
+        assert_eq!(v["title"], "T");
+        assert_eq!(v["source"], "feat");
+        assert!(v["target"].is_null());
     }
 }

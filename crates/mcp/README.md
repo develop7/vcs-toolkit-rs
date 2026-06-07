@@ -10,15 +10,16 @@ Built on the [`vcs-core`](https://crates.io/crates/vcs-core) (`Repo`) and
 wraps a typed operation and returns its DTO as JSON, so an agent harness drives a
 repository through **structured, validated calls** instead of raw shell — with the
 wrappers' argv injection guards still underneath. **Read tools are always
-available; mutating tools are gated behind `--allow-write`** and annotated
-`destructiveHint`.
+available; mutating tools are gated** behind `--allow-write` (all mutations) or
+`--allow-tools <name,…>` (a per-tool allowlist) and annotated `destructiveHint`.
 
 > 📖 **Full guide:** [docs/mcp.md](https://github.com/ZelAnton/vcs-toolkit-rs/blob/main/docs/mcp.md)
 
 ## The binary
 
 ```text
-vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write] [--timeout <seconds>]
+vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write]
+        [--allow-tools <name,…>] [--timeout <seconds>]
 ```
 
 The server drives git through a **hardened** client (`Git::hardened()` — repo
@@ -41,8 +42,9 @@ config entry:
 ```
 
 The forge is auto-detected from the repo's `origin` remote (works on a colocated
-jj repo too); pass `--forge` to override. Without `--allow-write`, only the read
-tools are callable.
+jj repo too); pass `--forge` to override. With neither write flag, only the read
+tools are callable; `--allow-tools repo_commit,repo_push` grants exactly those
+mutations and nothing else.
 
 ## The library
 
@@ -50,12 +52,12 @@ tools are callable.
 
 ```rust
 use vcs_core::Repo;
-use vcs_mcp::VcsMcpServer;
+use vcs_mcp::{VcsMcpServer, WriteGate};
 use rmcp::{ServiceExt, transport::stdio};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let repo = Repo::open(".")?;
-let server = VcsMcpServer::new(repo, /* forge */ None, /* allow_write */ false);
+let server = VcsMcpServer::new(repo, /* forge */ None, WriteGate::None);
 server.serve(stdio()).await?.waiting().await?;
 # Ok(()) }
 ```

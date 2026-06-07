@@ -135,6 +135,50 @@ impl WorkspaceAdd {
     }
 }
 
+/// Options for [`JjApi::squash_paths`] (`jj squash --from <from> --into <into>
+/// [--use-destination-message] <filesets>`).
+///
+/// `#[non_exhaustive]`, so build it through [`SquashPaths::new`] and the chained
+/// setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SquashPaths {
+    /// Source revision the filesets are squashed out of (`--from`).
+    pub from: String,
+    /// Destination revision the filesets are squashed into (`--into`).
+    pub into: String,
+    /// The exact filesets to move; empty squashes the whole `from` change.
+    pub filesets: Vec<JjFileset>,
+    /// Keep the destination's description rather than combining the two
+    /// (`--use-destination-message`).
+    pub use_destination_message: bool,
+}
+
+impl SquashPaths {
+    /// Squash from `from` into `into`, with no filesets selected yet.
+    pub fn new(from: impl Into<String>, into: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            into: into.into(),
+            filesets: Vec::new(),
+            use_destination_message: false,
+        }
+    }
+
+    /// Set the filesets to move (replacing any already added).
+    pub fn filesets(mut self, filesets: impl IntoIterator<Item = JjFileset>) -> Self {
+        self.filesets = filesets.into_iter().collect();
+        self
+    }
+
+    /// Keep the destination's description (`--use-destination-message`) instead
+    /// of combining the two.
+    pub fn use_destination_message(mut self) -> Self {
+        self.use_destination_message = true;
+        self
+    }
+}
+
 /// The first bookmark name from a comma-joined [`BOOKMARKS_TEMPLATE`](parse::BOOKMARKS_TEMPLATE)
 /// render; `None` when the commit carries no local bookmark.
 fn first_bookmark(rendered: &str) -> Option<String> {
@@ -391,14 +435,7 @@ pub trait JjApi: Send + Sync {
     async fn commit_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()>;
     /// Squash exactly these filesets from one revision into another
     /// (`squash --from <from> --into <into> [--use-destination-message] <filesets>`).
-    async fn squash_paths(
-        &self,
-        dir: &Path,
-        from: &str,
-        into: &str,
-        filesets: &[JjFileset],
-        use_destination_message: bool,
-    ) -> Result<()>;
+    async fn squash_paths(&self, dir: &Path, spec: SquashPaths) -> Result<()>;
     /// Set the working copy's sparse patterns to exactly `patterns`
     /// (`sparse set --clear --add <p>…`); an empty list clears the working copy.
     async fn sparse_set(&self, dir: &Path, patterns: &[String]) -> Result<()>;
@@ -960,25 +997,18 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
         self.core.unit(self.cmd_in(dir, args)).await
     }
 
-    async fn squash_paths(
-        &self,
-        dir: &Path,
-        from: &str,
-        into: &str,
-        filesets: &[JjFileset],
-        use_destination_message: bool,
-    ) -> Result<()> {
+    async fn squash_paths(&self, dir: &Path, spec: SquashPaths) -> Result<()> {
         let mut args: Vec<String> = vec![
             "squash".into(),
             "--from".into(),
-            from.into(),
+            spec.from,
             "--into".into(),
-            into.into(),
+            spec.into,
         ];
-        if use_destination_message {
+        if spec.use_destination_message {
             args.push("--use-destination-message".into());
         }
-        args.extend(filesets.iter().map(|f| f.as_str().to_string()));
+        args.extend(spec.filesets.iter().map(|f| f.as_str().to_string()));
         self.core.unit(self.cmd_in(dir, args)).await
     }
 
@@ -1340,7 +1370,7 @@ jj_at_forwarders! {
         fn edit(revset: &str) -> Result<()>;
         fn squash_into(into: &str, use_destination_message: bool) -> Result<()>;
         fn commit_paths(filesets: &[JjFileset], message: &str) -> Result<()>;
-        fn squash_paths(from: &str, into: &str, filesets: &[JjFileset], use_destination_message: bool) -> Result<()>;
+        fn squash_paths(spec: SquashPaths) -> Result<()>;
         fn sparse_set(patterns: &[String]) -> Result<()>;
         fn new_merge(message: &str, parents: Vec<String>) -> Result<()>;
         fn abandon(revset: &str) -> Result<()>;
@@ -1600,10 +1630,7 @@ mod tests {
         let jj = Jj::with_runner(&rec);
         jj.squash_paths(
             Path::new("."),
-            "@",
-            "feat",
-            &[JjFileset::path("a.rs")],
-            false,
+            SquashPaths::new("@", "feat").filesets([JjFileset::path("a.rs")]),
         )
         .await
         .expect("squash_paths");
@@ -1628,10 +1655,9 @@ mod tests {
         let jj = Jj::with_runner(&rec);
         jj.squash_paths(
             Path::new("."),
-            "@",
-            "feat",
-            &[JjFileset::path("a.rs")],
-            true,
+            SquashPaths::new("@", "feat")
+                .filesets([JjFileset::path("a.rs")])
+                .use_destination_message(),
         )
         .await
         .expect("squash_paths");

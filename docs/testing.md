@@ -186,14 +186,14 @@ exposes `args_str()`, `cwd`, and `envs`.
 ```rust
 use processkit::{RecordingRunner, Reply};
 use std::path::Path;
-use vcs_github::{GitHub, GitHubApi};
+use vcs_github::{GitHub, GitHubApi, PrCreate};
 
 # async fn demo() {
     let rec = RecordingRunner::replying(Reply::ok("https://gh/pr/9\n"));
     let gh = GitHub::with_runner(&rec);
 
     // Without a base, pr_create must omit `--base` entirely.
-    gh.pr_create(Path::new("/repo"), "T", "B", None, None).await.unwrap();
+    gh.pr_create(Path::new("/repo"), PrCreate::new("T", "B")).await.unwrap();
 
     assert_eq!(
         rec.only_call().args_str(),

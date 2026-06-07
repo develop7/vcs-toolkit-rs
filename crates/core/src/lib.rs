@@ -420,6 +420,23 @@ impl<R: ProcessRunner> Repo<R> {
         }
     }
 
+    /// Push `branch` to `origin` (git `push -u origin <branch>` / jj
+    /// `git push -b <branch>`).
+    ///
+    /// The branch (jj: bookmark) must already exist locally. The two backends
+    /// honestly differ in what "push" means: git pushes the *ref* and records
+    /// the upstream (`-u`; idempotent on repeat pushes), while jj pushes the
+    /// *bookmark's state* — including deleting the remote branch if the
+    /// bookmark was deleted locally. Renamed refspecs (`local:remote`) and
+    /// non-`origin` remotes are git-only concepts; use the
+    /// [`git()`](Repo::git) escape hatch ([`vcs_git::GitPush`]) for those.
+    pub async fn push(&self, branch: &str) -> Result<()> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::push(g, &self.cwd, branch).await,
+            Backend::Jj(j) => jj_backend::push(j, &self.cwd, branch).await,
+        }
+    }
+
     /// Switch the working copy to `reference` (git `checkout` / jj `edit`).
     pub async fn checkout(&self, reference: &str) -> Result<()> {
         match &self.backend {
@@ -614,6 +631,8 @@ pub trait VcsRepo: Send + Sync {
     async fn fetch_from(&self, remote: &str) -> Result<()>;
     /// See [`Repo::fetch_remote_branch`].
     async fn fetch_remote_branch(&self, branch: &str) -> Result<()>;
+    /// See [`Repo::push`].
+    async fn push(&self, branch: &str) -> Result<()>;
     /// See [`Repo::checkout`].
     async fn checkout(&self, reference: &str) -> Result<()>;
     /// See [`Repo::rebase`].
@@ -697,6 +716,9 @@ impl<R: ProcessRunner> VcsRepo for Repo<R> {
     }
     async fn fetch_remote_branch(&self, branch: &str) -> Result<()> {
         self.fetch_remote_branch(branch).await
+    }
+    async fn push(&self, branch: &str) -> Result<()> {
+        self.push(branch).await
     }
     async fn checkout(&self, reference: &str) -> Result<()> {
         self.checkout(reference).await
@@ -1108,6 +1130,62 @@ mod tests {
             .unwrap();
         let args = jrec.only_call().args_str();
         assert_eq!(&args[..2], &["git", "fetch"]);
+    }
+
+    // The facade push is the honest LCD: git pushes the ref with `-u origin`,
+    // jj pushes the bookmark's state with `-b`. Argv pinned on both backends.
+    #[tokio::test]
+    async fn push_dispatches_per_backend() {
+        use processkit::RecordingRunner;
+        let grec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_git("/repo", "/repo", Git::with_runner(&grec))
+            .push("feature")
+            .await
+            .unwrap();
+        assert_eq!(
+            grec.only_call().args_str(),
+            ["push", "-u", "origin", "feature"]
+        );
+
+        let jrec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_jj("/repo", "/repo", Jj::with_runner(&jrec))
+            .push("feature")
+            .await
+            .unwrap();
+        let args = jrec.only_call().args_str();
+        assert_eq!(&args[..4], &["git", "push", "-b", "feature"]);
+    }
+
+    // The two backends handle a flag-like branch per the documented guard
+    // convention: git rejects it BEFORE spawning (the branch lands in GitPush's
+    // bare-positional refspec slot, where `--force` would otherwise be parsed
+    // as a flag); jj passes it verbatim in the `-b` flag-VALUE slot, where jj
+    // reads it as a bookmark name and errors itself — no flag injection is
+    // possible there, so no pre-spawn guard exists (same as rebase/fetch_from).
+    #[tokio::test]
+    async fn push_flag_like_branch_follows_guard_convention() {
+        use processkit::RecordingRunner;
+        let grec = RecordingRunner::replying(Reply::ok(""));
+        let err = Repo::from_git("/repo", "/repo", Git::with_runner(&grec))
+            .push("--force")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Vcs(processkit::Error::Spawn { .. })),
+            "got: {err:?}"
+        );
+        assert_eq!(grec.calls().len(), 0, "no process must have spawned");
+
+        let jrec = RecordingRunner::replying(Reply::ok(""));
+        Repo::from_jj("/repo", "/repo", Jj::with_runner(&jrec))
+            .push("--force")
+            .await
+            .expect("jj path spawns; the value rides -b verbatim");
+        assert_eq!(
+            &jrec.only_call().args_str()[..4],
+            &["git", "push", "-b", "--force"],
+            "the flag-like value must ride the -b flag-VALUE slot, not become argv"
+        );
     }
 
     #[tokio::test]

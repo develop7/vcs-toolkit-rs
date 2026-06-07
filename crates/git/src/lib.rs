@@ -201,6 +201,158 @@ impl CloneSpec {
     }
 }
 
+/// Options for [`GitApi::commit_paths`] (`git commit --only`).
+///
+/// `#[non_exhaustive]`, so build it through [`CommitPaths::new`] and the chained
+/// setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct CommitPaths {
+    /// The exact paths whose working-tree content to commit (`--only -- <paths>`).
+    pub paths: Vec<PathBuf>,
+    /// The commit message (`-m`).
+    pub message: String,
+    /// Amend the previous commit instead of creating a new one (`--amend`).
+    pub amend: bool,
+}
+
+impl CommitPaths {
+    /// Commit exactly `paths`' working-tree content with `message`
+    /// (`git commit -m <message> --only -- <paths>`).
+    pub fn new(
+        paths: impl IntoIterator<Item = impl Into<PathBuf>>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            paths: paths.into_iter().map(Into::into).collect(),
+            message: message.into(),
+            amend: false,
+        }
+    }
+
+    /// Amend the previous commit instead of creating a new one (`--amend`).
+    pub fn amend(mut self) -> Self {
+        self.amend = true;
+        self
+    }
+}
+
+/// Options for [`GitApi::merge_commit`] (`git merge` that commits the result).
+///
+/// `#[non_exhaustive]`, so build it through [`MergeCommit::branch`] and the
+/// chained setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct MergeCommit {
+    /// The branch to merge in.
+    pub branch: String,
+    /// Always create a merge commit, even when a fast-forward was possible
+    /// (`--no-ff`).
+    pub no_ff: bool,
+    /// The merge commit message (`-m`); `None` takes the default message
+    /// non-interactively (`--no-edit`).
+    pub message: Option<String>,
+}
+
+impl MergeCommit {
+    /// Merge `name` taking the default merge message non-interactively
+    /// (`git merge --no-edit <name>`).
+    pub fn branch(name: impl Into<String>) -> Self {
+        Self {
+            branch: name.into(),
+            no_ff: false,
+            message: None,
+        }
+    }
+
+    /// Always create a merge commit, even when a fast-forward was possible
+    /// (`--no-ff`).
+    pub fn no_ff(mut self) -> Self {
+        self.no_ff = true;
+        self
+    }
+
+    /// Use `m` as the merge commit message (`-m`).
+    pub fn message(mut self, m: impl Into<String>) -> Self {
+        self.message = Some(m.into());
+        self
+    }
+}
+
+/// Options for [`GitApi::merge_no_commit`] (`git merge --no-commit`).
+///
+/// `#[non_exhaustive]`, so build it through [`MergeNoCommit::branch`] and the
+/// chained setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct MergeNoCommit {
+    /// The branch to merge in.
+    pub branch: String,
+    /// Stage the squashed result without recording `MERGE_HEAD` (`--squash`);
+    /// takes precedence over `no_ff` (git rejects the pair).
+    pub squash: bool,
+    /// Always record a real (abortable) merge, even when a fast-forward was
+    /// possible (`--no-ff`).
+    pub no_ff: bool,
+}
+
+impl MergeNoCommit {
+    /// Merge `name` but stop before committing (`git merge --no-commit <name>`).
+    pub fn branch(name: impl Into<String>) -> Self {
+        Self {
+            branch: name.into(),
+            squash: false,
+            no_ff: false,
+        }
+    }
+
+    /// Stage the squashed result without recording `MERGE_HEAD` (`--squash`).
+    pub fn squash(mut self) -> Self {
+        self.squash = true;
+        self
+    }
+
+    /// Always record a real (abortable) merge, even when a fast-forward was
+    /// possible (`--no-ff`).
+    pub fn no_ff(mut self) -> Self {
+        self.no_ff = true;
+        self
+    }
+}
+
+/// Options for [`GitApi::tag_create_annotated`] (`git tag -a`).
+///
+/// `#[non_exhaustive]`, so build it through [`AnnotatedTag::new`] and the chained
+/// setter rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct AnnotatedTag {
+    /// The tag name.
+    pub name: String,
+    /// The tag message (`-m`).
+    pub message: String,
+    /// The revision to tag (`<rev>`); `None` tags `HEAD`.
+    pub rev: Option<String>,
+}
+
+impl AnnotatedTag {
+    /// An annotated tag `name` with `message` at `HEAD`
+    /// (`git tag -a <name> -m <message>`).
+    pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            message: message.into(),
+            rev: None,
+        }
+    }
+
+    /// Tag `r` instead of `HEAD`.
+    pub fn rev(mut self, r: impl Into<String>) -> Self {
+        self.rev = Some(r.into());
+        self
+    }
+}
+
 /// A pre-validated git reference name (branch/tag/remote), for callers that
 /// accept names from untrusted input (UIs, bots, agents) and want to fail
 /// early with a clear error. The dir-taking methods stay `&str` — they apply
@@ -389,15 +541,9 @@ pub trait GitApi: Send + Sync {
     async fn checkout(&self, dir: &Path, reference: &str) -> Result<()>;
     /// Check out a commit as a detached HEAD (`git checkout --detach <commit>`).
     async fn checkout_detach(&self, dir: &Path, commit: &str) -> Result<()>;
-    /// Commit exactly `paths`' working-tree content, ignoring the index
-    /// (`git commit [--amend] -m <message> --only -- <paths>`).
-    async fn commit_paths(
-        &self,
-        dir: &Path,
-        paths: &[PathBuf],
-        message: &str,
-        amend: bool,
-    ) -> Result<()>;
+    /// Commit exactly the spec's paths' working-tree content, ignoring the index
+    /// (`git commit [--amend] -m <message> --only -- <paths>`); see [`CommitPaths`].
+    async fn commit_paths(&self, dir: &Path, spec: CommitPaths) -> Result<()>;
     /// The last commit's full message (`git log -1 --format=%B`) — e.g. to
     /// pre-fill an amend.
     async fn last_commit_message(&self, dir: &Path) -> Result<String>;
@@ -491,13 +637,8 @@ pub trait GitApi: Send + Sync {
     async fn merge_squash(&self, dir: &Path, branch: &str) -> Result<()>;
     /// Merge a branch (`merge [--no-ff] [-m <msg> | --no-edit] <branch>`); with no
     /// message it takes the default merge message non-interactively (`--no-edit`).
-    async fn merge_commit(
-        &self,
-        dir: &Path,
-        branch: &str,
-        no_ff: bool,
-        message: Option<String>,
-    ) -> Result<()>;
+    /// See [`MergeCommit`].
+    async fn merge_commit(&self, dir: &Path, spec: MergeCommit) -> Result<()>;
     /// Merge a branch but stop before committing, so the result can be inspected
     /// (`merge --no-commit [--squash | --no-ff] <branch>`). With `no_ff` (and not
     /// `squash`) git records `MERGE_HEAD`, so the in-progress merge is abortable
@@ -505,14 +646,8 @@ pub trait GitApi: Send + Sync {
     /// `squash`, git stages the squashed result but records **no** `MERGE_HEAD`,
     /// so it is *not* an abortable merge: undo it with
     /// [`reset_merge`](GitApi::reset_merge) / [`reset_hard`](GitApi::reset_hard),
-    /// not `merge_abort`.
-    async fn merge_no_commit(
-        &self,
-        dir: &Path,
-        branch: &str,
-        squash: bool,
-        no_ff: bool,
-    ) -> Result<()>;
+    /// not `merge_abort`. See [`MergeNoCommit`].
+    async fn merge_no_commit(&self, dir: &Path, spec: MergeNoCommit) -> Result<()>;
     /// Abort an in-progress merge (`merge --abort`).
     async fn merge_abort(&self, dir: &Path) -> Result<()>;
     /// Finish a merge after resolving conflicts (`commit --no-edit`).
@@ -559,14 +694,9 @@ pub trait GitApi: Send + Sync {
     async fn clone_repo(&self, url: &str, dest: &Path, spec: CloneSpec) -> Result<()>;
     /// Create a lightweight tag at `rev` (`tag <name> [<rev>]`; `None` = HEAD).
     async fn tag_create(&self, dir: &Path, name: &str, rev: Option<String>) -> Result<()>;
-    /// Create an annotated tag (`tag -a <name> -m <message> [<rev>]`).
-    async fn tag_create_annotated(
-        &self,
-        dir: &Path,
-        name: &str,
-        message: &str,
-        rev: Option<String>,
-    ) -> Result<()>;
+    /// Create an annotated tag (`tag -a <name> -m <message> [<rev>]`); see
+    /// [`AnnotatedTag`].
+    async fn tag_create_annotated(&self, dir: &Path, spec: AnnotatedTag) -> Result<()>;
     /// Tag names, sorted by git's default ordering (`tag --list`).
     async fn tag_list(&self, dir: &Path) -> Result<Vec<String>>;
     /// Delete a tag (`tag -d <name>`).
@@ -802,22 +932,16 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .await
     }
 
-    async fn commit_paths(
-        &self,
-        dir: &Path,
-        paths: &[PathBuf],
-        message: &str,
-        amend: bool,
-    ) -> Result<()> {
+    async fn commit_paths(&self, dir: &Path, spec: CommitPaths) -> Result<()> {
         // `--only -- <paths>` commits exactly these paths' working-tree content
         // regardless of the index; `--` keeps a path from being read as an option.
         // C locale: a failure's output feeds `is_nothing_to_commit`.
         let mut command = c_locale(self.core.command_in(dir, ["commit"]));
-        if amend {
+        if spec.amend {
             command = command.arg("--amend");
         }
-        command = command.arg("-m").arg(message).arg("--only").arg("--");
-        for path in paths {
+        command = command.arg("-m").arg(spec.message).arg("--only").arg("--");
+        for path in &spec.paths {
             command = command.arg(path);
         }
         self.core.unit(command).await
@@ -1175,19 +1299,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .await
     }
 
-    async fn merge_commit(
-        &self,
-        dir: &Path,
-        branch: &str,
-        no_ff: bool,
-        message: Option<String>,
-    ) -> Result<()> {
-        reject_flag_like("branch", branch)?;
+    async fn merge_commit(&self, dir: &Path, spec: MergeCommit) -> Result<()> {
+        reject_flag_like("branch", &spec.branch)?;
         let mut args: Vec<&str> = vec!["merge"];
-        if no_ff {
+        if spec.no_ff {
             args.push("--no-ff");
         }
-        if let Some(msg) = message.as_deref() {
+        if let Some(msg) = spec.message.as_deref() {
             args.push("-m");
             args.push(msg);
         } else {
@@ -1195,30 +1313,24 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             // instead of opening `$EDITOR` (which would hang a headless caller).
             args.push("--no-edit");
         }
-        args.push(branch);
+        args.push(&spec.branch);
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
             .unit(c_locale(self.core.command_in(dir, args)))
             .await
     }
 
-    async fn merge_no_commit(
-        &self,
-        dir: &Path,
-        branch: &str,
-        squash: bool,
-        no_ff: bool,
-    ) -> Result<()> {
-        reject_flag_like("branch", branch)?;
+    async fn merge_no_commit(&self, dir: &Path, spec: MergeNoCommit) -> Result<()> {
+        reject_flag_like("branch", &spec.branch)?;
         let mut args: Vec<&str> = vec!["merge", "--no-commit"];
         // `--squash` and `--no-ff` are mutually exclusive (git rejects the pair);
         // a squash never fast-forwards anyway, so it takes precedence.
-        if squash {
+        if spec.squash {
             args.push("--squash");
-        } else if no_ff {
+        } else if spec.no_ff {
             args.push("--no-ff");
         }
-        args.push(branch);
+        args.push(&spec.branch);
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
             .unit(c_locale(self.core.command_in(dir, args)))
@@ -1384,19 +1496,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         self.core.unit(self.core.command_in(dir, args)).await
     }
 
-    async fn tag_create_annotated(
-        &self,
-        dir: &Path,
-        name: &str,
-        message: &str,
-        rev: Option<String>,
-    ) -> Result<()> {
-        reject_flag_like("tag name", name)?;
-        if let Some(rev) = rev.as_deref() {
+    async fn tag_create_annotated(&self, dir: &Path, spec: AnnotatedTag) -> Result<()> {
+        reject_flag_like("tag name", &spec.name)?;
+        if let Some(rev) = spec.rev.as_deref() {
             reject_flag_like("revision", rev)?;
         }
-        let mut args = vec!["tag", "-a", name, "-m", message];
-        if let Some(rev) = rev.as_deref() {
+        let mut args = vec!["tag", "-a", &spec.name, "-m", &spec.message];
+        if let Some(rev) = spec.rev.as_deref() {
             args.push(rev);
         }
         self.core.unit(self.core.command_in(dir, args)).await
@@ -1770,7 +1876,7 @@ git_at_forwarders! {
         fn create_branch(name: &str) -> Result<()>;
         fn checkout(reference: &str) -> Result<()>;
         fn checkout_detach(commit: &str) -> Result<()>;
-        fn commit_paths(paths: &[PathBuf], message: &str, amend: bool) -> Result<()>;
+        fn commit_paths(spec: CommitPaths) -> Result<()>;
         fn last_commit_message() -> Result<String>;
         fn is_unborn() -> Result<bool>;
         fn diff_is_empty() -> Result<bool>;
@@ -1800,8 +1906,8 @@ git_at_forwarders! {
         fn fetch_remote_branch(branch: &str) -> Result<()>;
         fn push(spec: GitPush) -> Result<()>;
         fn merge_squash(branch: &str) -> Result<()>;
-        fn merge_commit(branch: &str, no_ff: bool, message: Option<String>) -> Result<()>;
-        fn merge_no_commit(branch: &str, squash: bool, no_ff: bool) -> Result<()>;
+        fn merge_commit(spec: MergeCommit) -> Result<()>;
+        fn merge_no_commit(spec: MergeNoCommit) -> Result<()>;
         fn merge_abort() -> Result<()>;
         fn merge_continue() -> Result<()>;
         fn reset_merge() -> Result<()>;
@@ -1818,7 +1924,7 @@ git_at_forwarders! {
         fn worktree_move(from: &Path, to: &Path) -> Result<()>;
         fn worktree_prune() -> Result<()>;
         fn tag_create(name: &str, rev: Option<String>) -> Result<()>;
-        fn tag_create_annotated(name: &str, message: &str, rev: Option<String>) -> Result<()>;
+        fn tag_create_annotated(spec: AnnotatedTag) -> Result<()>;
         fn tag_list() -> Result<Vec<String>>;
         fn tag_delete(name: &str) -> Result<()>;
         fn show_file(rev: &str, path: &str) -> Result<String>;
@@ -1888,8 +1994,13 @@ mod tests {
         let git = Git::with_runner(&rec);
 
         // A method with trailing args (dir injected first).
-        git.merge_commit(dir, "feat", true, None).await.unwrap();
-        git.at(dir).merge_commit("feat", true, None).await.unwrap();
+        git.merge_commit(dir, MergeCommit::branch("feat").no_ff())
+            .await
+            .unwrap();
+        git.at(dir)
+            .merge_commit(MergeCommit::branch("feat").no_ff())
+            .await
+            .unwrap();
         // A method taking a path arg after dir.
         git.worktree_remove(dir, Path::new("/wt"), true)
             .await
@@ -2128,9 +2239,7 @@ mod tests {
         let git = Git::with_runner(&rec);
         git.commit_paths(
             Path::new("."),
-            &[PathBuf::from("a.rs"), PathBuf::from("b.rs")],
-            "msg",
-            true,
+            CommitPaths::new([PathBuf::from("a.rs"), PathBuf::from("b.rs")], "msg").amend(),
         )
         .await
         .expect("commit_paths");
@@ -2356,9 +2465,12 @@ mod tests {
     async fn merge_commit_builds_no_ff_and_message() {
         let rec = RecordingRunner::replying(Reply::ok(""));
         let git = Git::with_runner(&rec);
-        git.merge_commit(Path::new("/r"), "feature", true, Some("merge it".into()))
-            .await
-            .unwrap();
+        git.merge_commit(
+            Path::new("/r"),
+            MergeCommit::branch("feature").no_ff().message("merge it"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             rec.only_call().args_str(),
             ["merge", "--no-ff", "-m", "merge it", "feature"]
@@ -2370,7 +2482,7 @@ mod tests {
     async fn merge_commit_without_message_uses_no_edit() {
         let rec = RecordingRunner::replying(Reply::ok(""));
         let git = Git::with_runner(&rec);
-        git.merge_commit(Path::new("/r"), "feature", false, None)
+        git.merge_commit(Path::new("/r"), MergeCommit::branch("feature"))
             .await
             .unwrap();
         assert_eq!(
@@ -2554,9 +2666,13 @@ mod tests {
         assert!(git.create_branch(dir, "--force").await.is_err());
         assert!(git.delete_branch(dir, "-D", false).await.is_err());
         assert!(git.rename_branch(dir, "ok", "-bad").await.is_err());
-        assert!(git.merge_commit(dir, "-evil", false, None).await.is_err());
         assert!(
-            git.merge_no_commit(dir, "-evil", false, true)
+            git.merge_commit(dir, MergeCommit::branch("-evil"))
+                .await
+                .is_err()
+        );
+        assert!(
+            git.merge_no_commit(dir, MergeNoCommit::branch("-evil").no_ff())
                 .await
                 .is_err()
         );
@@ -2769,7 +2885,7 @@ mod tests {
         git.tag_create(Path::new("/r"), "v1", Some("abc".into()))
             .await
             .unwrap();
-        git.tag_create_annotated(Path::new("/r"), "v2", "notes", None)
+        git.tag_create_annotated(Path::new("/r"), AnnotatedTag::new("v2", "notes"))
             .await
             .unwrap();
         git.tag_delete(Path::new("/r"), "v1").await.unwrap();
@@ -2812,7 +2928,7 @@ mod tests {
         let rec = RecordingRunner::replying(Reply::ok(""));
         let git = Git::with_runner(&rec);
         git.commit(Path::new("."), "msg").await.unwrap();
-        git.merge_commit(Path::new("."), "b", false, None)
+        git.merge_commit(Path::new("."), MergeCommit::branch("b"))
             .await
             .unwrap();
         git.cherry_pick(Path::new("."), "abc").await.unwrap();

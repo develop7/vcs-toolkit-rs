@@ -17,9 +17,10 @@ crates; tag releases as `vcs-github-v<version>`.
   overall outcome via its exit code (0 pass / 8 pending / 1 some failed) but
   prints the same JSON for all three — all return the parsed list; branch on
   `CheckRun::bucket` (`pass`/`fail`/`pending`/`skipping`/`cancel`).
-- Reviews and comments: `pr_review(dir, n, ReviewAction)` — the body travels in
-  the variant (`Approve(Option<String>)` / `RequestChanges(String)` /
-  `Comment(String)`), so an empty-body request-changes is unrepresentable;
+- Reviews and comments: `pr_review(dir, n, ReviewAction)` — `ReviewAction`
+  (`approve()` / `request_changes(body)` / `comment(body)`, `.with_body(..)`,
+  `kind()`/`body()`) carries a required body for request-changes/comment by
+  construction, so an empty-body request-changes is unrepresentable;
   `pr_comment(dir, n, body)` → URL; `pr_feedback(dir, n)` → `PrFeedback`
   (reviews + conversation comments from `pr view --json reviews,comments`,
   nested authors flattened).
@@ -40,6 +41,16 @@ crates; tag releases as `vcs-github-v<version>`.
   guard — gh consumes the next token verbatim there.
 
 ### Changed
+- **Breaking:** `pr_create` now takes a single `PrCreate` spec
+  (`pr_create(dir, PrCreate)`) instead of the `(title, body, head, base)`
+  argument list. Build it with `PrCreate::new(title, body)` plus the chained
+  `.head(..)` / `.base(..)` setters. Argv unchanged.
+- **Breaking:** `ReviewAction` is now a struct with **private** fields built via
+  `approve()` / `request_changes(body)` / `comment(body)` (`.with_body(..)`,
+  `kind()`/`body()` accessors, and the new public `ReviewKind` enum) instead of
+  the `Approve(Option<String>)` / `RequestChanges(String)` / `Comment(String)`
+  enum. This makes a body-less request-changes/comment unrepresentable. Argv
+  unchanged.
 - Bumped `processkit` to **0.7** — the re-exported `Error` is now
   `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
   `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,

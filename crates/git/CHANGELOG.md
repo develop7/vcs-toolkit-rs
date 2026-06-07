@@ -73,6 +73,22 @@ crates; tag releases as `vcs-git-v<version>`.
   parses files materialized by jj's `git` conflict-marker style.
 
 ### Changed
+- **Breaking:** four multi-option `GitApi` methods now take a spec/builder
+  argument instead of positional flags, mirroring `push(GitPush)` /
+  `clone_repo(.., CloneSpec)`:
+  - `commit_paths(dir, paths, message, amend)` → `commit_paths(dir, CommitPaths)`
+    (`CommitPaths::new(paths, message).amend()`).
+  - `merge_commit(dir, branch, no_ff, message)` → `merge_commit(dir, MergeCommit)`
+    (`MergeCommit::branch(name).no_ff().message(m)`).
+  - `merge_no_commit(dir, branch, squash, no_ff)` →
+    `merge_no_commit(dir, MergeNoCommit)`
+    (`MergeNoCommit::branch(name).squash().no_ff()`).
+  - `tag_create_annotated(dir, name, message, rev)` →
+    `tag_create_annotated(dir, AnnotatedTag)` (`AnnotatedTag::new(name, message).rev(r)`).
+
+  The built argv and behaviour are unchanged — only the call shape moves to the
+  builder style. New types `CommitPaths`, `MergeCommit`, `MergeNoCommit`, and
+  `AnnotatedTag` are exported (each `#[non_exhaustive]`).
 - Bumped `processkit` to **0.7** — the re-exported `Error` is now
   `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
   `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,

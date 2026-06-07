@@ -25,19 +25,70 @@ use processkit::ProcessRunner;
 pub use processkit::{Error, ProcessResult, Result};
 
 mod parse;
-pub use parse::{CiStatus, MergeRequest, Project};
+pub use parse::{CiStatus, Issue, MergeRequest, Project, Release};
+
+/// Options for [`GitLabApi::mr_create`] (`glab mr create`).
+///
+/// `#[non_exhaustive]`, so build it through [`MrCreate::new`] and the chained
+/// setters rather than a struct literal.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct MrCreate {
+    /// The MR title (`--title`).
+    pub title: String,
+    /// The MR description (`--description`).
+    pub body: String,
+    /// The source branch (`--source-branch`); `None` = the current branch.
+    pub source: Option<String>,
+    /// The target branch (`--target-branch`); `None` = the project default.
+    pub target: Option<String>,
+}
+
+impl MrCreate {
+    /// An MR with `title` and `body`, source/target left to glab's defaults
+    /// (current branch → project default).
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            source: None,
+            target: None,
+        }
+    }
+
+    /// Set the source branch (`--source-branch`) instead of the current branch.
+    pub fn source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// Set the target branch (`--target-branch`) instead of the project default.
+    pub fn target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+}
 
 /// Name of the underlying CLI binary this crate drives.
 ///
-/// Note on injection safety: the lean surface has **no bare positional string
-/// slot** for a caller value — MR ids are `u64` (never flag-like), the
+/// Note on injection safety: most of the surface has **no bare positional string
+/// slot** for a caller value — MR/issue ids are `u64` (never flag-like), the
 /// title/body/branch arguments ride in flag-VALUE positions (`--title <t>`,
 /// `--source-branch <b>`) where glab consumes the next token verbatim, and
-/// `run`/`run_args` are the caller-owns-the-argv escape hatch. So unlike
-/// `vcs-github` (whose `api`/`release_view` take bare positionals) there is
-/// nothing here to guard with `vcs_cli_support::reject_flag_like`; add it back
-/// the moment a bare positional is introduced.
+/// `run`/`run_args` are the caller-owns-the-argv escape hatch. The one exception
+/// is [`release_view`](GitLabApi::release_view)'s bare `<tag>` positional, which
+/// is guarded with `reject_flag_like` (mirroring `vcs-github`'s
+/// `api`/`release_view`); guard any future bare positional the same way.
 pub const BINARY: &str = "glab";
+
+/// Injection guard for bare positional argv slots: a caller-supplied value with
+/// a leading `-` would be parsed by glab's CLI as a *flag*, and an empty value
+/// changes a command's meaning. Refuse both before anything spawns. Flag-VALUE
+/// positions (`--title <t>`, `--source-branch <b>`) need no guard — glab consumes
+/// the next token verbatim there.
+fn reject_flag_like(what: &str, value: &str) -> Result<()> {
+    vcs_cli_support::reject_flag_like(BINARY, what, value)
+}
 
 /// How [`GitLabApi::mr_merge`] merges the MR. GitLab's default is a merge commit;
 /// `Squash`/`Rebase` add the corresponding flag.
@@ -98,17 +149,10 @@ pub trait GitLabApi: Send + Sync {
     /// (`glab mr view <id> --output json`).
     async fn mr_view(&self, dir: &Path, id: u64) -> Result<MergeRequest>;
     /// Open a merge request, returning the command's output (the MR URL on
-    /// success) (`glab mr create`). `source` (the source branch; `None` = the
-    /// current branch) and `target` (the target; `None` = the project default)
-    /// are owned `Option<String>`s to keep the trait `mockall`-friendly.
-    async fn mr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        source: Option<String>,
-        target: Option<String>,
-    ) -> Result<String>;
+    /// success) (`glab mr create`). The [`MrCreate`] spec carries the title,
+    /// body, and the optional source (`None` = the current branch) and target
+    /// (`None` = the project default) branches.
+    async fn mr_create(&self, dir: &Path, spec: MrCreate) -> Result<String>;
     /// Merge a merge request **immediately** (`glab mr merge <id> --yes
     /// --auto-merge=false [--squash|--rebase]`) — `--auto-merge=false` overrides
     /// glab's default of enabling merge-when-pipeline-succeeds. See
@@ -121,6 +165,27 @@ pub trait GitLabApi: Send + Sync {
     /// The MR's pipeline status, bucketed (`glab mr view <id> --output json`,
     /// reading `head_pipeline.status`). [`CiStatus::None`] when no pipeline ran.
     async fn mr_checks(&self, dir: &Path, id: u64) -> Result<CiStatus>;
+    /// Open issues for `dir`
+    /// (`glab issue list --per-page 100 --output json`). Returns up to 100 (100
+    /// is the GitLab API per-page max); use [`run`](GitLabApi::run) for more.
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>>;
+    /// A single issue by its project-scoped id (`iid`)
+    /// (`glab issue view <number> --output json`).
+    async fn issue_view(&self, dir: &Path, number: u64) -> Result<Issue>;
+    /// Open an issue, returning the command's output (the issue URL on success)
+    /// (`glab issue create --title <t> --description <d> --yes`). `--yes` skips
+    /// glab's interactive submission prompt — mirrors
+    /// [`mr_create`](GitLabApi::mr_create).
+    async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String>;
+    /// Releases for `dir` (`glab release list --per-page 100 --output json`).
+    /// Returns up to 100 (100 is the GitLab API per-page max); use
+    /// [`run`](GitLabApi::run) for more.
+    async fn release_list(&self, dir: &Path) -> Result<Vec<Release>>;
+    /// A single release by its tag (`glab release view <tag> --output json`).
+    /// The `tag` is a bare positional, so it is guarded with
+    /// `reject_flag_like` (a leading `-` or empty value is rejected before any
+    /// process spawns).
+    async fn release_view(&self, dir: &Path, tag: &str) -> Result<Release>;
 }
 
 processkit::cli_client!(
@@ -192,30 +257,23 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
             .await
     }
 
-    async fn mr_create(
-        &self,
-        dir: &Path,
-        title: &str,
-        body: &str,
-        source: Option<String>,
-        target: Option<String>,
-    ) -> Result<String> {
+    async fn mr_create(&self, dir: &Path, spec: MrCreate) -> Result<String> {
         // `--yes` skips glab's interactive submission confirmation (a headless run
         // would otherwise hang waiting on the prompt).
         let mut args = vec![
             "mr",
             "create",
             "--title",
-            title,
+            spec.title.as_str(),
             "--description",
-            body,
+            spec.body.as_str(),
             "--yes",
         ];
-        if let Some(source) = source.as_deref() {
+        if let Some(source) = spec.source.as_deref() {
             args.push("--source-branch");
             args.push(source);
         }
-        if let Some(target) = target.as_deref() {
+        if let Some(target) = spec.target.as_deref() {
             args.push("--target-branch");
             args.push(target);
         }
@@ -261,6 +319,75 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
                 self.core
                     .command_in(dir, ["mr", "view", id.as_str(), "--output", "json"]),
                 parse::parse_ci_status,
+            )
+            .await
+    }
+
+    async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>> {
+        // `--per-page 100` (the GitLab API max) overrides glab's default page
+        // size of 30, which would otherwise silently truncate the list.
+        self.core
+            .try_parse(
+                self.core.command_in(
+                    dir,
+                    ["issue", "list", "--per-page", "100", "--output", "json"],
+                ),
+                parse::from_json,
+            )
+            .await
+    }
+
+    async fn issue_view(&self, dir: &Path, number: u64) -> Result<Issue> {
+        let number = number.to_string();
+        self.core
+            .try_parse(
+                self.core
+                    .command_in(dir, ["issue", "view", number.as_str(), "--output", "json"]),
+                parse::from_json,
+            )
+            .await
+    }
+
+    async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String> {
+        // `--yes` skips glab's interactive submission confirmation (a headless
+        // run would otherwise hang on the prompt) — same as `mr_create`.
+        self.core
+            .text(self.core.command_in(
+                dir,
+                [
+                    "issue",
+                    "create",
+                    "--title",
+                    title,
+                    "--description",
+                    body,
+                    "--yes",
+                ],
+            ))
+            .await
+    }
+
+    async fn release_list(&self, dir: &Path) -> Result<Vec<Release>> {
+        // `--per-page 100` (the GitLab API max) overrides glab's default page
+        // size of 30, which would otherwise silently truncate the list.
+        self.core
+            .try_parse(
+                self.core.command_in(
+                    dir,
+                    ["release", "list", "--per-page", "100", "--output", "json"],
+                ),
+                parse::from_json,
+            )
+            .await
+    }
+
+    async fn release_view(&self, dir: &Path, tag: &str) -> Result<Release> {
+        reject_flag_like("tag", tag)?;
+        self.core
+            .try_parse(
+                self.core
+                    .command_in(dir, ["release", "view", tag, "--output", "json"]),
+                parse::from_json,
             )
             .await
     }
@@ -343,11 +470,16 @@ gitlab_at_forwarders! {
         fn repo_view() -> Result<Project>;
         fn mr_list() -> Result<Vec<MergeRequest>>;
         fn mr_view(id: u64) -> Result<MergeRequest>;
-        fn mr_create(title: &str, body: &str, source: Option<String>, target: Option<String>) -> Result<String>;
+        fn mr_create(spec: MrCreate) -> Result<String>;
         fn mr_merge(id: u64, strategy: MergeStrategy) -> Result<()>;
         fn mr_ready(id: u64) -> Result<()>;
         fn mr_close(id: u64) -> Result<()>;
         fn mr_checks(id: u64) -> Result<CiStatus>;
+        fn issue_list() -> Result<Vec<Issue>>;
+        fn issue_view(number: u64) -> Result<Issue>;
+        fn issue_create(title: &str, body: &str) -> Result<String>;
+        fn release_list() -> Result<Vec<Release>>;
+        fn release_view(tag: &str) -> Result<Release>;
     }
 }
 
@@ -454,10 +586,7 @@ mod tests {
         let url = glab
             .mr_create(
                 Path::new("/repo"),
-                "T",
-                "B",
-                Some("feat/x".to_string()),
-                Some("main".to_string()),
+                MrCreate::new("T", "B").source("feat/x").target("main"),
             )
             .await
             .expect("mr_create");
@@ -485,7 +614,7 @@ mod tests {
     async fn mr_create_omits_branch_flags_when_none() {
         let rec = RecordingRunner::replying(Reply::ok("https://gl/mr/1\n"));
         let glab = GitLab::with_runner(&rec);
-        glab.mr_create(Path::new("/repo"), "T", "B", None, None)
+        glab.mr_create(Path::new("/repo"), MrCreate::new("T", "B"))
             .await
             .expect("mr_create");
         assert_eq!(
@@ -565,6 +694,119 @@ mod tests {
             glab.mr_checks(Path::new("."), 4).await.unwrap(),
             CiStatus::Failing
         );
+    }
+
+    // issue_list builds the `--per-page 100 --output json` argv (per-page max
+    // overrides glab's default page size of 30) and parses the JSON.
+    #[tokio::test]
+    async fn issue_list_builds_argv_and_parses() {
+        let json = r#"[{"iid":3,"title":"Bug","state":"opened","description":"b","web_url":"u"}]"#;
+        let rec = RecordingRunner::replying(Reply::ok(json));
+        let glab = GitLab::with_runner(&rec);
+        let issues = glab
+            .issue_list(Path::new("/repo"))
+            .await
+            .expect("issue_list");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 3);
+        assert_eq!(issues[0].state, "opened");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["issue", "list", "--per-page", "100", "--output", "json"]
+        );
+    }
+
+    // issue_view builds `issue view <number> --output json` and parses the JSON.
+    #[tokio::test]
+    async fn issue_view_builds_argv_and_parses() {
+        let json = r#"{"iid":7,"title":"T","state":"closed","description":"body","web_url":"https://gl/i/7"}"#;
+        let rec = RecordingRunner::replying(Reply::ok(json));
+        let glab = GitLab::with_runner(&rec);
+        let issue = glab
+            .issue_view(Path::new("/repo"), 7)
+            .await
+            .expect("issue_view");
+        assert_eq!(issue.number, 7);
+        assert_eq!(issue.body, "body");
+        assert_eq!(issue.url, "https://gl/i/7");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["issue", "view", "7", "--output", "json"]
+        );
+    }
+
+    // issue_create assembles title/description/--yes and returns the trimmed
+    // output (the issue URL).
+    #[tokio::test]
+    async fn issue_create_builds_argv_and_returns_url() {
+        let rec = RecordingRunner::replying(Reply::ok("https://gl/i/9\n"));
+        let glab = GitLab::with_runner(&rec);
+        let url = glab
+            .issue_create(Path::new("/repo"), "T", "B")
+            .await
+            .expect("issue_create");
+        assert_eq!(url, "https://gl/i/9");
+        assert_eq!(
+            rec.only_call().args_str(),
+            [
+                "issue",
+                "create",
+                "--title",
+                "T",
+                "--description",
+                "B",
+                "--yes"
+            ]
+        );
+    }
+
+    // release_list builds the `--per-page 100 --output json` argv and parses the
+    // JSON (URL comes off `_links.self`, date off `released_at`).
+    #[tokio::test]
+    async fn release_list_builds_argv_and_parses() {
+        let json = r#"[{"tag_name":"v1.0","name":"Release 1.0","released_at":"2026-01-02T03:04:05.000Z","_links":{"self":"https://gl/-/releases/v1.0"}}]"#;
+        let rec = RecordingRunner::replying(Reply::ok(json));
+        let glab = GitLab::with_runner(&rec);
+        let releases = glab
+            .release_list(Path::new("/repo"))
+            .await
+            .expect("release_list");
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].tag_name, "v1.0");
+        assert_eq!(releases[0].url, "https://gl/-/releases/v1.0");
+        assert_eq!(releases[0].published_at, "2026-01-02T03:04:05.000Z");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["release", "list", "--per-page", "100", "--output", "json"]
+        );
+    }
+
+    // release_view builds `release view <tag> --output json` and parses the JSON.
+    #[tokio::test]
+    async fn release_view_builds_argv_and_parses() {
+        let json =
+            r#"{"tag_name":"v2.1","name":"R","_links":{"self":"https://gl/-/releases/v2.1"}}"#;
+        let rec = RecordingRunner::replying(Reply::ok(json));
+        let glab = GitLab::with_runner(&rec);
+        let rel = glab
+            .release_view(Path::new("/repo"), "v2.1")
+            .await
+            .expect("release_view");
+        assert_eq!(rel.tag_name, "v2.1");
+        assert_eq!(rel.url, "https://gl/-/releases/v2.1");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["release", "view", "v2.1", "--output", "json"]
+        );
+    }
+
+    // release_view guards its bare `<tag>` positional: a flag-like or empty tag
+    // is rejected before any process spawns.
+    #[tokio::test]
+    async fn release_view_rejects_flag_like_tag() {
+        let glab = GitLab::with_runner(ScriptedRunner::new());
+        assert!(glab.release_view(Path::new("."), "-evil").await.is_err());
+        assert!(glab.release_view(Path::new("."), "").await.is_err());
     }
 
     // repo_view parses the GitLab Project JSON.

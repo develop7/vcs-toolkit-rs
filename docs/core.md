@@ -235,6 +235,7 @@ Commit exactly `paths` with `message` (git `commit --only`, jj
 pub async fn fetch(&self)                          -> Result<()>;
 pub async fn fetch_from(&self, remote: &str)       -> Result<()>;
 pub async fn fetch_remote_branch(&self, branch: &str) -> Result<()>;
+pub async fn push(&self, branch: &str)             -> Result<()>;
 ```
 
 - `fetch` — from the default remote (git `fetch` / jj `git fetch`).
@@ -242,6 +243,12 @@ pub async fn fetch_remote_branch(&self, branch: &str) -> Result<()>;
   `git fetch --remote <remote>`).
 - `fetch_remote_branch` — a single branch/bookmark from `origin` into its
   remote-tracking ref (git `fetch_remote_branch` / jj `git fetch -b`).
+- `push` — an **existing** local branch/bookmark to `origin` (git
+  `push -u origin <branch>` / jj `git push -b <branch>`). The backends honestly
+  differ: git pushes the *ref* and records the upstream (`-u`, idempotent); jj
+  pushes the *bookmark's state* — including a remote deletion if the bookmark
+  was deleted locally. Renamed refspecs (`local:remote`) and non-`origin`
+  remotes are git-only — use the escape hatch (`vcs_git::GitPush`).
 
 Transient network failures are retried by the underlying client; for retrying a
 higher-level flow, classify with `Error::is_transient_fetch_error`.
@@ -488,8 +495,8 @@ println!("{} on {:?}", repo.kind().as_str(), repo.current_branch().await?);
 ## When to use the facade vs the raw client
 
 Use the **facade** (`Repo` / `VcsRepo`) for code that must run on both backends:
-status, diffs, fetch, partial commits, worktree lifecycle, conflict probing. You
-get one code path and backend-agnostic DTOs.
+status, diffs, fetch/push, partial commits, worktree lifecycle, conflict probing.
+You get one code path and backend-agnostic DTOs.
 
 Drop to the **raw client** — `repo.git()` / `repo.jj()` (or the bound
 `git_at()` / `jj_at()`) — the moment you need power only one tool offers: a full
@@ -497,6 +504,28 @@ Drop to the **raw client** — `repo.git()` / `repo.jj()` (or the bound
 `a..b` and jj's revsets aren't interchangeable, so they're deliberately *not* on
 the common surface). The handle hands out a borrow; the consumer decides, per
 call, whether to go through the facade or straight to the tool.
+
+A quick router:
+
+| You need… | Use |
+|---|---|
+| Backend-portable state/lifecycle (status, snapshot, branches, commit-paths, fetch/push, worktrees, conflict probe) | the facade method |
+| An op with no faithful analogue on the other backend (full merge, rebase `--onto`, jj transactions / `op restore`, stash, tags, range diffs, revsets) | the raw client: `repo.git()?` / `repo.jj()?` |
+| The same, dir-free at the handle's cwd | the bound view: `repo.git_at()?` / `repo.jj_at()?` |
+| Options the facade's LCD drops (push refspecs/remotes via `GitPush`, amend via `CommitPaths`, `--no-ff` via `MergeCommit`…) | the raw client with its spec/builder |
+| A flag/subcommand the wrapper doesn't model at all | the wrapper's raw `run(dir, args)` |
+
+### The three call shapes
+
+Every git/jj operation is reachable in three equivalent shapes — pick by how
+much context the call site already holds:
+
+1. **Dir-threading** (`Git::new().fetch(dir)`) — the wrapper client itself;
+   right when one client serves many repos, or `dir` varies per call.
+2. **At-view** (`repo.git_at()?.fetch()`) — dir-free, bound to the handle's
+   cwd; right inside facade-holding code that needs one tool-specific call.
+3. **Facade** (`repo.fetch()`) — backend-portable; right whenever the operation
+   is on the common surface (prefer it there — you get jj support for free).
 
 ## See also
 

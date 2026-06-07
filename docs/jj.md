@@ -338,7 +338,7 @@ jj.edit(repo, "@-").await?;
 ```rust
 async fn squash_into(&self, dir: &Path, into: &str, use_destination_message: bool) -> Result<()>;
 async fn commit_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()>;
-async fn squash_paths(&self, dir: &Path, from: &str, into: &str, filesets: &[JjFileset], use_destination_message: bool) -> Result<()>;
+async fn squash_paths(&self, dir: &Path, spec: SquashPaths) -> Result<()>;
 async fn split_paths(&self, dir: &Path, filesets: &[JjFileset], message: &str) -> Result<()>;
 async fn absorb(&self, dir: &Path, from: Option<String>, filesets: &[JjFileset]) -> Result<()>;
 ```
@@ -349,7 +349,9 @@ async fn absorb(&self, dir: &Path, from: Option<String>, filesets: &[JjFileset])
 - `commit_paths` — finalise a commit from exactly these [`JjFileset`]s
   (`commit -m <message> <filesets>`); the rest stay in the new working-copy
   change.
-- `squash_paths` — squash exactly these filesets from `from` into `into`.
+- `squash_paths` — squash exactly the spec's filesets from one revision into
+  another (`squash --from <from> --into <into> [--use-destination-message]
+  <filesets>`); built through [`SquashPaths`](#squashpaths).
 - `split_paths` — split exactly these filesets out of `@` into their own commit
   (`split -m <message> <filesets>`). `filesets` must be **non-empty** — a
   fileset-less split opens jj's interactive diff editor (a headless hang), so it
@@ -360,12 +362,13 @@ async fn absorb(&self, dir: &Path, from: Option<String>, filesets: &[JjFileset])
 
 ```rust
 # use std::path::Path;
-# use vcs_jj::{Jj, JjApi, JjFileset};
+# use vcs_jj::{Jj, JjApi, JjFileset, SquashPaths};
 # async fn demo(jj: &Jj, repo: &Path) -> Result<(), processkit::Error> {
 let only = [JjFileset::path("src/parser.rs")];
 jj.split_paths(repo, &only, "feat: parser").await?;
 jj.commit_paths(repo, &only, "feat: parser").await?;
 jj.squash_into(repo, "@-", false).await?;
+jj.squash_paths(repo, SquashPaths::new("@", "@-").filesets(only)).await?;
 jj.absorb(repo, None, &[]).await?;            // absorb everything into ancestors
 # Ok(()) }
 ```
@@ -718,6 +721,30 @@ let spec = WorkspaceAdd::new("feature", "@", "/tmp/feature")
 `impl Into<String>` / `impl Into<PathBuf>`; `.sparse(mode)` is the builder for
 `sparse_patterns`.
 
+### `SquashPaths` (`#[non_exhaustive]`)
+Options for `squash_paths`; build through `SquashPaths::new` and the chained
+setters.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `from` | `String` | Source revision the filesets are squashed out of (`--from`). |
+| `into` | `String` | Destination revision they squash into (`--into`). |
+| `filesets` | `Vec<JjFileset>` | The exact filesets to move; empty squashes the whole `from` change. |
+| `use_destination_message` | `bool` | Keep the destination's description (`--use-destination-message`). |
+
+```rust
+# use vcs_jj::{SquashPaths, JjFileset};
+let spec = SquashPaths::new("@", "@-")
+    .filesets([JjFileset::path("src/parser.rs")])
+    .use_destination_message();
+# let _ = spec;
+```
+
+`SquashPaths::new(from, into)` takes `impl Into<String>` / `impl Into<String>`
+(no filesets selected yet); `.filesets(impl IntoIterator<Item = JjFileset>)` sets
+them (replacing any already added), and `.use_destination_message()` keeps the
+destination's description instead of combining the two.
+
 ---
 
 ## Validating newtypes & filesets
@@ -802,4 +829,5 @@ before spawning.
 [`JjCapabilities`]: #jjcapabilities
 [`DiffSpec`]: #diffspec-enum-non_exhaustive
 [`WorkspaceAdd`]: #workspaceadd-non_exhaustive
+[`SquashPaths`]: #squashpaths-non_exhaustive
 [`JjFileset`]: #jjfileset

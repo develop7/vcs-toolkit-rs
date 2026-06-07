@@ -4,9 +4,14 @@
 use std::path::Path;
 
 use processkit::ProcessRunner;
-use vcs_github::{CheckRun, GitHub, GitHubApi, PrMerge, PullRequest, Repo};
+use vcs_github::{
+    CheckRun, GitHub, GitHubApi, Issue, PrCreate as GhPrCreate, PrMerge, PullRequest, Release, Repo,
+};
 
-use crate::dto::{CiStatus, ForgePr, ForgePrState, ForgeRepo, MergeStrategy};
+use crate::dto::{
+    CiStatus, ForgeIssue, ForgeIssueState, ForgePr, ForgePrState, ForgeRelease, ForgeRepo,
+    MergeStrategy, PrCreate,
+};
 use crate::error::Result;
 
 pub(crate) async fn auth_status<R: ProcessRunner>(gh: &GitHub<R>) -> Result<bool> {
@@ -32,12 +37,17 @@ pub(crate) async fn pr_view<R: ProcessRunner>(
 pub(crate) async fn pr_create<R: ProcessRunner>(
     gh: &GitHub<R>,
     dir: &Path,
-    title: &str,
-    body: &str,
-    source: Option<String>,
-    target: Option<String>,
+    spec: PrCreate,
 ) -> Result<String> {
-    Ok(gh.pr_create(dir, title, body, source, target).await?)
+    // The unified source/target map onto gh's head/base.
+    let mut create = GhPrCreate::new(spec.title, spec.body);
+    if let Some(source) = spec.source {
+        create = create.head(source);
+    }
+    if let Some(target) = spec.target {
+        create = create.base(target);
+    }
+    Ok(gh.pr_create(dir, create).await?)
 }
 
 pub(crate) async fn pr_merge<R: ProcessRunner>(
@@ -82,6 +92,55 @@ pub(crate) async fn pr_checks<R: ProcessRunner>(
     Ok(aggregate(&gh.pr_checks(dir, number).await?))
 }
 
+pub(crate) async fn issue_list<R: ProcessRunner>(
+    gh: &GitHub<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeIssue>> {
+    Ok(gh
+        .issue_list(dir)
+        .await?
+        .into_iter()
+        .map(map_issue)
+        .collect())
+}
+
+pub(crate) async fn issue_view<R: ProcessRunner>(
+    gh: &GitHub<R>,
+    dir: &Path,
+    number: u64,
+) -> Result<ForgeIssue> {
+    Ok(map_issue(gh.issue_view(dir, number).await?))
+}
+
+pub(crate) async fn issue_create<R: ProcessRunner>(
+    gh: &GitHub<R>,
+    dir: &Path,
+    title: &str,
+    body: &str,
+) -> Result<String> {
+    Ok(gh.issue_create(dir, title, body).await?)
+}
+
+pub(crate) async fn release_list<R: ProcessRunner>(
+    gh: &GitHub<R>,
+    dir: &Path,
+) -> Result<Vec<ForgeRelease>> {
+    Ok(gh
+        .release_list(dir)
+        .await?
+        .into_iter()
+        .map(map_release)
+        .collect())
+}
+
+pub(crate) async fn release_view<R: ProcessRunner>(
+    gh: &GitHub<R>,
+    dir: &Path,
+    tag: &str,
+) -> Result<ForgeRelease> {
+    Ok(map_release(gh.release_view(dir, tag).await?))
+}
+
 fn map_pr(pr: PullRequest) -> ForgePr {
     ForgePr {
         number: pr.number,
@@ -101,6 +160,36 @@ fn state_of(state: &str) -> ForgePrState {
         "MERGED" => ForgePrState::Merged,
         "CLOSED" => ForgePrState::Closed,
         _ => ForgePrState::Open,
+    }
+}
+
+fn map_issue(i: Issue) -> ForgeIssue {
+    ForgeIssue {
+        number: i.number,
+        title: i.title,
+        state: issue_state_of(&i.state),
+        body: i.body,
+        url: i.url,
+    }
+}
+
+fn issue_state_of(state: &str) -> ForgeIssueState {
+    // gh reports "OPEN"/"CLOSED"; anything unknown reads as live (Open), the
+    // same documented fallback as `state_of` above.
+    if state.eq_ignore_ascii_case("closed") {
+        ForgeIssueState::Closed
+    } else {
+        ForgeIssueState::Open
+    }
+}
+
+fn map_release(r: Release) -> ForgeRelease {
+    ForgeRelease {
+        tag: r.tag_name,
+        title: r.name,
+        url: r.url,
+        // gh reports an empty `publishedAt` for a draft — surface that as None.
+        published_at: Some(r.published_at).filter(|s| !s.is_empty()),
     }
 }
 
@@ -146,6 +235,17 @@ mod proptests {
     use proptest::prelude::*;
 
     proptest! {
+        // Same contract for issues: only "closed" (any case) maps off Open.
+        #[test]
+        fn issue_state_mapping_never_panics_and_unknowns_default(s in any::<String>()) {
+            let mapped = issue_state_of(&s);
+            if s.eq_ignore_ascii_case("closed") {
+                prop_assert_eq!(mapped, ForgeIssueState::Closed);
+            } else {
+                prop_assert_eq!(mapped, ForgeIssueState::Open, "unknown must default to Open: {:?}", s);
+            }
+        }
+
         #[test]
         fn pr_state_mapping_never_panics_and_unknowns_default(s in any::<String>()) {
             let mapped = state_of(&s);

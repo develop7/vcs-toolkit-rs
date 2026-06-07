@@ -26,6 +26,12 @@ crates; tag releases as `vcs-core-v<version>`.
 - `Repo::fetch_from(remote)` (also on `VcsRepo`) — fetch from a *named* remote
   (git `fetch <remote>` / jj `git fetch --remote <remote>`), transient failures
   retried by the underlying client.
+- `Repo::push(branch)` (also on `VcsRepo`) — push an **existing** local
+  branch/bookmark to `origin`: git `push -u origin <branch>` (`-u` records the
+  upstream; idempotent on repeat pushes), jj `git push -b <branch>`. The docs
+  spell out the backend asymmetry (git pushes the ref; jj pushes the bookmark's
+  *state*, including a remote deletion for a locally-deleted bookmark). Renamed
+  refspecs / non-`origin` remotes stay on the `vcs_git::GitPush` escape hatch.
 - `Repo::try_merge(source)` (also on `VcsRepo`) returning the new `MergeProbe`
   (`Clean` / `Conflicts(paths)`) — probe whether a merge would conflict, with
   guaranteed rollback before returning (git: `merge --no-commit --no-ff` +

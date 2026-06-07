@@ -16,8 +16,9 @@ hermetically-testable library (`VcsMcpServer`) — and its **second runtime-toki
 crate (after [`vcs-watch`](watch.md)).
 
 **Read tools are always available; mutating tools are gated.** Every mutation is
-registered and annotated `destructiveHint`, but rejects calls unless the server
-was started with `--allow-write`.
+registered and annotated `destructiveHint`, but rejects calls unless the server's
+**write gate** covers it: `--allow-write` enables every mutation, `--allow-tools
+repo_commit,forge_pr_create` enables only the named ones.
 
 ## Launching the server
 
@@ -53,14 +54,16 @@ Install it with `cargo install vcs-mcp` (or point `command` at a built binary).
 ### CLI flags
 
 ```text
-vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write] [--timeout <seconds>]
+vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write]
+        [--allow-tools <name,…>] [--timeout <seconds>]
 ```
 
 | Flag | Effect |
 |---|---|
 | `--repo <path>` | Repository to serve (default: the current directory); git vs jj is detected from the path. |
 | `--forge <github\|gitlab\|gitea>` | Force the forge for the PR/MR tools. Default: auto-detect from the `origin` remote. |
-| `--allow-write` | Enable the mutating tools. Off by default — read tools only. |
+| `--allow-write` | Enable **all** mutating tools. Off by default — read tools only. |
+| `--allow-tools <name,…>` | Enable **only the named** mutating tools (comma-separated; repeatable — occurrences accumulate). Tool names are the method names from the catalogue below. Read tools are unaffected. `--allow-write` wins when both are given. |
 | `--timeout <seconds>` | Per-command deadline so a stalled fetch/forge call can't hang a request (default: 120; `--timeout 0` disables it). |
 | `-h`, `--help` | Print usage and exit. |
 
@@ -84,23 +87,29 @@ vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write] [--timeout
 | `forge_pr_list` | — | Open pull/merge requests. |
 | `forge_pr_view` | `{ number }` | A single PR/MR by number (GitLab uses the project-scoped `iid`). |
 | `forge_pr_checks` | `{ number }` | The PR/MR's coarse CI status (`Unsupported` on Gitea). |
+| `forge_issue_list` | — | Open issues (up to 100), as unified [`ForgeIssue`](forge.md)s. |
+| `forge_issue_view` | `{ number }` | A single issue by number, with body and URL filled. |
+| `forge_release_list` | — | Releases, newest first (up to 100), as unified [`ForgeRelease`](forge.md)s. |
+| `forge_release_view` | `{ tag }` | A single release by tag (`Unsupported` on Gitea — filter `forge_release_list` instead). |
 
-### Mutating tools (gated behind `--allow-write`, `destructiveHint`)
+### Mutating tools (gated behind the write gate, `destructiveHint`)
 
 | Tool | Params | Effect |
 |---|---|---|
 | `repo_commit` | `{ paths, message }` | Commit exactly those paths (`git commit --only` / `jj commit <filesets>`). |
 | `repo_checkout` | `{ reference }` | Switch the working copy to a branch/bookmark/revision (`git checkout` / `jj edit`). |
 | `repo_fetch` | — | Fetch from the default remote (`git fetch` / `jj git fetch`). |
+| `repo_push` | `{ branch }` | Push an existing branch/bookmark to `origin` (`git push -u origin <branch>` / `jj git push -b <branch>`). |
 | `repo_create_worktree` | `{ path, branch, base }` | Create a worktree/workspace at `path` on a new `branch` from `base`. |
 | `repo_remove_worktree` | `{ path, force? }` | Remove the worktree/workspace at `path` (`force` overrides local changes, git only). |
 | `forge_pr_create` | `{ title, body, source?, target? }` | Open a PR/MR (omit `source` for the current branch, `target` for the repo default); returns the CLI output (the URL on success). |
 | `forge_pr_merge` | `{ number, strategy }` | Merge a PR/MR with `strategy` = `merge` \| `squash` \| `rebase`. |
 | `forge_pr_close` | `{ number, delete_branch? }` | Close a PR/MR without merging (`delete_branch` also deletes the source branch, GitHub only). |
+| `forge_issue_create` | `{ title, body }` | Open an issue; returns the CLI output (the URL on success). |
 
-A gated call with writes disabled returns a clear error
-(`write tools are disabled; restart the server with --allow-write`) **before**
-spawning anything. A forge tool with no forge configured returns
+A gated call outside the write gate returns a clear error naming the tool
+(`write tool "repo_push" is disabled; restart the server with --allow-write (all
+mutations) or --allow-tools naming it`) **before** spawning anything. A forge tool with no forge configured returns
 `no forge is configured for this repository (pass --forge github|gitlab|gitea)`.
 
 ## Forge auto-detection
@@ -113,17 +122,18 @@ host) resolves to **no forge**, so the `forge_*` tools return the "no forge
 configured" error while the `repo_*` tools work regardless. Pass `--forge` to
 override the detection (e.g. a self-hosted GitLab/Gitea on a custom domain).
 
-Gitea's wrapper reports `Error::Unsupported` for `repo_view`/`pr_checks`; the
-server maps that to an MCP *invalid-request* (a client-facing "this forge can't do
-that"), distinct from an internal forge/network failure.
+Gitea's wrapper reports `Error::Unsupported` for `repo_view`/`pr_checks`/
+`release_view`; the server maps that to an MCP *invalid-request* (a client-facing
+"this forge can't do that"), distinct from an internal forge/network failure.
 
 ## Safety model
 
 The `vcs-mcp` binary applies, in order:
 
-1. **Read-only by default.** Without `--allow-write`, only the read tools are
-   callable; every mutation rejects up front. One coarse flag flips all mutations
-   on — there's no per-tool allowlist yet (see the roadmap).
+1. **Read-only by default.** With no write flag, only the read tools are
+   callable; every mutation rejects up front. `--allow-write` flips all mutations
+   on; `--allow-tools <name,…>` grants a **per-tool allowlist** (e.g. allow
+   `repo_commit` and `repo_push` but not the worktree or forge mutations).
 2. **`destructiveHint` annotations.** Mutating tools are annotated so an MCP client
    can surface a confirmation prompt; read tools carry `readOnlyHint`. (Note
    `repo_try_merge` is `readOnlyHint` even though it spawns a real trial merge — it
@@ -153,19 +163,19 @@ The library is independently usable — build a `VcsMcpServer` and serve it over
 
 ```rust
 use vcs_core::Repo;
-use vcs_mcp::VcsMcpServer;
+use vcs_mcp::{VcsMcpServer, WriteGate};
 use rmcp::{ServiceExt, transport::stdio};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let repo = Repo::open(".")?;
-let server = VcsMcpServer::new(repo, /* forge */ None, /* allow_write */ false);
+let server = VcsMcpServer::new(repo, /* forge */ None, WriteGate::None);
 server.serve(stdio()).await?.waiting().await?;
 # Ok(()) }
 ```
 
-`VcsMcpServer` is `Clone` (cheap — it holds `Arc` trait handles), so it serializes
-to JSON through the optional `serde` feature the facades expose (`vcs-core` and
-`vcs-forge` are pulled in with `features = ["serde"]`).
+`VcsMcpServer` is `Clone` (cheap — it holds `Arc` trait handles). The DTOs its
+tools return serialize to JSON through the optional `serde` feature the facades
+expose (`vcs-core` and `vcs-forge` are pulled in with `features = ["serde"]`).
 
 ## See also
 

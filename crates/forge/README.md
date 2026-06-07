@@ -6,9 +6,10 @@ A backend-agnostic **forge facade** over `vcs-github`, `vcs-gitlab`, and
 [vcs-toolkit-rs](https://github.com/ZelAnton/vcs-toolkit-rs) workspace.
 
 A [`Forge`] handle dispatches the **common forge operations** — auth, repo/project
-view, and the PR/MR lifecycle (list / view / create / merge / mark-ready / close,
-plus CI status) — to whichever CLI backs it, returning forge-agnostic DTOs
-([`ForgePr`], [`ForgeRepo`], [`CiStatus`]).
+view, the PR/MR lifecycle (list / view / create / merge / mark-ready / close,
+plus CI status), issues (list / view / create), and releases (list / view) — to
+whichever CLI backs it, returning forge-agnostic DTOs ([`ForgePr`],
+[`ForgeIssue`], [`ForgeRelease`], [`ForgeRepo`], [`CiStatus`]).
 
 > 📖 **Full guide:** [docs/forge.md](https://github.com/ZelAnton/vcs-toolkit-rs/blob/main/docs/forge.md)
 
@@ -36,10 +37,10 @@ use vcs_forge::{Forge, ForgeApi, ForgeKind, MergeStrategy};
 
 ## Coverage differs per CLI
 
-Gitea's `tea` has no current-repo view, draft toggle, or checks command, so
-`repo_view`, `pr_mark_ready`, and `pr_checks` return `Error::Unsupported` for the
-Gitea backend (`err.is_unsupported()`). GitHub and GitLab support the full lean
-surface.
+Gitea's `tea` has no current-repo view, draft toggle, checks command, or
+single-release view, so `repo_view`, `pr_mark_ready`, `pr_checks`, and
+`release_view` return `Error::Unsupported` for the Gitea backend
+(`err.is_unsupported()`). GitHub and GitLab support the full lean surface.
 
 Consumers can code against the object-safe `ForgeApi` trait (`&dyn ForgeApi`), and
 build a `Forge` over a fake runner for hermetic tests

@@ -152,7 +152,7 @@ for path in git.conflicted_files(repo).await? {             // Vec<String>
 async fn log(&self, dir: &Path, max: usize) -> Result<Vec<Commit>>;
 async fn log_range(&self, dir: &Path, range: &str, max: usize) -> Result<Vec<Commit>>;
 async fn commit(&self, dir: &Path, message: &str) -> Result<()>;
-async fn commit_paths(&self, dir: &Path, paths: &[PathBuf], message: &str, amend: bool) -> Result<()>;
+async fn commit_paths(&self, dir: &Path, spec: CommitPaths) -> Result<()>;
 async fn last_commit_message(&self, dir: &Path) -> Result<String>;
 async fn rev_list_count(&self, dir: &Path, range: &str) -> Result<usize>;
 ```
@@ -160,8 +160,9 @@ async fn rev_list_count(&self, dir: &Path, range: &str) -> Result<usize>;
 - **`log`** — the latest `max` commits, newest first.
 - **`log_range`** — commits in `range` (e.g. `main..HEAD`), newest first, up to `max`.
 - **`commit`** — `git commit -m <message>` of the staged index.
-- **`commit_paths`** — commit exactly `paths`' working-tree content, ignoring the
-  index (`commit [--amend] -m <message> --only -- <paths>`).
+- **`commit_paths`** — commit exactly the spec's paths' working-tree content,
+  ignoring the index (`commit [--amend] -m <message> --only -- <paths>`); built
+  through [`CommitPaths`](#commitpaths).
 - **`last_commit_message`** — the full last message (`log -1 --format=%B`), e.g. to
   pre-fill an amend.
 - **`rev_list_count`** — how many commits a `range` spans (`rev-list --count
@@ -407,8 +408,8 @@ async fn fetch_from(&self, dir: &Path, remote: &str) -> Result<()>;
 async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()>;
 async fn push(&self, dir: &Path, spec: GitPush) -> Result<()>;
 async fn merge_squash(&self, dir: &Path, branch: &str) -> Result<()>;
-async fn merge_commit(&self, dir: &Path, branch: &str, no_ff: bool, message: Option<String>) -> Result<()>;
-async fn merge_no_commit(&self, dir: &Path, branch: &str, squash: bool, no_ff: bool) -> Result<()>;
+async fn merge_commit(&self, dir: &Path, spec: MergeCommit) -> Result<()>;
+async fn merge_no_commit(&self, dir: &Path, spec: MergeNoCommit) -> Result<()>;
 async fn merge_abort(&self, dir: &Path) -> Result<()>;
 async fn merge_continue(&self, dir: &Path) -> Result<()>;
 async fn reset_merge(&self, dir: &Path) -> Result<()>;
@@ -424,9 +425,10 @@ async fn reset_hard(&self, dir: &Path, rev: &str) -> Result<()>;
   [`GitPush`](#gitpush).
 - **`merge_squash`** — stage a branch's changes without committing (`merge --squash`).
 - **`merge_commit`** — `merge [--no-ff] [-m <msg> | --no-edit] <branch>`; with no
-  message it takes the default merge message non-interactively.
+  message it takes the default merge message non-interactively. Built through
+  [`MergeCommit`](#mergecommit).
 - **`merge_no_commit`** — merge without committing, for a dry run (`merge --no-commit
-  [--squash | --no-ff] <branch>`).
+  [--squash | --no-ff] <branch>`). Built through [`MergeNoCommit`](#mergenocommit).
 - **`merge_abort`** — `merge --abort`.
 - **`merge_continue`** — finish a merge after resolving conflicts (`commit --no-edit`,
   editor suppressed).
@@ -437,12 +439,12 @@ async fn reset_hard(&self, dir: &Path, rev: &str) -> Result<()>;
 
 ```rust
 # use std::path::Path;
-# use vcs_git::{Git, GitApi, GitPush, is_merge_conflict};
+# use vcs_git::{Git, GitApi, GitPush, MergeCommit, is_merge_conflict};
 # async fn demo(git: &Git, repo: &Path) -> Result<(), processkit::Error> {
 git.fetch(repo).await?;                                      // retried on transient failure
 git.push(repo, GitPush::branch("feature").set_upstream()).await?; // `push -u origin feature`
 
-match git.merge_commit(repo, "feature", true, None).await {  // --no-ff, default message
+match git.merge_commit(repo, MergeCommit::branch("feature").no_ff()).await {  // --no-ff, default message
     Ok(()) => {}
     Err(e) if is_merge_conflict(&e) => {
         // resolve conflicts, then:
@@ -537,7 +539,7 @@ if git.is_rebase_in_progress(repo).await? || git.is_merge_in_progress(repo).awai
 ```rust
 async fn clone_repo(&self, url: &str, dest: &Path, spec: CloneSpec) -> Result<()>;
 async fn tag_create(&self, dir: &Path, name: &str, rev: Option<String>) -> Result<()>;
-async fn tag_create_annotated(&self, dir: &Path, name: &str, message: &str, rev: Option<String>) -> Result<()>;
+async fn tag_create_annotated(&self, dir: &Path, spec: AnnotatedTag) -> Result<()>;
 async fn tag_list(&self, dir: &Path) -> Result<Vec<String>>;
 async fn tag_delete(&self, dir: &Path, name: &str) -> Result<()>;
 async fn show_file(&self, dir: &Path, rev: &str, path: &str) -> Result<String>;
@@ -548,7 +550,8 @@ async fn config_set(&self, dir: &Path, key: &str, value: &str) -> Result<()>;
 - **`clone_repo`** — `git clone <url> <dest>` plus [`CloneSpec`](#clonespec) flags.
   Runs without a working directory — pass an **absolute** `dest`. Prompt-off.
 - **`tag_create`** — a lightweight tag at `rev` (`tag <name> [<rev>]`; `None` = HEAD).
-- **`tag_create_annotated`** — `tag -a <name> -m <message> [<rev>]`.
+- **`tag_create_annotated`** — `tag -a <name> -m <message> [<rev>]`; built through
+  [`AnnotatedTag`](#annotatedtag).
 - **`tag_list`** — tag names in git's default ordering (`tag --list`).
 - **`tag_delete`** — `tag -d <name>`.
 - **`show_file`** — a file's content at a revision (`show <rev>:<path>`). `path` is
@@ -560,7 +563,7 @@ async fn config_set(&self, dir: &Path, key: &str, value: &str) -> Result<()>;
 
 ```rust
 # use std::path::Path;
-# use vcs_git::{Git, GitApi, CloneSpec};
+# use vcs_git::{Git, GitApi, AnnotatedTag, CloneSpec};
 # async fn demo(git: &Git) -> Result<(), processkit::Error> {
 git.clone_repo(
     "https://example.com/repo.git",
@@ -569,7 +572,7 @@ git.clone_repo(
 ).await?;                                                    // shallow, single branch
 
 let repo = Path::new("/abs/dest");
-git.tag_create_annotated(repo, "v1.0.0", "first release", None).await?;
+git.tag_create_annotated(repo, AnnotatedTag::new("v1.0.0", "first release")).await?;
 if let Some(name) = git.config_get(repo, "user.name").await? { // Option<String>
     println!("user.name = {name}");
 }
@@ -896,6 +899,90 @@ clones fully); use a `file://` URL to shallow-clone locally.
 let spec = CloneSpec::new().branch("main").depth(1);
 let bare = CloneSpec::new().bare();
 # let _ = (spec, bare);
+```
+
+### `CommitPaths`
+
+Options for `commit_paths`. `#[non_exhaustive]` — build through `new` and the
+chained setter.
+
+```rust
+pub fn new(paths: impl IntoIterator<Item = impl Into<PathBuf>>, message: impl Into<String>) -> Self;
+pub fn amend(self) -> Self;                    // chainable: amend the previous commit (--amend)
+```
+
+Fields: `paths: Vec<PathBuf>` (`--only -- <paths>`), `message: String` (`-m`),
+`amend: bool` (`--amend`).
+
+```rust
+# use vcs_git::CommitPaths;
+let c = CommitPaths::new(["src/lib.rs"], "feat: thing");
+let a = CommitPaths::new(["src/lib.rs"], "feat: thing").amend();
+# let _ = (c, a);
+```
+
+### `MergeCommit`
+
+Options for `merge_commit`. `#[non_exhaustive]` — build through `branch` and the
+chained setters.
+
+```rust
+pub fn branch(name: impl Into<String>) -> Self; // merge --no-edit <name> (default message)
+pub fn no_ff(self) -> Self;                     // chainable: always create a merge commit (--no-ff)
+pub fn message(self, m: impl Into<String>) -> Self; // chainable: merge message (-m)
+```
+
+Fields: `branch: String`, `no_ff: bool` (`--no-ff`), `message: Option<String>`
+(`-m`; `None` takes the default message non-interactively via `--no-edit`).
+
+```rust
+# use vcs_git::MergeCommit;
+let m = MergeCommit::branch("feature").no_ff();             // --no-ff, default message
+let n = MergeCommit::branch("feature").message("merge it"); // -m "merge it"
+# let _ = (m, n);
+```
+
+### `MergeNoCommit`
+
+Options for `merge_no_commit`. `#[non_exhaustive]` — build through `branch` and the
+chained setters.
+
+```rust
+pub fn branch(name: impl Into<String>) -> Self; // merge --no-commit <name>
+pub fn squash(self) -> Self;                    // chainable: stage the squashed result (--squash)
+pub fn no_ff(self) -> Self;                     // chainable: record a real abortable merge (--no-ff)
+```
+
+Fields: `branch: String`, `squash: bool` (`--squash`; takes precedence over
+`no_ff`), `no_ff: bool` (`--no-ff`). With `no_ff` (and not `squash`) git records
+`MERGE_HEAD`, so the merge is abortable via `merge_abort`; with `squash` no
+`MERGE_HEAD` is recorded — undo via `reset_merge` / `reset_hard`.
+
+```rust
+# use vcs_git::MergeNoCommit;
+let dry = MergeNoCommit::branch("feature").no_ff();   // abortable dry-run merge
+let sq = MergeNoCommit::branch("feature").squash();   // stage squashed, no MERGE_HEAD
+# let _ = (dry, sq);
+```
+
+### `AnnotatedTag`
+
+Options for `tag_create_annotated`. `#[non_exhaustive]` — build through `new` and
+the chained setter.
+
+```rust
+pub fn new(name: impl Into<String>, message: impl Into<String>) -> Self; // tag -a <name> -m <message> at HEAD
+pub fn rev(self, r: impl Into<String>) -> Self;  // chainable: tag <rev> instead of HEAD
+```
+
+Fields: `name: String`, `message: String` (`-m`), `rev: Option<String>` (`<rev>`;
+`None` tags `HEAD`).
+
+```rust
+# use vcs_git::AnnotatedTag;
+let t = AnnotatedTag::new("v1.0.0", "first release");
+let u = AnnotatedTag::new("v1.0.0", "first release").rev("abc123");
+# let _ = (t, u);
 ```
 
 ## Validating newtypes

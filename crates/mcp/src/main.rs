@@ -2,10 +2,12 @@
 //! with a `mcpServers` config entry; it speaks JSON-RPC on stdin/stdout.
 //!
 //! ```text
-//! vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write] [--timeout <seconds>]
+//! vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write]
+//!         [--allow-tools <name,…>] [--timeout <seconds>]
 //! ```
 //!
-//! Read tools are always available; `--allow-write` enables the mutating tools.
+//! Read tools are always available; `--allow-write` enables every mutating tool,
+//! `--allow-tools` enables only the named ones.
 //! The forge is auto-detected from the repo's `origin` remote unless `--forge`
 //! overrides it. The git client is **hardened** (repo hooks and config disabled)
 //! so serving a repository you didn't create can't execute its hooks, and every
@@ -24,7 +26,7 @@ use vcs_forge::vcs_gitea::Gitea;
 use vcs_forge::vcs_github::GitHub;
 use vcs_forge::vcs_gitlab::GitLab;
 use vcs_forge::{Forge, ForgeKind};
-use vcs_mcp::VcsMcpServer;
+use vcs_mcp::{VcsMcpServer, WriteGate};
 
 /// Default per-command timeout (seconds): a generous ceiling so a stalled fetch
 /// or forge call can't hang a request forever, while leaving headroom for a
@@ -53,7 +55,12 @@ OPTIONS:
     --forge <github|gitlab|gitea>
                               Force the forge for PR/MR tools (default: detect
                               from the `origin` remote)
-    --allow-write             Enable the mutating tools (off by default)
+    --allow-write             Enable ALL mutating tools (off by default)
+    --allow-tools <name,…>    Enable only the named mutating tools (comma-
+                              separated; repeatable). Tool names are the method
+                              names, e.g. repo_commit,forge_pr_create. Read
+                              tools are always available. --allow-write wins
+                              when both are given.
     --timeout <seconds>       Per-command timeout (default: 120; 0 disables) — a
                               ceiling so a stalled fetch/forge call can't hang
     -h, --help                Print this help
@@ -65,7 +72,7 @@ disabled), so serving a repository you didn't create can't run its hooks.";
 struct Args {
     repo: PathBuf,
     forge: Option<ForgeKind>,
-    allow_write: bool,
+    writes: WriteGate,
     /// Per-command deadline; `None` means no timeout (`--timeout 0`).
     timeout: Option<Duration>,
 }
@@ -78,7 +85,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let repo = open_repo(&args.repo, args.timeout)?;
     let forge = resolve_forge(&repo, args.forge, args.timeout).await;
-    let server = VcsMcpServer::new(repo, forge, args.allow_write);
+    let server = VcsMcpServer::new(repo, forge, args.writes);
 
     // Serve MCP over stdio until the client disconnects.
     server.serve(stdio()).await?.waiting().await?;
@@ -129,6 +136,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
     let mut repo = PathBuf::from(".");
     let mut forge = None;
     let mut allow_write = false;
+    let mut allow_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut timeout = Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
 
     let mut it = args;
@@ -139,6 +147,24 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
                 return Ok(None);
             }
             "--allow-write" => allow_write = true,
+            "--allow-tools" => {
+                let value = it
+                    .next()
+                    .ok_or("--allow-tools needs a comma-separated list of tool names")?;
+                let names: Vec<&str> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if names.is_empty() {
+                    return Err(format!(
+                        "--allow-tools {value:?} names no tools (expected e.g. \
+                         repo_commit,forge_pr_create)"
+                    ));
+                }
+                // Repeatable: each occurrence extends the allowlist.
+                allow_tools.extend(names.into_iter().map(String::from));
+            }
             "--repo" => {
                 repo = it.next().ok_or("--repo needs a path argument")?.into();
             }
@@ -157,10 +183,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
             other => return Err(format!("unknown argument: {other} (try --help)")),
         }
     }
+    // --allow-write is the superset, so it wins over a (redundant) allowlist.
+    let writes = if allow_write {
+        WriteGate::All
+    } else if !allow_tools.is_empty() {
+        WriteGate::Set(allow_tools)
+    } else {
+        WriteGate::None
+    };
     Ok(Some(Args {
         repo,
         forge,
-        allow_write,
+        writes,
         timeout,
     }))
 }
@@ -255,11 +289,47 @@ mod tests {
         let args = parse(&[]).unwrap().expect("no --help, so Some(Args)");
         assert_eq!(args.repo, PathBuf::from("."));
         assert_eq!(args.forge, None);
-        assert!(!args.allow_write);
+        assert_eq!(args.writes, WriteGate::None);
         assert_eq!(
             args.timeout,
             Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         );
+    }
+
+    // --allow-tools builds a Set gate; the list splits on commas, trims, and is
+    // repeatable (occurrences accumulate). An effectively-empty list errors.
+    #[test]
+    fn allow_tools_builds_a_set_gate() {
+        let args = parse(&["--allow-tools", "repo_commit, forge_pr_create"])
+            .unwrap()
+            .unwrap();
+        let WriteGate::Set(tools) = &args.writes else {
+            panic!("expected Set gate, got {:?}", args.writes);
+        };
+        assert!(tools.contains("repo_commit"));
+        assert!(tools.contains("forge_pr_create"));
+        assert_eq!(tools.len(), 2);
+
+        let args = parse(&["--allow-tools", "repo_push", "--allow-tools", "repo_fetch"])
+            .unwrap()
+            .unwrap();
+        let WriteGate::Set(tools) = &args.writes else {
+            panic!("expected Set gate");
+        };
+        assert_eq!(tools.len(), 2);
+
+        assert!(parse(&["--allow-tools"]).is_err());
+        let err = parse_err(&["--allow-tools", " , "]);
+        assert!(err.contains("names no tools"), "got: {err}");
+    }
+
+    // --allow-write is the superset and wins over a redundant allowlist.
+    #[test]
+    fn allow_write_wins_over_allow_tools() {
+        let args = parse(&["--allow-tools", "repo_commit", "--allow-write"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.writes, WriteGate::All);
     }
 
     #[test]
@@ -334,7 +404,7 @@ mod tests {
         .unwrap();
         assert_eq!(args.repo, PathBuf::from("X"));
         assert_eq!(args.forge, Some(ForgeKind::Gitea));
-        assert!(args.allow_write);
+        assert_eq!(args.writes, WriteGate::All);
         assert_eq!(args.timeout, Some(Duration::from_secs(7)));
     }
 }

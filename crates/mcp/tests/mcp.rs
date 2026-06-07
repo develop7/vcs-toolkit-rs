@@ -8,7 +8,7 @@
 
 use rmcp::handler::server::wrapper::Parameters;
 use vcs_core::Repo;
-use vcs_mcp::{CheckoutParams, VcsMcpServer};
+use vcs_mcp::{CheckoutParams, VcsMcpServer, WriteGate};
 use vcs_testkit::GitSandbox;
 
 /// Parse the JSON a tool returned (the first text content of its result).
@@ -28,7 +28,7 @@ async fn read_tools_run_against_a_real_repo() {
     let sandbox = GitSandbox::init("mcp-real");
     sandbox.commit_file("seed.txt", "seed\n", "initial");
     let repo = Repo::open(sandbox.path()).expect("open");
-    let server = VcsMcpServer::new(repo, None, /* allow_write */ false);
+    let server = VcsMcpServer::new(repo, None, WriteGate::None);
 
     // The current branch is the seeded default (main or master).
     let branch = inner(&server.repo_current_branch().await.expect("current_branch"));
@@ -61,7 +61,7 @@ async fn gated_mutation_does_not_run_against_a_real_repo() {
     sandbox.branch("feature");
     let repo = Repo::open(sandbox.path()).expect("open");
     // Read-only server: checkout must be refused before touching git.
-    let server = VcsMcpServer::new(repo, None, false);
+    let server = VcsMcpServer::new(repo, None, WriteGate::None);
     let err = server
         .repo_checkout(Parameters(CheckoutParams {
             reference: "feature".into(),
