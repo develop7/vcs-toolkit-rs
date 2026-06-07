@@ -5,6 +5,7 @@
 /// caller can gate a feature on a minimum version; `Hash` lets it key a map (e.g.
 /// a per-version capability cache).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Version {
     /// Major component (`2` in `2.54.0`).
     pub major: u64,

@@ -4,6 +4,7 @@
 
 /// Which forge backs a [`Forge`](crate::Forge) handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum ForgeKind {
     /// GitHub (the `gh` CLI).
@@ -84,6 +85,7 @@ fn host_of(url: &str) -> Option<&str> {
 /// A pull request (GitHub) / merge request (GitLab) / pull request (Gitea),
 /// unified across the three forges.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct ForgePr {
     /// The PR/MR number a caller passes to the other operations (GitHub/Gitea
@@ -109,6 +111,7 @@ pub struct ForgePr {
 /// `MERGED`, GitLab's `opened`/`closed`/`locked`/`merged`, and Gitea's
 /// `open`/`closed` (+ a `merged` flag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum ForgePrState {
     /// Open / awaiting review.
@@ -123,6 +126,7 @@ pub enum ForgePrState {
 /// current-repo view, so [`repo_view`](crate::ForgeApi::repo_view) is
 /// [`Unsupported`](crate::Error::Unsupported) there.)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct ForgeRepo {
     /// Repository / project name.
@@ -143,6 +147,7 @@ pub struct ForgeRepo {
 /// [`pr_checks`](crate::ForgeApi::pr_checks) is
 /// [`Unsupported`](crate::Error::Unsupported) there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum CiStatus {
     /// Everything that ran passed.
@@ -158,6 +163,7 @@ pub enum CiStatus {
 /// How [`pr_merge`](crate::ForgeApi::pr_merge) merges — mapped to each CLI's own
 /// merge-strategy flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum MergeStrategy {
     /// A merge commit.
@@ -215,5 +221,28 @@ mod tests {
         assert_eq!(ForgeKind::GitHub.as_str(), "github");
         assert_eq!(ForgeKind::GitLab.as_str(), "gitlab");
         assert_eq!(ForgeKind::Gitea.as_str(), "gitea");
+    }
+}
+
+// The optional `serde` feature derives `Serialize` on the unified DTOs.
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn forge_pr_serializes_to_clean_json() {
+        let pr = ForgePr {
+            number: 7,
+            title: "Add X".into(),
+            state: ForgePrState::Merged,
+            source_branch: "feat".into(),
+            target_branch: "main".into(),
+            url: "u".into(),
+            draft: false,
+        };
+        let v = serde_json::to_value(&pr).unwrap();
+        assert_eq!(v["number"], 7);
+        assert_eq!(v["state"], "Merged"); // enum → variant name
+        assert_eq!(v["source_branch"], "feat");
     }
 }

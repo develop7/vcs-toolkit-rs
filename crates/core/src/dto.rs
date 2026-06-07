@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 /// Which version-control tool backs a [`Repo`](crate::Repo).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum BackendKind {
     /// A plain Git repository.
@@ -32,6 +33,7 @@ pub use vcs_diff::ChangeKind;
 /// One changed path in the working copy, unified across `git status` /
 /// `jj diff --summary`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct FileChange {
     /// The path (the *new* path for a rename).
@@ -48,6 +50,7 @@ pub use vcs_diff::DiffStat;
 
 /// One attached worktree (git) / workspace (jj).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct WorktreeInfo {
     /// Filesystem path of the worktree's working copy.
@@ -65,6 +68,7 @@ pub struct WorktreeInfo {
 /// (`MERGE_HEAD` / a `rebase-*` dir), while jj has no multi-step operations — it
 /// records a conflict directly on the working-copy change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum OperationState {
     /// No operation in progress and no conflict.
@@ -83,6 +87,7 @@ pub enum OperationState {
 /// two** process spawns instead of a call per field. The data a prompt, status
 /// line, or TUI refresh needs. See [`Repo::snapshot`](crate::Repo::snapshot).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct RepoSnapshot {
     /// The working-copy commit's **full** object id (git `HEAD` oid / jj `@`
@@ -113,6 +118,13 @@ pub struct RepoSnapshot {
 /// itself is rolled back before it returns, whatever the outcome — this only
 /// *reports* what a real merge would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+// Adjacently tagged so the JSON is a *type-stable object* for both outcomes —
+// `{"outcome":"Clean"}` and `{"outcome":"Conflicts","files":[…]}` — rather than
+// serde's default externally-tagged shape, which would emit a bare string
+// `"Clean"` for one variant and an object for the other (a polymorphic result an
+// agent consumer can't branch on uniformly).
+#[cfg_attr(feature = "serde", serde(tag = "outcome", content = "files"))]
 #[non_exhaustive]
 pub enum MergeProbe {
     /// The merge would apply without conflicts.
@@ -134,10 +146,62 @@ impl MergeProbe {
 /// variant exists so a consumer that layers a copy-on-write strategy on top can
 /// reuse this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum CreateOutcome {
     /// The tool materialised the working copy itself.
     Plain,
     /// A copy-on-write clone populated the working copy (consumer-supplied).
     CowCloned,
+}
+
+// The optional `serde` feature derives `Serialize` on the facade DTOs.
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_and_file_change_serialize_to_clean_json() {
+        let snap = RepoSnapshot {
+            head: Some("abc".into()),
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: Some(1),
+            behind: Some(0),
+            dirty: true,
+            change_count: 2,
+            conflicted: false,
+            operation: OperationState::Merge,
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["branch"], "main");
+        assert_eq!(v["operation"], "Merge"); // enum → variant name
+        assert_eq!(v["change_count"], 2);
+
+        let fc = FileChange {
+            path: "a.rs".into(),
+            old_path: None,
+            kind: ChangeKind::Added, // re-exported vcs_diff type, Serialize via vcs-diff/serde
+        };
+        let v = serde_json::to_value(fc).unwrap();
+        assert_eq!(v["path"], "a.rs");
+        assert_eq!(v["kind"], "Added");
+    }
+
+    // `MergeProbe` is adjacently tagged: BOTH outcomes are objects with an
+    // `outcome` discriminant — a stable shape a tool consumer can branch on,
+    // never a bare string for one case and an object for the other.
+    #[test]
+    fn merge_probe_serializes_to_a_type_stable_object() {
+        let clean = serde_json::to_value(MergeProbe::Clean).unwrap();
+        assert_eq!(clean["outcome"], "Clean");
+        assert!(clean.get("files").is_none(), "{clean}");
+
+        let conflicts =
+            serde_json::to_value(MergeProbe::Conflicts(vec!["a.rs".into(), "b.rs".into()]))
+                .unwrap();
+        assert_eq!(conflicts["outcome"], "Conflicts");
+        assert_eq!(conflicts["files"][0], "a.rs");
+        assert_eq!(conflicts["files"][1], "b.rs");
+    }
 }

@@ -13,7 +13,7 @@ It is a Cargo workspace of **independently versioned and published** crates: fiv
 CLI wrappers, all built on the external
 [`processkit`](https://crates.io/crates/processkit) crate (the job-backed process
 launcher + `CliClient` core; was the prototype internal `vcs-process` crate), plus
-two facades and a repo-event watcher:
+two facades, a repo-event watcher, and an MCP server over the facades:
 
 | Path | crates.io name | Drives |
 |---|---|---|
@@ -25,6 +25,7 @@ two facades and a repo-event watcher:
 | `crates/core` | `vcs-core` | — (facade over `vcs-git`/`vcs-jj`) |
 | `crates/forge` | `vcs-forge` | — (facade over `vcs-github`/`vcs-gitlab`/`vcs-gitea`) |
 | `crates/watch` | `vcs-watch` | — (filesystem-watch repo events; on `vcs-core` + `notify` + tokio) |
+| `crates/mcp` | `vcs-mcp` | — (MCP server exposing `vcs-core`/`vcs-forge` ops as tools; on `rmcp` + tokio) |
 | `crates/diff` | `vcs-diff` | — (shared std-only git-format diff model + parser + `Version`) |
 | `crates/cli-support` | `vcs-cli-support` | — (shared processkit-coupled plumbing: argv guard, fetch-retry policy, error classifiers) |
 
@@ -191,10 +192,11 @@ live in **[docs/stability.md](docs/stability.md)**.
   the already-published external `processkit`). The five CLI wrappers depend on
   those (plus `processkit`), so they publish **next**. The **two facades** come
   after: `vcs-forge` (depends on `vcs-github`/`vcs-gitlab`/`vcs-gitea`) and
-  `vcs-core` (depends on `vcs-git`/`vcs-jj`); then **`vcs-watch` last** (depends on
-  `vcs-core`). `vcs-testkit` depends on nothing (a published, dev-dependency-only
+  `vcs-core` (depends on `vcs-git`/`vcs-jj`); then the facade consumers **last** —
+  `vcs-watch` (depends on `vcs-core`) and `vcs-mcp` (depends on both `vcs-core` and
+  `vcs-forge`). `vcs-testkit` depends on nothing (a published, dev-dependency-only
   fixtures crate) and can go anywhere. The `all` plan orders them
-  `vcs-diff, vcs-cli-support, vcs-git, vcs-jj, vcs-github, vcs-gitlab, vcs-gitea, vcs-forge, vcs-testkit, vcs-core, vcs-watch`,
+  `vcs-diff, vcs-cli-support, vcs-git, vcs-jj, vcs-github, vcs-gitlab, vcs-gitea, vcs-forge, vcs-testkit, vcs-core, vcs-watch, vcs-mcp`,
   and each `^MAJOR.MINOR` requirement on an in-workspace dependency must be kept
   in range when that dependency crosses a minor/major boundary (and the new
   version must be live on crates.io first). If a crate needs a newer `processkit`,
@@ -203,7 +205,7 @@ live in **[docs/stability.md](docs/stability.md)**.
 - **Release workflow.** `.github/workflows/release.yml` (`workflow_dispatch`,
   needs the `CRATES_IO_TOKEN` secret) is the only way to release. Pick **which
   crate** (`vcs-diff`/`vcs-cli-support`/`vcs-git`/`vcs-jj`/`vcs-github`/
-  `vcs-gitlab`/`vcs-gitea`/`vcs-forge`/`vcs-testkit`/`vcs-core`/`vcs-watch`, or **`all`**) and a **bump**
+  `vcs-gitlab`/`vcs-gitea`/`vcs-forge`/`vcs-testkit`/`vcs-core`/`vcs-watch`/`vcs-mcp`, or **`all`**) and a **bump**
   (`patch`/`minor`/`major`) — the version is **never typed by hand**. For each
   selected crate it derives the next version from that crate's current
   `Cargo.toml` (a crate's **first release** — no `<crate>-v*` tag yet — ships the

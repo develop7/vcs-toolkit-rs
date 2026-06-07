@@ -37,6 +37,11 @@ crates; tag releases as `vcs-core-v<version>`.
   while unresolved paths block continuing (unlike `in_progress_state`, which
   still never returns `Conflict` for git). On jj both are reporting no-ops —
   nothing is ever paused; roll back via `Jj::transaction` / `op_restore`.
+- Optional `serde` feature: derives `serde::Serialize` on the public DTOs
+  (`RepoSnapshot`, `FileChange`, `WorktreeInfo`, `OperationState`, `BackendKind`,
+  `MergeProbe`, `CreateOutcome`) and enables `vcs-diff/serde` for the re-exported
+  `ChangeKind`/`DiffStat`, so a consumer (e.g. `vcs-mcp`) can emit them as JSON.
+  **Off by default.**
 
 ### Changed
 - **Renamed the `Error` classifiers** for one name per concept across the

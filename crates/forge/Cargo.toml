@@ -21,11 +21,18 @@ vcs-gitlab = { path = "../gitlab", version = "0.1" }
 vcs-gitea = { path = "../gitea", version = "0.1" }
 # `async fn` in the object-safe `ForgeApi` trait (dyn-friendly).
 async-trait = "0.1"
+# Optional: derive `Serialize` on the unified DTOs behind the `serde` feature
+# (off by default). Turned on by JSON consumers such as `vcs-mcp`.
+serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
 # Emit a `tracing` event per command run (forwards to each wrapper's `tracing`).
 tracing = ["vcs-github/tracing", "vcs-gitlab/tracing", "vcs-gitea/tracing"]
+# Add `#[derive(Serialize)]` to the unified DTOs (`ForgePr`, `ForgeRepo`, …).
+serde = ["dep:serde"]
 
 [dev-dependencies]
 # `#[tokio::test]` for the async dispatch tests.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Exercise the `serde` feature's derives (used only by the feature-gated test).
+serde_json = "1"

@@ -17,6 +17,11 @@ crates; tag releases as `vcs-diff-v<version>`.
   third `ChangeKind`/`DiffStat` copy in `vcs-core`), so the parser and the
   version `Ord` can no longer drift between backends. Dependency-free (std
   only); property-tested for panic-freedom.
+- Optional `serde` feature: derives `serde::Serialize` on the public DTOs
+  (`DiffStat`, `ChangeKind`, `DiffLine`, `Hunk`, `FileDiff`, `Version`) so a
+  consumer (e.g. `vcs-mcp`) can emit them as JSON. **Off by default** — the crate
+  stays std-only unless the feature is enabled; enums serialize as their variant
+  names, structs keep their snake_case field names.
 
 ### Changed
 -

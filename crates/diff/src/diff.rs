@@ -7,6 +7,7 @@
 /// Aggregate line/file counts from a diff stat (`git diff --shortstat`,
 /// `jj diff --stat`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct DiffStat {
     /// Number of files changed.
@@ -32,6 +33,7 @@ impl DiffStat {
 
 /// How a file changed in a unified diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum ChangeKind {
     /// A new file (`new file mode …`).
@@ -47,6 +49,7 @@ pub enum ChangeKind {
 /// One line inside a [`Hunk`], tagged by its role. The stored text excludes the
 /// leading ` `/`+`/`-` marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum DiffLine {
     /// Unchanged context line (leading ` `).
@@ -59,6 +62,7 @@ pub enum DiffLine {
 
 /// A single `@@ … @@` hunk within a [`FileDiff`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct Hunk {
     /// Start line in the old file (the `-<start>` of the `@@` header).
@@ -78,6 +82,7 @@ pub struct Hunk {
 /// One file's entry in a parsed git-format unified diff (`git diff` or
 /// `jj diff --git`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct FileDiff {
     /// How the file changed.
@@ -370,5 +375,24 @@ mod proptests {
                 prop_assert!(file.raw.starts_with("diff --git"));
             }
         }
+    }
+}
+
+// The optional `serde` feature derives `Serialize` on the public model.
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn diff_stat_and_change_kind_serialize() {
+        assert_eq!(
+            serde_json::to_value(DiffStat::new(3, 12, 4)).unwrap(),
+            serde_json::json!({"files_changed": 3, "insertions": 12, "deletions": 4})
+        );
+        // Field-less enum variants serialize as their name.
+        assert_eq!(
+            serde_json::to_value(ChangeKind::Renamed).unwrap(),
+            serde_json::json!("Renamed")
+        );
     }
 }

@@ -9,12 +9,23 @@ repository.workspace = true
 authors.workspace = true
 readme = "README.md"
 
-# Deliberately dependency-free (std only): the diff types and parser are pure
-# data + pure functions, so this foundational crate stays light and `vcs-git` /
-# `vcs-jj` / `vcs-core` can all depend on it without pulling anything in.
+# Deliberately dependency-free (std only) by default: the diff types and parser
+# are pure data + pure functions, so this foundational crate stays light and
+# `vcs-git` / `vcs-jj` / `vcs-core` can all depend on it without pulling anything
+# in. The optional `serde` feature is the one exception.
 [dependencies]
+# Optional: derive `Serialize` on the public diff model behind the `serde`
+# feature (off by default — the crate stays std-only otherwise). Turned on by
+# JSON consumers such as `vcs-mcp`.
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# Add `#[derive(Serialize)]` to the public DTOs (`DiffStat`, `ChangeKind`, …).
+serde = ["dep:serde"]
 
 [dev-dependencies]
 # Property-based fuzzing of the pure parser (panic-freedom on arbitrary input).
 # Stable Rust, dev-only — stripped on publish.
 proptest = "1"
+# Exercise the `serde` feature's derives (used only by the feature-gated test).
+serde_json = "1"

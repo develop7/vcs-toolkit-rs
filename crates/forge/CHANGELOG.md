@@ -27,6 +27,10 @@ crates; tag releases as `vcs-forge-v<version>`.
   current-repo view, draft toggle, or checks command, so `repo_view`,
   `pr_mark_ready`, and `pr_checks` return it for the Gitea backend (the call does
   not spawn). `Error::is_unsupported()` / `is_transient_fetch_error()` classifiers.
+- Optional `serde` feature: derives `serde::Serialize` on the public DTOs
+  (`ForgeKind`, `ForgePr`, `ForgePrState`, `ForgeRepo`, `CiStatus`,
+  `MergeStrategy`) so a consumer (e.g. `vcs-mcp`) can emit them as JSON. **Off by
+  default.**
 
 ### Changed
 -

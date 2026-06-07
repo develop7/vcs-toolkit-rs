@@ -139,7 +139,9 @@ Where the toolkit could go as a general-purpose "typed CLI automation" SDK,
 regardless of what the current consumers need. Being executed as a program of
 waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
 (✅ done), **C** = 6.4+6.5+6.11+6.12 (✅ done; 6.5 spec-only), **D** = 6.1
-(forges — ✅ done), **E** = 6.6 (watching — ✅ done), **F** = 6.8 (vcs-mcp; depends on Wave A).
+(forges — ✅ done), **E** = 6.6 (watching — ✅ done), **F** = 6.8 (vcs-mcp — ✅
+done). The §6 wave program (A–F) is **complete**; remaining §6 items below are
+additive follow-ups, not a blocking wave.
 
 ### New forges
 
@@ -229,11 +231,18 @@ waves: **A** = 6.2+6.3+6.7 (safety substrate — ✅ done), **B** = 6.9+6.10
 
 ### Agent-facing surface
 
-- **6.8 `vcs-mcp`.** An MCP server crate exposing the typed operations as
-  tools (read-mostly by default, mutations behind an explicit allowlist),
-  built on the facade. Lets agent harnesses drive repositories through
-  structured, validated calls instead of raw shell — the safety items above
-  are the prerequisite.
+- **6.8 ✅ `vcs-mcp`.** Shipped an MCP server crate (a lib + the `vcs-mcp`
+  binary, on the official `rmcp` SDK over stdio) exposing the typed operations
+  of **both facades** — `vcs-core` (git/jj) and `vcs-forge` (PR/MR) — as MCP
+  tools. Read tools are always on (annotated `readOnlyHint`); the eight
+  mutating tools are **gated behind a coarse `--allow-write`** (annotated
+  `destructiveHint`, reject up front when disabled). The forge is auto-detected
+  from the `origin` remote (`--forge` overrides). Returns the facade DTOs as
+  JSON via a new **optional `serde` feature** on `vcs-diff`/`vcs-core`/
+  `vcs-forge` (off by default — default builds stay serde-free). The safety
+  substrate (Wave A: injection guards, hardened profile) applies under every
+  tool. Future, additive: more tools (issues/releases), a per-tool allowlist,
+  and an HTTP transport.
 
 ### Quality and project maturity
 
