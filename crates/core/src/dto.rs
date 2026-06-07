@@ -38,7 +38,9 @@ pub use vcs_diff::ChangeKind;
 pub struct FileChange {
     /// The path (the *new* path for a rename).
     pub path: String,
-    /// The original path for a rename; `None` otherwise (jj never supplies it).
+    /// The original path for a rename, populated by **both** backends (git's
+    /// `R old -> new` status; jj's `{old => new}` diff-summary form); `None`
+    /// for non-renames.
     pub old_path: Option<String>,
     /// How the file changed.
     pub kind: ChangeKind,

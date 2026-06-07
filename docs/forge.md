@@ -98,6 +98,8 @@ The CLIs differ in coverage. Gitea's `tea` lacks three operations, which return
 | `pr_mark_ready` | ✅ | ✅ | ❌ Unsupported |
 | `pr_checks` | ✅ | ✅ | ❌ Unsupported |
 | `pr_close` honours `delete_branch` | ✅ | ignored | ignored |
+| `pr_create` returns the PR/MR **URL** | ✅ | ✅ | textual summary (tea prints no URL) |
+| `pr_list` result cap (explicit, documented) | 100 | 100 | 100 |
 
 ```rust
 # use vcs_forge::{Forge, ForgeApi, Error};

@@ -137,7 +137,10 @@ pub struct ForgeRepo {
     pub default_branch: String,
     /// Web URL.
     pub url: String,
-    /// Whether the repository is private/non-public.
+    /// Whether the repository is private/non-public. **Conservative when
+    /// unknown:** if the backend doesn't report visibility (e.g. GitLab omits the
+    /// field), this is `false` (public) rather than `true` — a consumer is never
+    /// told a repo is private without proof.
     pub private: bool,
 }
 

@@ -102,7 +102,11 @@ impl Builder {
     /// runtime.
     pub async fn build(self) -> Result<RepoWatcher> {
         let root = self.repo.root().to_path_buf();
-        let state_dir = state_dir(self.repo.kind(), &root)?;
+        // The dirs whose writes mean "re-check": the `.git`/`.jj` state dir, plus
+        // — for a linked git worktree — the *shared* git dir it points at via
+        // `commondir` (where `refs/heads/*` and `packed-refs` actually live, so
+        // branch create/delete is seen). See `state_dirs`.
+        let state_dirs = state_dirs(self.repo.kind(), &root)?;
 
         // Bridge: notify's callback thread pushes a unit signal per event into an
         // unbounded channel (non-blocking, thread-safe); the debounce loop drains
@@ -116,12 +120,17 @@ impl Builder {
         })?;
         if self.working_tree {
             watcher.watch(&root, RecursiveMode::Recursive)?;
-            // A worktree gitlink puts the real git dir outside `root`; cover it.
-            if !state_dir.starts_with(&root) {
-                watcher.watch(&state_dir, RecursiveMode::Recursive)?;
+            // A worktree gitlink puts the real (private and shared) git dirs
+            // outside `root`; cover any not already under the recursive root watch.
+            for dir in &state_dirs {
+                if !dir.starts_with(&root) {
+                    watcher.watch(dir, RecursiveMode::Recursive)?;
+                }
             }
         } else {
-            watcher.watch(&state_dir, RecursiveMode::Recursive)?;
+            for dir in &state_dirs {
+                watcher.watch(dir, RecursiveMode::Recursive)?;
+            }
         }
 
         let snapshot = self.repo.snapshot().await?;
@@ -265,6 +274,28 @@ async fn watch_loop(
     }
 }
 
+/// The directories to watch for a backend, deduplicated. Normally one — the
+/// `.git`/`.jj` state dir (see [`state_dir`]) — but a **linked git worktree** has
+/// two: its private gitdir (HEAD/index/logs) *and* the shared git dir it points
+/// at via `commondir` (`refs/heads/*` and `packed-refs`, where branch
+/// create/delete actually lands). Watching only the private dir would miss every
+/// `BranchCreated`/`BranchDeleted` on a worktree, since the shared dir is a
+/// *sibling*, not nested under it (see [`common_dir`]).
+///
+/// Overlapping watches are harmless — the re-query+debounce coalesces duplicate
+/// signals — but we drop a second dir whose normalized path equals the first, so
+/// `notify` isn't asked to watch the same path twice.
+fn state_dirs(kind: BackendKind, root: &Path) -> Result<Vec<PathBuf>> {
+    let state_dir = state_dir(kind, root)?;
+    let mut dirs = vec![state_dir.clone()];
+    if let Some(shared) = common_dir(&state_dir)
+        && normalize(&shared) != normalize(&state_dir)
+    {
+        dirs.push(shared);
+    }
+    Ok(dirs)
+}
+
 /// The directory to watch for a backend: `.jj` for jj, `.git` for git. A
 /// worktree's `.git` is a gitlink *file* (`gitdir: <path>`); resolve it to the
 /// real git directory. Best-effort — falls back to the `.git` path itself.
@@ -285,5 +316,186 @@ fn state_dir(kind: BackendKind, root: &Path) -> Result<PathBuf> {
         // `BackendKind` is `#[non_exhaustive]`; for an unknown future backend
         // watch the repo root itself — coarser, but it can't miss the state dir.
         _ => Ok(root.to_path_buf()),
+    }
+}
+
+/// The **shared** git directory for a linked worktree, or `None` for a plain
+/// repo. A linked worktree's resolved gitdir holds a `commondir` file whose
+/// content is a path (typically relative, e.g. `../..`) to the shared `.git` —
+/// where `refs/heads/*` and `packed-refs` live. We join it to the gitdir and
+/// resolve `..` (lexically, matching the no-canonicalize style of [`state_dir`],
+/// so the registered path stays plain rather than a Windows `\\?\` verbatim one).
+/// A plain repo has no `commondir` file, so this is `None` and behaviour is
+/// unchanged.
+fn common_dir(state_dir: &Path) -> Option<PathBuf> {
+    let commondir = state_dir.join("commondir");
+    let content = std::fs::read_to_string(&commondir).ok()?;
+    let rel = content.trim();
+    if rel.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(rel);
+    let joined = if p.is_absolute() {
+        p
+    } else {
+        state_dir.join(p)
+    };
+    Some(lexically_normalized(&joined))
+}
+
+/// Resolve `.`/`..` components without touching the filesystem, keeping the path
+/// in its original (non-verbatim) form — `commondir`'s `../..` plus a Windows
+/// gitdir would otherwise leave literal `..` segments in the watched path.
+fn lexically_normalized(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                // Pop a real segment; keep a leading `..` that can't be resolved.
+                if !out.pop() {
+                    out.push(comp);
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Canonicalize for comparison and strip the Windows verbatim prefix (`\\?\…`,
+/// which `canonicalize` adds), so two spellings of the same dir dedup. Mirrors
+/// `vcs-core`'s path-compare normalization; falls back to the input when the path
+/// can't be canonicalized (then equal paths still compare equal byte-for-byte).
+fn normalize(p: &Path) -> PathBuf {
+    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    #[cfg(windows)]
+    {
+        let s = canonical.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && !rest.starts_with("UNC\\")
+        {
+            return PathBuf::from(rest.to_string());
+        }
+    }
+    canonical
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A unique, self-cleaning temp dir (no temp-dir crate needed for these
+    /// hermetic helper tests — pid + counter keeps parallel tests from colliding).
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "vcs-watch-commondir-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&p).expect("create scratch dir");
+            Scratch(p)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // A plain (non-worktree) git dir has no `commondir` file → no shared dir, so
+    // behaviour is exactly today's single-dir watch.
+    #[test]
+    fn no_commondir_file_yields_none() {
+        let scratch = Scratch::new();
+        let git_dir = scratch.0.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("mkdir .git");
+        assert_eq!(common_dir(&git_dir), None);
+    }
+
+    // A linked-worktree layout: the private gitdir holds `commondir` = `../..`
+    // (git's actual content), which must resolve to the sibling shared `.git`.
+    #[test]
+    fn relative_commondir_resolves_to_shared_git_dir() {
+        let scratch = Scratch::new();
+        let shared = scratch.0.join(".git");
+        let private = shared.join("worktrees").join("wt");
+        std::fs::create_dir_all(&private).expect("mkdir private gitdir");
+        // git writes `../..` (relative to the private dir) here.
+        std::fs::write(private.join("commondir"), "../..\n").expect("write commondir");
+
+        let resolved = common_dir(&private).expect("Some(shared dir)");
+        // `<shared>/worktrees/wt` + `../..` == `<shared>` (lexically, no `..` left).
+        assert_eq!(resolved, lexically_normalized(&shared));
+        assert!(
+            !resolved.to_string_lossy().contains(".."),
+            "the `..` segments must be resolved, got {}",
+            resolved.display()
+        );
+    }
+
+    // An absolute `commondir` (git permits it) is taken as-is.
+    #[test]
+    fn absolute_commondir_is_used_verbatim() {
+        let scratch = Scratch::new();
+        let shared = scratch.0.join("shared-git");
+        let private = scratch.0.join("private");
+        std::fs::create_dir_all(&private).expect("mkdir private");
+        std::fs::write(private.join("commondir"), format!("{}\n", shared.display()))
+            .expect("write commondir");
+
+        assert_eq!(common_dir(&private), Some(lexically_normalized(&shared)));
+    }
+
+    // `state_dirs` returns both the private and shared dirs for a worktree, and
+    // the shared dir is not the private one (so two distinct watches register).
+    #[test]
+    fn state_dirs_includes_private_and_shared_for_worktree() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("wt-worktree");
+        let shared = scratch.0.join(".git");
+        let private = shared.join("worktrees").join("wt");
+        std::fs::create_dir_all(&private).expect("mkdir private gitdir");
+        std::fs::create_dir_all(&root).expect("mkdir worktree root");
+        std::fs::write(private.join("commondir"), "../..\n").expect("write commondir");
+        // The worktree's `.git` gitlink file points at the private dir.
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", private.display()),
+        )
+        .expect("write gitlink");
+
+        let dirs = state_dirs(BackendKind::Git, &root).expect("state_dirs");
+        assert_eq!(dirs.len(), 2, "private + shared, got {dirs:?}");
+        assert_eq!(normalize(&dirs[0]), normalize(&private));
+        assert_eq!(normalize(&dirs[1]), normalize(&shared));
+    }
+
+    // When `commondir` resolves back to the state dir itself (degenerate), the
+    // duplicate is dropped — we never register the same path twice.
+    #[test]
+    fn self_referential_commondir_is_deduped() {
+        let scratch = Scratch::new();
+        let git_dir = scratch.0.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("mkdir .git");
+        // `.` resolves to the dir itself.
+        std::fs::write(git_dir.join("commondir"), ".\n").expect("write commondir");
+        // The gitlink points the worktree root at this very dir.
+        let root = scratch.0.join("root");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .expect("write gitlink");
+
+        let dirs = state_dirs(BackendKind::Git, &root).expect("state_dirs");
+        assert_eq!(dirs.len(), 1, "self-reference deduped, got {dirs:?}");
     }
 }

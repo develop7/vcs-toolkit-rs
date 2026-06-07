@@ -40,6 +40,10 @@ crates; tag releases as `vcs-watch-v<version>`.
 -
 
 ### Fixed
--
+- A watcher on a **linked git worktree** now also watches the shared `.git`
+  directory (resolved via the worktree gitdir's `commondir` file), where
+  `refs/heads/*` and `packed-refs` actually live — previously only the private
+  per-worktree gitdir was watched, so `BranchCreated`/`BranchDeleted` never
+  fired for a watched worktree.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/watch

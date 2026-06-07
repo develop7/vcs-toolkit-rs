@@ -33,9 +33,13 @@ crates; tag releases as `vcs-forge-v<version>`.
   default.**
 
 ### Changed
--
+- `pr_create` doc honesty: it returns the CLI's success output — a URL on
+  GitHub/GitLab, but a textual summary on Gitea (tea prints no URL and has no
+  flag to shape the create output).
 
 ### Fixed
--
+- GitLab `repo_view` no longer reports a project with **absent** `visibility`
+  as private — `ForgeRepo.private` is `false` unless the forge positively says
+  non-public (never claim privacy that isn't proven).
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/forge

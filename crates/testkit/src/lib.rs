@@ -7,6 +7,10 @@
 //! `git` / `jj` binaries on `PATH` — gate tests that use it behind
 //! `#[ignore = "requires the git binary"]` so hermetic CI stays green.
 //!
+//! Sandboxes are isolated from the host's VCS config (no system/global config,
+//! no `init.templateDir` hook leakage, a deterministic identity even on the
+//! commit `jj git init` creates) — see `command`.
+//!
 //! **Every helper panics on failure.** These are test fixtures: a broken
 //! fixture should fail the test loudly at the call site, not thread `Result`s
 //! through scenario-building code.
@@ -63,11 +67,61 @@ impl Drop for TempDir {
     }
 }
 
+/// Build an isolated [`Command`] for `binary` in `cwd`.
+///
+/// **Every** git/jj invocation the testkit makes routes through here so the
+/// sandbox is hermetic — it must not inherit the host user's VCS config. A
+/// host-global `init.templateDir` / `core.hooksPath` (git) or `[user]` block
+/// (jj) would otherwise leak in: a templateDir hook gets copied into the
+/// sandbox's `.git/hooks` and *executes* during sandbox commits, and a host
+/// jj identity stamps the init-created working-copy commit.
+///
+/// The redirect-config env vars point at a guaranteed-nonexistent path; git
+/// and jj both treat a missing config file as empty, so no temp file is
+/// needed and the free [`git`]/[`jj`] helpers (which own no sandbox dir) get
+/// the same isolation as the sandbox methods.
+fn command(binary: &str, cwd: &Path) -> Command {
+    // A path that cannot exist: a child of *this* binary's own path (a file,
+    // so it can have no children). Resolved per call to stay self-contained.
+    let nonexistent = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("vcs-testkit-no-such"))
+        .join("vcs-testkit-nonexistent-config");
+    let mut cmd = Command::new(binary);
+    cmd.current_dir(cwd);
+    match binary {
+        "git" => {
+            // Ignore system config; redirect global/system config at a
+            // nonexistent file (defeats a host-set GIT_CONFIG_GLOBAL too);
+            // and never block on a credential prompt. Scrub any inherited
+            // GIT_DIR-style vars that would otherwise point git elsewhere.
+            cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", &nonexistent)
+                .env("GIT_CONFIG_SYSTEM", &nonexistent)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env_remove("GIT_CONFIG_PARAMETERS")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE");
+        }
+        "jj" => {
+            // Read config exclusively from a nonexistent file (no host
+            // config), and stamp a deterministic identity on *every* commit
+            // — including the working-copy commit `jj git init` creates,
+            // which a later `config set --repo user.*` cannot retroactively
+            // re-author.
+            cmd.env("JJ_CONFIG", &nonexistent)
+                .env("JJ_USER", "test")
+                .env("JJ_EMAIL", "test@example.com");
+        }
+        _ => {}
+    }
+    cmd
+}
+
 /// Run a binary in `cwd`, panicking (with the command line in the message) on
 /// a spawn failure or non-zero exit. The fixture contract: fail loudly.
 fn run(binary: &str, cwd: &Path, args: &[&str]) {
-    let status = Command::new(binary)
-        .current_dir(cwd)
+    let status = command(binary, cwd)
         .args(args)
         .status()
         .unwrap_or_else(|e| panic!("failed to run `{binary} {args:?}`: {e}"));
@@ -76,8 +130,7 @@ fn run(binary: &str, cwd: &Path, args: &[&str]) {
 
 /// Like [`run`] but capturing trimmed stdout.
 fn run_capture(binary: &str, cwd: &Path, args: &[&str]) -> String {
-    let out = Command::new(binary)
-        .current_dir(cwd)
+    let out = command(binary, cwd)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("failed to run `{binary} {args:?}`: {e}"));
@@ -104,8 +157,16 @@ pub fn jj(dir: &Path, args: &[&str]) {
 
 /// Give the git repository at `dir` a deterministic identity and byte-stable
 /// behaviour: `user.name`/`user.email`, `commit.gpgsign=false` (no keychain
-/// prompts), `core.autocrlf=false` (no CRLF rewriting under content
+/// prompts), and `core.autocrlf=false` (no CRLF rewriting under content
 /// assertions on Windows).
+///
+/// Deliberately does NOT touch `core.hooksPath`: host-config hook leakage is
+/// neutralised at the source instead — `command`'s env redirect keeps a host
+/// global/system config (a `core.hooksPath` or `init.templateDir`) out of
+/// every testkit-run git, and `--template=` on `init` keeps template hooks
+/// from being copied into `.git/hooks`. Disabling hooks in the repo's *local*
+/// config would also disable hooks a test itself installs on purpose (e.g.
+/// the hardened-profile suppression test).
 ///
 /// Standalone (not folded into [`GitSandbox::init`] only) for tests whose
 /// *subject* is repository initialisation itself — they run their own `init`
@@ -135,9 +196,18 @@ pub struct GitSandbox {
 impl GitSandbox {
     /// Create and initialise a repository (`git init -b main` — git ≥ 2.28,
     /// comfortably below the wrappers' documented floor).
+    ///
+    /// `--template=` (empty) makes the new repo skip *any* init template,
+    /// so a host-global `init.templateDir` cannot seed hooks into
+    /// `.git/hooks` — the version-portable complement to the config
+    /// isolation in `command`.
     pub fn init(tag: &str) -> Self {
         let dir = TempDir::new(tag);
-        run("git", dir.path(), &["init", "-q", "-b", "main"]);
+        run(
+            "git",
+            dir.path(),
+            &["init", "-q", "-b", "main", "--template="],
+        );
         configure_identity(dir.path());
         GitSandbox { dir }
     }
@@ -210,12 +280,16 @@ impl BareRemote {
         let bare = dir.path().join("remote.git");
         std::fs::create_dir_all(&work).expect("create work dir");
         std::fs::create_dir_all(&bare).expect("create bare dir");
-        run("git", &work, &["init", "-q", "-b", "main"]);
+        run("git", &work, &["init", "-q", "-b", "main", "--template="]);
         configure_identity(&work);
         std::fs::write(work.join("seed.txt"), "seed\n").expect("write seed");
         run("git", &work, &["add", "-A"]);
         run("git", &work, &["commit", "-qm", "seed"]);
-        run("git", &bare, &["init", "-q", "--bare", "-b", "main"]);
+        run(
+            "git",
+            &bare,
+            &["init", "-q", "--bare", "-b", "main", "--template="],
+        );
         run(
             "git",
             &work,
@@ -248,6 +322,13 @@ pub struct JjSandbox {
 impl JjSandbox {
     /// Create and initialise the repository (`jj git init` + repo-scoped
     /// `user.name`/`user.email`).
+    ///
+    /// The identity is supplied to *every* jj invocation as `JJ_USER` /
+    /// `JJ_EMAIL` env (see `command`), so the working-copy commit that
+    /// `jj git init` creates is authored deterministically — a later
+    /// `config set --repo user.*` only affects *future* commits and so cannot
+    /// fix the init commit on its own. The repo-scoped config is kept anyway
+    /// as belt-and-braces for any tool path that reads config over the env.
     pub fn init(tag: &str) -> Self {
         let dir = TempDir::new(tag);
         run("jj", dir.path(), &["git", "init"]);
@@ -337,6 +418,34 @@ mod tests {
         );
     }
 
+    // Isolation: `--template=` plus the config env keep a host-global
+    // `init.templateDir` from seeding hooks, so the sandbox's `.git/hooks`
+    // holds no live hook. (A real host hook firing is what the reviewer hit;
+    // here we assert the precondition — no enabled hook files — which holds
+    // regardless of the host's config.)
+    #[test]
+    #[ignore = "requires the git binary"]
+    fn git_sandbox_has_no_leaked_hooks() {
+        let repo = GitSandbox::init("hooks");
+        repo.commit_file("a.txt", "one\n", "first");
+        let hooks = repo.path().join(".git").join("hooks");
+        let enabled: Vec<_> = std::fs::read_dir(&hooks)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            // git ships `*.sample` hooks (inert); only non-sample files run.
+            .filter(|name| !name.ends_with(".sample"))
+            .collect();
+        assert!(
+            enabled.is_empty(),
+            "sandbox should have no live hooks, found {enabled:?}"
+        );
+        // Note `core.hooksPath` is deliberately NOT pinned in the local config —
+        // a test may install its own hook on purpose (see `configure_identity`);
+        // the isolation lives in `command`'s env + `--template=` instead.
+    }
+
     #[test]
     #[ignore = "requires the jj binary"]
     fn jj_sandbox_builds_scenarios() {
@@ -361,5 +470,30 @@ mod tests {
             ],
         );
         assert!(out.contains("base"), "got {out:?}");
+    }
+
+    // Isolation: the working-copy commit `jj git init` creates is authored
+    // deterministically from the `JJ_USER`/`JJ_EMAIL` env, *not* from the
+    // host's jj config (which `config set --repo` could not retroactively
+    // re-author). `root()+` is the first non-root commit — the init commit.
+    #[test]
+    #[ignore = "requires the jj binary"]
+    fn jj_sandbox_init_commit_has_deterministic_author() {
+        let repo = JjSandbox::init("identity");
+        let email = run_capture(
+            "jj",
+            repo.path(),
+            &[
+                "log",
+                "-r",
+                "root()+",
+                "--no-graph",
+                "-T",
+                "author.email()",
+                "--color",
+                "never",
+            ],
+        );
+        assert_eq!(email, "test@example.com", "init commit author.email");
     }
 }

@@ -22,6 +22,15 @@ crates; tag releases as `vcs-testkit-v<version>`.
 -
 
 ### Fixed
--
+- Sandboxes are isolated from the **host** VCS configuration: every git
+  invocation runs with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL`/
+  `GIT_CONFIG_SYSTEM` redirected to a nonexistent path (plus `--template=` on
+  `init`), so a host-global `init.templateDir`/`core.hooksPath` can no longer
+  inject hooks that execute during sandbox commits. jj invocations run with
+  `JJ_CONFIG` isolated and `JJ_USER`/`JJ_EMAIL` pinned, making the
+  `jj git init`-created working-copy commit's author deterministic
+  (`test@example.com`) instead of inheriting the host identity. Repo-local
+  hooks a test installs on purpose still run (`core.hooksPath` is deliberately
+  not touched).
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/testkit

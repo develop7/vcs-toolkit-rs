@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 use vcs_core::Repo;
-use vcs_testkit::{GitSandbox, JjSandbox};
+use vcs_testkit::{GitSandbox, JjSandbox, TempDir};
 use vcs_watch::{RepoEvent, RepoWatcher};
 
 /// Drain changes until one carries an event matching `pred`, or the overall
@@ -63,6 +63,55 @@ async fn git_branch_create_emits_branch_created() {
         })
         .await,
         "expected a BranchCreated(feature) event"
+    );
+}
+
+// End-to-end: a watcher on a *linked worktree* sees a branch created from the
+// MAIN checkout. The worktree's `.git` gitlink resolves to its private gitdir,
+// but `refs/heads/*` live in the SHARED `.git` (a sibling, reached via
+// `commondir`) — so the fix also watches that shared dir. This drives the real
+// notify→re-query pipeline against a worktree on the host OS.
+//
+// Note: the *strict* regression guard for the fix is the hermetic
+// `state_dirs_includes_private_and_shared_for_worktree` unit test (it fails if
+// the shared dir is dropped). This end-to-end test can't be that guard on its
+// own: a worktree watcher's own `git status` re-query rewrites the private-dir
+// index, and that self-churn keeps re-querying branches independently of the
+// shared-dir watch. It still earns its keep — it exercises the real OS watch on
+// the resolved shared path (catching, e.g., a bad path that `notify` rejects).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the git binary"]
+async fn git_worktree_sees_branch_created_from_main() {
+    let sandbox = GitSandbox::init("watch-git-wt");
+    sandbox.commit_file("seed.txt", "seed\n", "initial");
+
+    // Add a linked worktree on a new branch, placed outside the main working tree
+    // (its own self-cleaning temp dir). `git worktree add` wants a non-existent
+    // target, so point it at a fresh subpath.
+    let wt_parent = TempDir::new("watch-git-wt-linked");
+    let wt_path = wt_parent.path().join("wt");
+    sandbox.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt-branch",
+        wt_path.to_str().expect("utf8 worktree path"),
+    ]);
+
+    // Watch the *worktree*, not the main checkout.
+    let repo = Repo::open(&wt_path).expect("open worktree");
+    let mut watcher = fast(repo).await.expect("watcher");
+
+    // Create a branch from the MAIN checkout — it lands in the shared `.git`.
+    sandbox.git(&["branch", "feature"]);
+
+    assert!(
+        wait_for(&mut watcher, Duration::from_secs(10), |e| {
+            matches!(e, RepoEvent::BranchCreated { name } if name == "feature")
+        })
+        .await,
+        "worktree watcher must see a branch created in the shared git dir"
     );
 }
 

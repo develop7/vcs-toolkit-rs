@@ -114,11 +114,10 @@ The backend (and which dir to watch) comes from `vcs-core`'s pure `detect`: `.jj
 for jj, `.git` for git, and **jj wins when colocated** — so a colocated repo is
 watched via `.jj` (jj drives; its op-log change is the signal). A linked
 worktree's `.git` is a gitlink *file*; the watcher resolves it to that worktree's
-git directory (best-effort). One limitation there: a linked worktree's git dir
-holds the per-worktree HEAD/index, but **branch refs are shared** under the main
-`.git/refs` — so `BranchCreated`/`BranchDeleted` made from another checkout may not
-be observed from a linked worktree (HEAD moves and working-copy changes still
-are). Watch the main checkout if you need branch events.
+private git directory (HEAD/index) **and** — via its `commondir` file — to the
+shared main `.git`, where branch refs (`refs/heads/*`, `packed-refs`) actually
+live. Both are watched, so `BranchCreated`/`BranchDeleted` made from any checkout
+are observed from a watched worktree too.
 
 ## Semantics & limits
 

@@ -19,7 +19,8 @@ crates; tag releases as `vcs-cli-support-v<version>`.
   classifiers can no longer drift between backends.
 
 ### Changed
--
+- `reject_flag_like` also refuses whitespace-only values (as meaning-changing as
+  empty ones), not just empty and leading-`-`.
 
 ### Fixed
 -

@@ -78,18 +78,25 @@ pub trait GiteaApi: Send + Sync {
     async fn version(&self) -> Result<String>;
     /// Whether at least one login is configured (`tea login list --output json`
     /// is a non-empty array). `tea` has no per-instance `auth status`, so this is
-    /// the closest "are we logged in" signal.
+    /// the closest "are we logged in" signal. Must not error on an unusual
+    /// outcome: a non-zero exit (e.g. no config file yet) reads as `false`, the
+    /// same as an empty array; only a spawn failure or timeout errors.
     async fn auth_status(&self) -> Result<bool>;
-    /// Open pull requests for `dir` (`tea pr list --output json`).
+    /// Open pull requests for `dir` (`tea pr list --limit 100 --output json`).
+    /// Returns up to 100 open PRs; use [`run`](GiteaApi::run) for more.
     async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>>;
     /// A single pull request by number. `tea` has no single-PR view, so this
-    /// **lists** (`tea pr list --state all --output json`) and filters by number;
-    /// a missing number is an [`Error::Parse`].
+    /// **lists** (`tea pr list --state all --limit 999 --output json`) and filters
+    /// by number; a missing number is an [`Error::Parse`]. The high `--limit`
+    /// guards against a false "not found", but PRs beyond the first 999 are still
+    /// not found.
     async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest>;
     /// Open a pull request, returning the command's output (`tea pr create`).
-    /// `head` (the source branch; `None` = the current branch) and `base` (the
-    /// target; `None` = the repo default) are owned `Option<String>`s to keep the
-    /// trait `mockall`-friendly.
+    /// Unlike `gh`/`glab`, `tea` prints a textual summary on success, **not** the
+    /// new PR's URL (it has no `--output`/`--fields` flag to shape create output),
+    /// so do not parse this as a URL. `head` (the source branch; `None` = the
+    /// current branch) and `base` (the target; `None` = the repo default) are
+    /// owned `Option<String>`s to keep the trait `mockall`-friendly.
     async fn pr_create(
         &self,
         dir: &Path,
@@ -129,36 +136,57 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
     async fn auth_status(&self) -> Result<bool> {
         // `tea login list --output json` is a global (non-repo) command that
         // yields the configured logins as a JSON array; non-empty ⇒ logged in.
-        let json = self
+        // `capture` (not `text`) so a NON-ZERO exit — e.g. tea erroring because no
+        // config file exists yet — reads as "not logged in" rather than surfacing
+        // as an error; a spawn failure or timeout still errors via `ensure_success`.
+        let res = self
             .core
-            .text(self.core.command(["login", "list", "--output", "json"]))
+            .capture(self.core.command(["login", "list", "--output", "json"]))
             .await?;
-        // Treat empty output as "no logins" rather than a parse error — some tea
-        // builds print nothing (not `[]`) when none are configured.
-        if json.trim().is_empty() {
+        if res.code() != Some(0) {
+            // A timeout / signal-kill (no exit code) is a genuine failure;
+            // `ensure_success` surfaces it as `Error::Timeout`/IO. A plain
+            // non-zero exit, however, just means "no logins" → false.
+            if res.code().is_none() {
+                res.ensure_success()?;
+            }
             return Ok(false);
         }
-        let logins: Vec<serde_json::Value> = parse::from_json(&json)?;
+        let json = res.stdout().trim();
+        // Treat empty output as "no logins" rather than a parse error — some tea
+        // builds print nothing (not `[]`) when none are configured.
+        if json.is_empty() {
+            return Ok(false);
+        }
+        let logins: Vec<serde_json::Value> = parse::from_json(json)?;
         Ok(!logins.is_empty())
     }
 
     async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>> {
+        // `--limit 100` overrides tea's default page size (30), which would
+        // otherwise silently truncate the list.
         self.core
             .try_parse(
                 self.core
-                    .command_in(dir, ["pr", "list", "--output", "json"]),
+                    .command_in(dir, ["pr", "list", "--limit", "100", "--output", "json"]),
                 parse::parse_pr_list,
             )
             .await
     }
 
     async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest> {
-        // `tea` has no single-PR view; list all states and filter by number.
+        // `tea` has no single-PR view; list all states and filter by number. A
+        // high `--limit` is essential here: without it, tea's default page size
+        // (30) would make any PR past the first page a false "not found".
         let prs = self
             .core
             .try_parse(
-                self.core
-                    .command_in(dir, ["pr", "list", "--state", "all", "--output", "json"]),
+                self.core.command_in(
+                    dir,
+                    [
+                        "pr", "list", "--state", "all", "--limit", "999", "--output", "json",
+                    ],
+                ),
                 parse::parse_pr_list,
             )
             .await?;
@@ -367,7 +395,22 @@ mod tests {
         assert!(matches!(err, Error::Parse { .. }));
         assert_eq!(
             rec.only_call().args_str(),
-            ["pr", "list", "--state", "all", "--output", "json"]
+            [
+                "pr", "list", "--state", "all", "--limit", "999", "--output", "json"
+            ]
+        );
+    }
+
+    // pr_list pins an explicit `--limit 100` so tea's default page size (30) does
+    // not silently truncate the list.
+    #[tokio::test]
+    async fn pr_list_pins_limit_100() {
+        let rec = RecordingRunner::replying(Reply::ok("[]"));
+        let tea = Gitea::with_runner(&rec);
+        tea.pr_list(Path::new("/repo")).await.expect("pr_list");
+        assert_eq!(
+            rec.only_call().args_str(),
+            ["pr", "list", "--limit", "100", "--output", "json"]
         );
     }
 
@@ -384,6 +427,15 @@ mod tests {
         // that must read as `false`, not a parse error.
         let empty = Gitea::with_runner(ScriptedRunner::new().on(["login", "list"], Reply::ok("")));
         assert!(!empty.auth_status().await.unwrap());
+        // A non-zero exit (e.g. tea erroring because no config file exists) must
+        // read as "not logged in" — never an error.
+        let failed = Gitea::with_runner(
+            ScriptedRunner::new().on(["login", "list"], Reply::fail(1, "no config")),
+        );
+        assert!(!failed.auth_status().await.unwrap());
+        let weird =
+            Gitea::with_runner(ScriptedRunner::new().on(["login", "list"], Reply::fail(2, "boom")));
+        assert!(!weird.auth_status().await.unwrap());
     }
 
     // A timed-out login check must error, not silently report "not logged in".

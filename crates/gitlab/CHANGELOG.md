@@ -31,9 +31,13 @@ crates; tag releases as `vcs-gitlab-v<version>`.
   method.
 
 ### Changed
--
+- `Project.visibility` is now `Option<String>` (absent in the JSON → `None`
+  instead of a misleading empty string).
+- `auth_status` reports `false` on **any** non-zero exit (was: errored on exits
+  other than 0/1), matching its "reports the bool, must not error" contract.
 
 ### Fixed
--
+- `mr_list` passes `--per-page 100` — glab's default of 30 silently truncated
+  larger result sets. The cap is now explicit and documented.
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/gitlab

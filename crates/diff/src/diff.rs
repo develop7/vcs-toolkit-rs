@@ -47,7 +47,9 @@ pub enum ChangeKind {
 }
 
 /// One line inside a [`Hunk`], tagged by its role. The stored text excludes the
-/// leading ` `/`+`/`-` marker.
+/// leading ` `/`+`/`-` marker **and the line terminator** — a CRLF-origin diff's
+/// trailing `\r` is stripped along with the `\n`, so reconstruct exact bytes
+/// from [`FileDiff::raw`], not from these lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]

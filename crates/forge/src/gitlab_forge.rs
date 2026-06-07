@@ -123,7 +123,10 @@ fn map_project(p: Project) -> ForgeRepo {
         owner,
         default_branch: p.default_branch,
         url: p.web_url,
-        private: p.visibility != "public",
+        // Conservative: only claim privacy when the visibility is *known* and not
+        // "public". An absent visibility (`None`) is unknown, so it maps to
+        // `false` (public) — we never assert a privacy we can't prove.
+        private: p.visibility.as_deref().is_some_and(|v| v != "public"),
     }
 }
 

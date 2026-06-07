@@ -83,7 +83,22 @@ crates; tag releases as `vcs-git-v<version>`.
   with `vcs-jj`. `parse_diff` is now part of the public surface.
 
 ### Fixed
--
+- `diff`/`diff_text` pin the `a/`…`b/` diff prefixes (`--src-prefix`/`--dst-prefix`),
+  so a user's global `diff.noprefix` / `diff.mnemonicPrefix` config can no longer
+  make every parsed file silently vanish from the result.
+- `branches`/`is_merged`/`tag_list` pass `--no-column`, so a user's
+  `column.ui = always` (which columnates output even when piped) can no longer
+  corrupt the line parsing or yield a false "not merged".
+- Commands whose failure output feeds the error classifiers (the `commit`,
+  `merge`, `rebase`, `cherry-pick`/`revert`, and `fetch` families) force
+  `LC_ALL=C`, so a non-English locale can no longer defeat
+  `is_merge_conflict`/`is_nothing_to_commit` or the transient-fetch retry.
+- `show_file` normalises `\` → `/` only on Windows — on Unix a backslash is a
+  legal filename byte, and the unconditional rewrite made such paths unresolvable.
+- `branch_status` runs with `GIT_OPTIONAL_LOCKS=0`, so the snapshot/poll
+  primitive no longer opportunistically rewrites `.git/index` — a filesystem
+  watcher re-querying through it (vcs-watch) had its own query re-trigger the
+  watch for a couple of extra rounds per change burst.
 
 ## [0.4.0] - 2026-06-04
 

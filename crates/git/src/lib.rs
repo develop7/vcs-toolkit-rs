@@ -649,10 +649,16 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn branch_status(&self, dir: &Path) -> Result<BranchStatus> {
+        // `GIT_OPTIONAL_LOCKS=0`: skip the opportunistic index refresh-write a
+        // `status` may otherwise persist. This is the snapshot/poll primitive —
+        // a filesystem watcher re-querying through it must not have the query
+        // itself dirty `.git/index` and re-trigger the watch (verified: with
+        // optional locks off, a re-query writes nothing).
         self.core
             .parse(
                 self.core
-                    .command_in(dir, ["status", "--porcelain=v2", "--branch", "-z"]),
+                    .command_in(dir, ["status", "--porcelain=v2", "--branch", "-z"])
+                    .env("GIT_OPTIONAL_LOCKS", "0"),
                 parse::parse_porcelain_v2,
             )
             .await
@@ -691,8 +697,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn branches(&self, dir: &Path) -> Result<Vec<Branch>> {
+        // `--no-column`: a user's `column.ui = always` would columnate several
+        // names onto one line even when piped, corrupting the line parser.
         self.core
-            .parse(self.core.command_in(dir, ["branch"]), parse::parse_branches)
+            .parse(
+                self.core.command_in(dir, ["branch", "--no-column"]),
+                parse::parse_branches,
+            )
             .await
     }
 
@@ -762,8 +773,11 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn commit(&self, dir: &Path, message: &str) -> Result<()> {
+        // C locale: a failure's output feeds `is_nothing_to_commit`.
         self.core
-            .unit(self.core.command_in(dir, ["commit", "-m", message]))
+            .unit(c_locale(
+                self.core.command_in(dir, ["commit", "-m", message]),
+            ))
             .await
     }
 
@@ -797,7 +811,8 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     ) -> Result<()> {
         // `--only -- <paths>` commits exactly these paths' working-tree content
         // regardless of the index; `--` keeps a path from being read as an option.
-        let mut command = self.core.command_in(dir, ["commit"]);
+        // C locale: a failure's output feeds `is_nothing_to_commit`.
+        let mut command = c_locale(self.core.command_in(dir, ["commit"]));
         if amend {
             command = command.arg("--amend");
         }
@@ -959,9 +974,15 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn is_merged(&self, dir: &Path, branch: &str, target: &str) -> Result<bool> {
         reject_flag_like("branch", branch)?;
         reject_flag_like("target", target)?;
+        // `--no-column`: under `column.ui = always` git would pack several names
+        // per line even when piped, and the marker-stripping compare below would
+        // never match (a false "not merged").
         let out = self
             .core
-            .text(self.core.command_in(dir, ["branch", "--merged", target]))
+            .text(
+                self.core
+                    .command_in(dir, ["branch", "--merged", target, "--no-column"]),
+            )
             .await?;
         // Each line is a fixed 2-column marker (`  `/`* `/`+ `) then the name;
         // drop exactly those two columns rather than trimming a char class (which
@@ -1049,10 +1070,22 @@ impl<R: ProcessRunner> GitApi for Git<R> {
                 rev
             }
         };
+        // The explicit prefixes pin the `a/`…`b/` form the shared parser extracts
+        // paths from — a user's `diff.noprefix` / `diff.mnemonicPrefix` config
+        // would otherwise change the headers and make every file silently vanish
+        // from the parse. (Command-line prefixes override both config options.)
         self.core
             .text(self.core.command_in(
                 dir,
-                ["diff", target.as_str(), "--no-color", "--no-ext-diff", "-M"],
+                [
+                    "diff",
+                    target.as_str(),
+                    "--no-color",
+                    "--no-ext-diff",
+                    "-M",
+                    "--src-prefix=a/",
+                    "--dst-prefix=b/",
+                ],
             ))
             .await
     }
@@ -1088,9 +1121,8 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // remote ops (`fetch_remote_branch`, `push`, `remote_branch_exists`).
         // Fetch is idempotent, so `retry` replays it on a transient failure
         // (DNS/timeout/dropped connection); a non-transient error fails at once.
-        let cmd = self
-            .core
-            .command_in(dir, ["fetch", "--quiet"])
+        // C locale: the retry decision classifies the failure's message.
+        let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet"]))
             .env("GIT_TERMINAL_PROMPT", "0")
             .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
@@ -1101,11 +1133,9 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // `--upload-pack=<cmd>` would run an arbitrary local program for a
         // local/ext transport, so this guard is load-bearing for security.
         reject_flag_like("remote", remote)?;
-        // Same containment as `fetch` (prompt off, transient retry), with the
-        // remote named explicitly.
-        let cmd = self
-            .core
-            .command_in(dir, ["fetch", "--quiet", remote])
+        // Same containment as `fetch` (prompt off, C locale, transient retry),
+        // with the remote named explicitly.
+        let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet", remote]))
             .env("GIT_TERMINAL_PROMPT", "0")
             .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
@@ -1113,11 +1143,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()> {
         let refspec = format!("refs/heads/{branch}:refs/remotes/origin/{branch}");
-        let cmd = self
-            .core
-            .command_in(dir, ["fetch", "--quiet", "origin", refspec.as_str()])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
+        let cmd = c_locale(
+            self.core
+                .command_in(dir, ["fetch", "--quiet", "origin", refspec.as_str()]),
+        )
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
         self.core.unit(cmd).await
     }
 
@@ -1165,7 +1196,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             args.push("--no-edit");
         }
         args.push(branch);
-        self.core.unit(self.core.command_in(dir, args)).await
+        // C locale: a conflict's output feeds `is_merge_conflict`.
+        self.core
+            .unit(c_locale(self.core.command_in(dir, args)))
+            .await
     }
 
     async fn merge_no_commit(
@@ -1185,22 +1219,27 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             args.push("--no-ff");
         }
         args.push(branch);
-        self.core.unit(self.core.command_in(dir, args)).await
+        // C locale: a conflict's output feeds `is_merge_conflict`.
+        self.core
+            .unit(c_locale(self.core.command_in(dir, args)))
+            .await
     }
 
     async fn merge_abort(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["merge", "--abort"]))
+            .unit(c_locale(self.core.command_in(dir, ["merge", "--abort"])))
             .await
     }
 
     async fn merge_continue(&self, dir: &Path) -> Result<()> {
         // `--no-edit` already reuses the prepared MERGE_MSG; `no_editor` is a
         // headless backstop so a commit hook re-opening the editor can't hang.
+        // C locale: the failure output feeds the classifiers (a still-conflicted
+        // tree reports "nothing to commit"-adjacent / conflict messages).
         self.core
-            .unit(no_editor(
+            .unit(no_editor(c_locale(
                 self.core.command_in(dir, ["commit", "--no-edit"]),
-            ))
+            )))
             .await
     }
 
@@ -1221,22 +1260,25 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("rebase target", onto)?;
         // Force a no-op editor so a rebase that would open `$EDITOR` (reword, or
         // the message-confirm on `--continue`) never hangs a headless caller.
+        // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(no_editor(self.core.command_in(dir, ["rebase", onto])))
+            .unit(no_editor(c_locale(
+                self.core.command_in(dir, ["rebase", onto]),
+            )))
             .await
     }
 
     async fn rebase_abort(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["rebase", "--abort"]))
+            .unit(c_locale(self.core.command_in(dir, ["rebase", "--abort"])))
             .await
     }
 
     async fn rebase_continue(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(no_editor(
+            .unit(no_editor(c_locale(
                 self.core.command_in(dir, ["rebase", "--continue"]),
-            ))
+            )))
             .await
     }
 
@@ -1361,9 +1403,11 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     }
 
     async fn tag_list(&self, dir: &Path) -> Result<Vec<String>> {
+        // `--no-column`: a user's `column.ui = always` would pack several tags
+        // onto one line even when piped, corrupting the one-per-line split.
         let out = self
             .core
-            .text(self.core.command_in(dir, ["tag", "--list"]))
+            .text(self.core.command_in(dir, ["tag", "--list", "--no-column"]))
             .await?;
         Ok(out.lines().map(str::to_string).collect())
     }
@@ -1380,8 +1424,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // so git would parse it as a flag — guard it before building the spec.
         reject_flag_like("revision", rev)?;
         // git rejects backslash separators in the `<rev>:<path>` spec ("exists
-        // on disk, but not in <rev>") — normalise for Windows callers.
-        let spec = format!("{rev}:{}", path.replace('\\', "/"));
+        // on disk, but not in <rev>") — normalise for Windows callers. Only on
+        // Windows: on Unix a backslash is a legal filename byte, and rewriting
+        // it would make a literal `a\b.txt` unresolvable.
+        #[cfg(windows)]
+        let path = path.replace('\\', "/");
+        let spec = format!("{rev}:{path}");
         self.core
             .text(self.core.command_in(dir, ["show", spec.as_str()]))
             .await
@@ -1448,23 +1496,28 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn cherry_pick(&self, dir: &Path, rev: &str) -> Result<()> {
         reject_flag_like("revision", rev)?;
         // No editor opens non-interactively, but keep the headless backstop.
+        // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(no_editor(self.core.command_in(dir, ["cherry-pick", rev])))
+            .unit(no_editor(c_locale(
+                self.core.command_in(dir, ["cherry-pick", rev]),
+            )))
             .await
     }
 
     async fn revert(&self, dir: &Path, rev: &str) -> Result<()> {
         reject_flag_like("revision", rev)?;
         self.core
-            .unit(no_editor(
+            .unit(no_editor(c_locale(
                 self.core.command_in(dir, ["revert", "--no-edit", rev]),
-            ))
+            )))
             .await
     }
 
     async fn rebase_skip(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(no_editor(self.core.command_in(dir, ["rebase", "--skip"])))
+            .unit(no_editor(c_locale(
+                self.core.command_in(dir, ["rebase", "--skip"]),
+            )))
             .await
     }
 }
@@ -1492,6 +1545,15 @@ const FETCH_BACKOFF: Duration = vcs_cli_support::FETCH_BACKOFF;
 fn no_editor(cmd: processkit::Command) -> processkit::Command {
     cmd.env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
+}
+
+/// Force the C locale on a command whose output feeds the error classifiers
+/// (`is_merge_conflict`, `is_nothing_to_commit`, `is_transient_fetch_error`):
+/// they match untranslated English substrings, and a localized git would emit
+/// translated messages, silently turning a classified failure (conflict /
+/// clean-tree / transient) into an unclassified one.
+fn c_locale(cmd: processkit::Command) -> processkit::Command {
+    cmd.env("LC_ALL", "C")
 }
 
 /// Injection guard for bare positional argv slots — delegates to the shared
@@ -1902,6 +1964,12 @@ mod tests {
             rec.only_call().args_str(),
             ["status", "--porcelain=v2", "--branch", "-z"]
         );
+        // The poll primitive must not itself write the index (and re-trigger a
+        // filesystem watcher re-querying through it).
+        assert!(rec.only_call().envs.iter().any(|(k, v)| {
+            k.to_str() == Some("GIT_OPTIONAL_LOCKS")
+                && v.as_deref().and_then(|o| o.to_str()) == Some("0")
+        }));
         assert_eq!(s.branch.as_deref(), Some("main"));
         assert_eq!(s.upstream.as_deref(), Some("origin/main"));
         assert_eq!((s.ahead, s.behind), (Some(1), Some(0)));
@@ -2133,7 +2201,17 @@ mod tests {
             .expect("diff_text");
         assert_eq!(
             rec.calls().last().unwrap().args_str(),
-            ["diff", "HEAD", "--no-color", "--no-ext-diff", "-M"]
+            [
+                "diff",
+                "HEAD",
+                "--no-color",
+                "--no-ext-diff",
+                "-M",
+                // Pin the parser's `a/`…`b/` headers against a user's
+                // `diff.noprefix`/`diff.mnemonicPrefix` config.
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+            ]
         );
     }
 
@@ -2709,8 +2787,51 @@ mod tests {
         assert_eq!(git.tag_list(Path::new(".")).await.unwrap(), ["v1", "v2.0"]);
     }
 
+    // The line-parsed list commands must pass `--no-column`: a user's
+    // `column.ui = always` would pack several names per line even when piped.
+    #[tokio::test]
+    async fn list_commands_disable_column_output() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.branches(Path::new(".")).await.unwrap();
+        git.is_merged(Path::new("."), "b", "main").await.unwrap();
+        git.tag_list(Path::new(".")).await.unwrap();
+        let calls = rec.calls();
+        assert_eq!(calls[0].args_str(), ["branch", "--no-column"]);
+        assert_eq!(
+            calls[1].args_str(),
+            ["branch", "--merged", "main", "--no-column"]
+        );
+        assert_eq!(calls[2].args_str(), ["tag", "--list", "--no-column"]);
+    }
+
+    // Commands whose failure output feeds the error classifiers must force the
+    // C locale — a translated message would defeat the substring matching.
+    #[tokio::test]
+    async fn classified_commands_force_c_locale() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.commit(Path::new("."), "msg").await.unwrap();
+        git.merge_commit(Path::new("."), "b", false, None)
+            .await
+            .unwrap();
+        git.cherry_pick(Path::new("."), "abc").await.unwrap();
+        git.fetch(Path::new(".")).await.unwrap();
+        for call in rec.calls() {
+            assert!(
+                call.envs.iter().any(|(k, v)| {
+                    k.to_str() == Some("LC_ALL")
+                        && v.as_deref().and_then(|o| o.to_str()) == Some("C")
+                }),
+                "{:?} should force LC_ALL=C",
+                call.args_str()
+            );
+        }
+    }
+
     // The `<rev>:<path>` spec requires forward slashes — Windows callers may
-    // hand in backslashes.
+    // hand in backslashes. The normalisation is Windows-only.
+    #[cfg(windows)]
     #[tokio::test]
     async fn show_file_normalises_path_separators() {
         let rec = RecordingRunner::replying(Reply::ok("content\n"));
@@ -2721,6 +2842,19 @@ mod tests {
             .expect("show_file");
         assert_eq!(out, "content");
         assert_eq!(rec.only_call().args_str(), ["show", "HEAD:sub/dir/f.txt"]);
+    }
+
+    // On Unix a backslash is a legal filename byte — the spec must pass through
+    // verbatim so a literal `a\b.txt` stays resolvable.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn show_file_keeps_backslashes_on_unix() {
+        let rec = RecordingRunner::replying(Reply::ok("content\n"));
+        let git = Git::with_runner(&rec);
+        git.show_file(Path::new("/r"), "HEAD", "sub\\dir\\f.txt")
+            .await
+            .expect("show_file");
+        assert_eq!(rec.only_call().args_str(), ["show", "HEAD:sub\\dir\\f.txt"]);
     }
 
     // config --get: exit 0 → Some(value), exit 1 → None (unset), other → error.

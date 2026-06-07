@@ -147,15 +147,19 @@ pub trait GitHubApi: Send + Sync {
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>>;
     /// Installed GitHub CLI version (`gh --version`).
     async fn version(&self) -> Result<String>;
-    /// Whether the user is authenticated (`gh auth status` exits zero).
+    /// Whether the user is authenticated (`gh auth status` exits zero). Reflects
+    /// the exit code as a bool — any non-zero exit reads as `false`, never an
+    /// error; only a spawn failure or timeout errors.
     async fn auth_status(&self) -> Result<bool>;
     /// The repository for `dir` (`gh repo view --json …`).
     async fn repo_view(&self, dir: &Path) -> Result<Repo>;
-    /// Pull requests for `dir` (`gh pr list --json …`).
+    /// Pull requests for `dir` (`gh pr list --limit 100 --json …`). Returns up to
+    /// 100 open PRs; use [`run`](GitHubApi::run) for more.
     async fn pr_list(&self, dir: &Path) -> Result<Vec<PullRequest>>;
     /// Pull requests that merge `head` into `base`, in any state — open, closed,
-    /// or merged (`gh pr list --head <head> --base <base> --state all --json …`).
-    /// Each carries its title, URL, and `state`. Empty when none match.
+    /// or merged (`gh pr list --head <head> --base <base> --state all --limit 100
+    /// --json …`). Each carries its title, URL, and `state`. Empty when none
+    /// match; returns up to 100 (use [`run`](GitHubApi::run) for more).
     async fn pr_list_for_branch(
         &self,
         dir: &Path,
@@ -164,7 +168,8 @@ pub trait GitHubApi: Send + Sync {
     ) -> Result<Vec<PullRequest>>;
     /// A single pull request by number (`gh pr view <n> --json …`).
     async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest>;
-    /// Issues for `dir` (`gh issue list --json …`).
+    /// Issues for `dir` (`gh issue list --limit 100 --json …`). Returns up to 100
+    /// open issues; use [`run`](GitHubApi::run) for more.
     async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>>;
     /// Open a pull request, returning its URL (`gh pr create`). `head` (the
     /// source branch; `None` = the current branch) and `base` (the target;
@@ -241,8 +246,9 @@ pub trait GitHubApi: Send + Sync {
     /// A single issue by number, with `body`/`url` filled
     /// (`gh issue view <n> --json …`).
     async fn issue_view(&self, dir: &Path, number: u64) -> Result<Issue>;
-    /// Releases, newest first (`gh release list --json …`); `body`/`url` are
-    /// not fetched here — use [`release_view`](GitHubApi::release_view).
+    /// Releases, newest first (`gh release list --limit 100 --json …`); `body`/`url`
+    /// are not fetched here — use [`release_view`](GitHubApi::release_view).
+    /// Returns up to 100 releases; use [`run`](GitHubApi::run) for more.
     async fn release_list(&self, dir: &Path) -> Result<Vec<Release>>;
     /// A single release by tag, with `body`/`url` filled
     /// (`gh release view <tag> --json …`). gh reports `is_latest` only from
@@ -272,11 +278,16 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     }
 
     async fn auth_status(&self) -> Result<bool> {
-        // `gh auth status` exits 0 when authenticated, 1 when not — an exit-code
-        // answer. `probe` reads it as a bool but still errors on a spawn failure,
-        // timeout (`Error::Timeout`), or any unexpected exit code, rather than
-        // silently reporting "not authenticated".
-        self.core.probe(self.core.command(["auth", "status"])).await
+        // `gh auth status` exits 0 when authenticated, non-zero when not — an
+        // exit-code answer. `code` reads the exit code without erroring on a
+        // non-zero one (a spawn failure or timeout still errors), so ANY non-zero
+        // exit — not just the documented 1 — maps to "not authenticated" rather
+        // than surfacing as an error. `probe` would reject an unusual exit code.
+        Ok(self
+            .core
+            .code(self.core.command(["auth", "status"]))
+            .await?
+            == 0)
     }
 
     async fn repo_view(&self, dir: &Path) -> Result<Repo> {
@@ -293,7 +304,7 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
         self.core
             .try_parse(
                 self.core
-                    .command_in(dir, ["pr", "list", "--json", PR_FIELDS]),
+                    .command_in(dir, ["pr", "list", "--limit", "100", "--json", PR_FIELDS]),
                 parse::from_json,
             )
             .await
@@ -312,8 +323,8 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
                 self.core.command_in(
                     dir,
                     [
-                        "pr", "list", "--head", head, "--base", base, "--state", "all", "--json",
-                        PR_FIELDS,
+                        "pr", "list", "--head", head, "--base", base, "--state", "all", "--limit",
+                        "100", "--json", PR_FIELDS,
                     ],
                 ),
                 parse::from_json,
@@ -335,8 +346,17 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     async fn issue_list(&self, dir: &Path) -> Result<Vec<Issue>> {
         self.core
             .try_parse(
-                self.core
-                    .command_in(dir, ["issue", "list", "--json", ISSUE_LIST_FIELDS]),
+                self.core.command_in(
+                    dir,
+                    [
+                        "issue",
+                        "list",
+                        "--limit",
+                        "100",
+                        "--json",
+                        ISSUE_LIST_FIELDS,
+                    ],
+                ),
                 parse::from_json,
             )
             .await
@@ -545,8 +565,17 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     async fn release_list(&self, dir: &Path) -> Result<Vec<Release>> {
         self.core
             .try_parse(
-                self.core
-                    .command_in(dir, ["release", "list", "--json", RELEASE_LIST_FIELDS]),
+                self.core.command_in(
+                    dir,
+                    [
+                        "release",
+                        "list",
+                        "--limit",
+                        "100",
+                        "--json",
+                        RELEASE_LIST_FIELDS,
+                    ],
+                ),
                 parse::from_json,
             )
             .await
@@ -718,7 +747,9 @@ mod tests {
         assert_eq!(prs[0].base_ref_name, "main");
     }
 
-    // Hermetic: auth_status reflects the exit code without erroring.
+    // Hermetic: auth_status reflects the exit code without erroring. ANY non-zero
+    // exit — not just the documented 1 — must read as `false`, never an error
+    // (an unusual exit code must not be mistaken for a hard failure).
     #[tokio::test]
     async fn auth_status_reads_exit_code() {
         let yes = GitHub::with_runner(ScriptedRunner::new().on(["auth"], Reply::ok("")));
@@ -727,6 +758,9 @@ mod tests {
             ScriptedRunner::new().on(["auth"], Reply::fail(1, "not logged in")),
         );
         assert!(!no.auth_status().await.unwrap());
+        // An unexpected exit code (e.g. 2) is still just "not authenticated".
+        let weird = GitHub::with_runner(ScriptedRunner::new().on(["auth"], Reply::fail(2, "boom")));
+        assert!(!weird.auth_status().await.unwrap());
     }
 
     // Regression guard for the timeout fix: a timed-out auth check must error,
@@ -800,8 +834,48 @@ mod tests {
         assert_eq!(
             rec.only_call().args_str(),
             [
-                "pr", "list", "--head", "feat/x", "--base", "main", "--state", "all", "--json",
-                PR_FIELDS
+                "pr", "list", "--head", "feat/x", "--base", "main", "--state", "all", "--limit",
+                "100", "--json", PR_FIELDS
+            ]
+        );
+    }
+
+    // The list methods pin an explicit `--limit 100` so the CLI's default page
+    // size (30) does not silently truncate the result.
+    #[tokio::test]
+    async fn list_methods_pin_limit_100() {
+        let rec = RecordingRunner::replying(Reply::ok("[]"));
+        let gh = GitHub::with_runner(&rec);
+        gh.pr_list(Path::new("/r")).await.expect("pr_list");
+        gh.issue_list(Path::new("/r")).await.expect("issue_list");
+        gh.release_list(Path::new("/r"))
+            .await
+            .expect("release_list");
+        let calls = rec.calls();
+        assert_eq!(
+            calls[0].args_str(),
+            ["pr", "list", "--limit", "100", "--json", PR_FIELDS]
+        );
+        assert_eq!(
+            calls[1].args_str(),
+            [
+                "issue",
+                "list",
+                "--limit",
+                "100",
+                "--json",
+                ISSUE_LIST_FIELDS
+            ]
+        );
+        assert_eq!(
+            calls[2].args_str(),
+            [
+                "release",
+                "list",
+                "--limit",
+                "100",
+                "--json",
+                RELEASE_LIST_FIELDS
             ]
         );
     }

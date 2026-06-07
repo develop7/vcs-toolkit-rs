@@ -51,9 +51,11 @@ pub struct Project {
     /// Web URL.
     #[serde(default)]
     pub web_url: String,
-    /// Visibility, e.g. `"public"`, `"internal"`, `"private"`.
+    /// Visibility, e.g. `"public"`, `"internal"`, `"private"`. `None` when glab
+    /// omits the field — a consumer must treat an absent visibility as *unknown*,
+    /// not as private (see [`ForgeRepo::private`](../../vcs_forge/struct.ForgeRepo.html)).
     #[serde(default)]
-    pub visibility: String,
+    pub visibility: Option<String>,
 }
 
 /// The coarse CI/pipeline outcome for an MR (`glab mr view … --output json`'s
@@ -179,7 +181,16 @@ mod tests {
         assert_eq!(p.name, "cli");
         assert_eq!(p.path_with_namespace, "gitlab-org/cli");
         assert_eq!(p.default_branch, "main");
-        assert_eq!(p.visibility, "public");
+        assert_eq!(p.visibility.as_deref(), Some("public"));
+    }
+
+    // glab omits `visibility` for some responses; it must deserialize to `None`
+    // (unknown), never a default that a consumer could mistake for private.
+    #[test]
+    fn project_tolerates_missing_visibility() {
+        let json = r#"{"name":"cli","path_with_namespace":"o/cli","default_branch":"main"}"#;
+        let p: Project = from_json(json).expect("parse project");
+        assert_eq!(p.visibility, None);
     }
 
     #[test]

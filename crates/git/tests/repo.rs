@@ -468,12 +468,15 @@ async fn tags_show_config_and_remotes_round_trip() {
     git.tag_delete(dir, "v1").await.expect("delete");
     assert_eq!(git.tag_list(dir).await.expect("list"), ["v1.1"]);
 
-    // show_file resolves a subdir path — exercised with BACKSLASH separators
-    // on purpose (the Windows trap; normalised internally).
+    // show_file resolves a subdir path. The backslash form is the Windows trap
+    // (normalised internally there); on Unix a backslash is a legal filename
+    // byte and passes through verbatim, so query with the native `/` instead.
+    #[cfg(windows)]
+    let sub_path = r"sub\f.txt";
+    #[cfg(not(windows))]
+    let sub_path = "sub/f.txt";
     assert_eq!(
-        git.show_file(dir, "HEAD", r"sub\f.txt")
-            .await
-            .expect("show"),
+        git.show_file(dir, "HEAD", sub_path).await.expect("show"),
         "v1"
     );
 

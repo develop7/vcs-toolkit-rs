@@ -30,9 +30,16 @@ crates; tag releases as `vcs-gitea-v<version>`.
   as `Unsupported` for the Gitea backend).
 
 ### Changed
--
+- `auth_status` tolerates a non-zero `tea login list` exit (e.g. no config file
+  yet) and reports `false` instead of erroring, matching its "reports the bool,
+  must not error" contract.
+- `pr_create` doc: tea prints a textual summary (no URL) and has no flag to
+  shape the create output — documented instead of implied parity with gh/glab.
 
 ### Fixed
--
+- `pr_list` passes `--limit 100` (tea's default page of 30 silently truncated
+  larger sets), and `pr_view` — which lists and filters by number — uses
+  `--limit 999`, so a PR beyond the first page is no longer a false "not found"
+  (PRs beyond 999 still are; documented).
 
 [Unreleased]: https://github.com/ZelAnton/vcs-toolkit-rs/commits/main/crates/gitea

@@ -214,9 +214,17 @@ fn ok_json<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorData> 
     Ok(CallToolResult::success(vec![Content::text(json)]))
 }
 
-/// Map a `vcs-core` error into an MCP error.
+/// Map a `vcs-core` error into an MCP error. The facade reports a refused
+/// *input* (e.g. `commit_paths` with an empty path set) as an
+/// `InvalidInput` io error — that's the client's call to fix, so surface it as
+/// an invalid-params error rather than an internal one.
 fn core_err(e: vcs_core::Error) -> ErrorData {
-    ErrorData::internal_error(e.to_string(), None)
+    match &e {
+        vcs_core::Error::Io(io) if io.kind() == std::io::ErrorKind::InvalidInput => {
+            ErrorData::invalid_params(e.to_string(), None)
+        }
+        _ => ErrorData::internal_error(e.to_string(), None),
+    }
 }
 
 /// Map a `vcs-forge` error into an MCP error — an `Unsupported` op is a
@@ -573,6 +581,27 @@ mod tests {
             .await
             .expect("checkout ok");
         assert!(result_json(&out).contains("feat"));
+    }
+
+    // The facade's refused-input errors (here: an empty `paths` set, which the
+    // facade rejects up front) surface as INVALID_PARAMS — the client's mistake
+    // to fix — not as an internal server error.
+    #[tokio::test]
+    async fn refused_input_surfaces_as_invalid_params() {
+        let server = git_server(ScriptedRunner::new(), true);
+        let err = server
+            .repo_commit(Parameters(CommitParams {
+                paths: vec![],
+                message: "msg".into(),
+            }))
+            .await
+            .expect_err("empty paths refused");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("at least one path"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 
     // Forge tools report a clear error when no forge was configured.

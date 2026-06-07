@@ -42,9 +42,13 @@ crates; tag releases as `vcs-github-v<version>`.
 ### Changed
 - Internal: the argv injection guard (`reject_flag_like`) now comes from the
   shared `vcs-cli-support` crate. No public API change.
+- `auth_status` reports `false` on **any** non-zero exit (was: errored on exits
+  other than 0/1), matching its "reports the bool, must not error" contract.
 
 ### Fixed
--
+- `pr_list`/`pr_list_for_branch`/`issue_list`/`release_list` pass `--limit 100`
+  — gh's default of 30 silently truncated larger result sets. The cap is now
+  explicit and documented (use `run()` for more).
 
 ## [0.4.0] - 2026-06-04
 

@@ -54,7 +54,11 @@ crates; tag releases as `vcs-core-v<version>`.
   `vcs-cli-support`.
 
 ### Fixed
--
+- `commit_paths` refuses an empty path set up front: the backends would diverge
+  dangerously — git errors out, while jj's `commit` with no filesets would
+  silently commit the **entire** working copy under the given message.
+- `FileChange.old_path` doc corrected: the rename's original path is populated
+  by **both** backends (jj's `{old => new}` summary form included), not git-only.
 
 ## [0.2.0] - 2026-06-04
 

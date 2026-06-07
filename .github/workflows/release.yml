@@ -295,47 +295,66 @@ jobs:
             git add "$dir/Cargo.toml" "$dir/CHANGELOG.md"
             msg="${msg} ${name} v${version},"
           done < "$PLAN"
+          # `cargo set-version` auto-widens every in-workspace DEPENDENT's version
+          # requirement when a crate crosses a minor/major boundary (e.g. bumping
+          # vcs-core 0.2->0.3 rewrites crates/watch + crates/mcp `version = "0.2"`
+          # -> "0.3") and regenerates Cargo.lock to match. The per-crate adds above
+          # only stage the PLANNED crates, so on a solo minor/major release those
+          # rewritten dependent manifests would be left unstaged — committing a lock
+          # that pins the new version while the committed manifests still require the
+          # old one, breaking every later `--locked` build on main. Stage ALL
+          # workspace manifests so the auto-widening lands with the lock (root
+          # Cargo.toml is untouched by set-version; staging it would be harmless).
+          git add crates/*/Cargo.toml
           git commit -m "${msg%,}"
 
       # Gate: build + package each crate exactly as `cargo publish` would, without
       # uploading — catches build/metadata errors before the irreversible publish.
       # `--locked` asserts Cargo.lock matches the just-bumped manifests.
       #
-      # Exception: a crate that depends (by version) on another crate released in
-      # the SAME run can't pass a registry-resolving `--dry-run` here — the dep's
-      # just-bumped version isn't on the crates.io index yet (it would fail e.g.
-      # `failed to select a version for vcs-diff = "^0.x"`). Those deps publish
-      # earlier in the ordered run, and `cargo publish` runs its own verify build
-      # at publish time. So when an in-run dependency is present we instead compile
-      # the crate against its local (path) deps, proving it builds without the
-      # registry. The intra-workspace dep edges: vcs-core → vcs-git/vcs-jj, and
-      # everything except vcs-testkit → the foundational vcs-diff/vcs-cli-support.
+      # A registry-resolving `--dry-run` requires every in-workspace dependency of
+      # the crate to already be LIVE on the crates.io index. Two cases make that
+      # impossible, and BOTH fall back to a plain `cargo build` against the local
+      # (path) deps — which proves the crate compiles without the registry, while
+      # `cargo publish` runs its own verify build against the published deps at
+      # publish time:
+      #   1. In-run dep: a dependency released in the SAME run isn't on the index
+      #      yet (it would fail e.g. `failed to select a version for vcs-diff =
+      #      "^0.x"`); it publishes earlier in the ordered run.
+      #   2. Unpublished dep: on a SOLO release, a dependency may never have been
+      #      published at all (no `<dep>-v*` tag — the same tag-presence convention
+      #      this workflow uses to detect a crate's first release). A real dry-run
+      #      would fail just as confusingly, so build instead.
+      # DEPS lists each crate's in-workspace (non-dev) dependencies, mirroring the
+      # DIR map in the plan step; crates with none always get a real dry-run.
       - name: Verify crates publish (dry run)
         shell: bash
         env:
           PLAN: ${{ runner.temp }}/plan.tsv
         run: |
           set -euo pipefail
+          declare -A DEPS=( [vcs-diff]="" [vcs-cli-support]="" [vcs-git]="vcs-diff vcs-cli-support" [vcs-jj]="vcs-diff vcs-cli-support" [vcs-github]="vcs-cli-support" [vcs-gitlab]="" [vcs-gitea]="" [vcs-forge]="vcs-cli-support vcs-github vcs-gitlab vcs-gitea" [vcs-testkit]="" [vcs-core]="vcs-git vcs-jj vcs-diff vcs-cli-support" [vcs-watch]="vcs-core" [vcs-mcp]="vcs-core vcs-forge" )
           while IFS=$'\t' read -r name dir version prev; do
-            # Does this crate have a workspace dependency also being released now?
-            in_run_dep=""
-            if [ "$name" = "vcs-core" ] && grep -qP '^(vcs-git|vcs-jj)\t' "$PLAN"; then
-              in_run_dep="vcs-git/vcs-jj"
-            elif [ "$name" = "vcs-watch" ] && grep -qP '^(vcs-core)\t' "$PLAN"; then
-              in_run_dep="vcs-core"
-            elif [ "$name" = "vcs-mcp" ] && grep -qP '^(vcs-core|vcs-forge)\t' "$PLAN"; then
-              in_run_dep="vcs-core/vcs-forge"
-            elif [ "$name" = "vcs-forge" ] && grep -qP '^(vcs-github|vcs-gitlab|vcs-gitea)\t' "$PLAN"; then
-              in_run_dep="vcs-github/vcs-gitlab/vcs-gitea"
-            elif [ "$name" != "vcs-diff" ] && [ "$name" != "vcs-cli-support" ] && \
-                 [ "$name" != "vcs-testkit" ] && [ "$name" != "vcs-gitlab" ] && \
-                 [ "$name" != "vcs-gitea" ] && grep -qP '^(vcs-diff|vcs-cli-support)\t' "$PLAN"; then
-              # vcs-gitlab/vcs-gitea depend only on the external processkit (no
-              # foundational path deps), so they always get a real dry-run publish.
-              in_run_dep="vcs-diff/vcs-cli-support"
-            fi
-            if [ -n "$in_run_dep" ]; then
-              echo "verify $name v$version against local path deps ($in_run_dep publish earlier this run; registry dry-run runs at publish time)"
+            # Scan this crate's in-workspace deps: a dep that is in the current PLAN
+            # (released this run) or has no published tag forces the build path.
+            # `:-` so a future crate missing a DEPS entry degrades to "no deps"
+            # (a real registry dry-run) instead of a cryptic `set -u` abort.
+            in_run_dep="" unpublished_dep=""
+            for dep in ${DEPS[$name]:-}; do
+              if grep -qP "^${dep}\t" "$PLAN"; then
+                in_run_dep="${in_run_dep:+$in_run_dep/}$dep"
+              elif ! git tag --list "${dep}-v*" | grep -q .; then
+                unpublished_dep="${unpublished_dep:+$unpublished_dep/}$dep"
+              fi
+            done
+            if [ -n "$in_run_dep" ] || [ -n "$unpublished_dep" ]; then
+              reason=""
+              [ -n "$in_run_dep" ] && reason="${in_run_dep} publish earlier this run"
+              if [ -n "$unpublished_dep" ]; then
+                echo "dep(s) ${unpublished_dep} not yet published — registry dry-run impossible, building instead"
+                reason="${reason:+$reason; }${unpublished_dep} not on crates.io"
+              fi
+              echo "verify $name v$version against local path deps (${reason}; registry dry-run runs at publish time)"
               cargo build -p "$name" --locked
               continue
             fi

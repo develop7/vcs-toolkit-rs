@@ -21,13 +21,13 @@ use processkit::{Error, Result};
 
 /// Injection guard for bare positional argv slots: a caller-supplied value with a
 /// leading `-` would be parsed by the CLI as a *flag* (verified: `git checkout
-/// -evil` → "unknown switch"; jj likewise), and an empty value silently changes
-/// most commands' meaning. Refuse both before anything spawns, surfacing an
-/// [`Error::Spawn`] naming `program`. Flag-VALUE positions (`-m <msg>`,
-/// `--branch <b>`) don't need this — the CLI consumes the next token verbatim
-/// there.
+/// -evil` → "unknown switch"; jj likewise), and an empty (or whitespace-only)
+/// value silently changes most commands' meaning. Refuse both before anything
+/// spawns, surfacing an [`Error::Spawn`] naming `program`. Flag-VALUE positions
+/// (`-m <msg>`, `--branch <b>`) don't need this — the CLI consumes the next
+/// token verbatim there.
 pub fn reject_flag_like(program: &str, what: &str, value: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') {
+    if value.trim().is_empty() || value.starts_with('-') {
         return Err(Error::Spawn {
             program: program.to_string(),
             source: std::io::Error::new(
@@ -107,6 +107,9 @@ mod tests {
     fn rejects_empty_and_leading_dash() {
         assert!(reject_flag_like("git", "branch name", "-evil").is_err());
         assert!(reject_flag_like("git", "branch name", "").is_err());
+        // Whitespace-only is as meaning-changing as empty — refuse it too.
+        assert!(reject_flag_like("git", "branch name", "  ").is_err());
+        assert!(reject_flag_like("git", "branch name", "\t").is_err());
         assert!(reject_flag_like("git", "branch name", "feature").is_ok());
         // The error names the program and surfaces as a spawn-side refusal.
         let err = reject_flag_like("jj", "revset", "--remote").unwrap_err();

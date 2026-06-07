@@ -374,8 +374,18 @@ impl<R: ProcessRunner> Repo<R> {
     }
 
     /// Commit exactly `paths` with `message` (git `commit --only`, jj
-    /// `commit <filesets>`). Paths are repo-relative.
+    /// `commit <filesets>`). Paths are repo-relative. `paths` must be non-empty:
+    /// an empty set is refused up front, because the backends would diverge
+    /// dangerously — git errors out, while jj's `commit` with no filesets would
+    /// silently commit the **entire** working copy.
     pub async fn commit_paths(&self, paths: &[String], message: &str) -> Result<()> {
+        if paths.is_empty() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "commit_paths requires at least one path: an empty set would error \
+                 on git but commit the entire working copy on jj",
+            )));
+        }
         match &self.backend {
             Backend::Git(g) => git_backend::commit_paths(g, &self.cwd, paths, message).await,
             Backend::Jj(j) => jj_backend::commit_paths(j, &self.cwd, paths, message).await,
@@ -1006,6 +1016,40 @@ mod tests {
         assert_eq!(changes[1].kind, ChangeKind::Added);
         assert_eq!(changes[2].kind, ChangeKind::Deleted);
         assert!(changes.iter().all(|c| c.old_path.is_none()));
+    }
+
+    // jj DOES supply the rename's original path (its `{old => new}` summary
+    // form) — `old_path` is populated on both backends, as the DTO documents.
+    #[tokio::test]
+    async fn jj_changed_files_populates_rename_old_path() {
+        let repo =
+            jj_repo(ScriptedRunner::new().on(["diff"], Reply::ok("R src/{old.rs => new.rs}\n")));
+        let changes = repo.changed_files().await.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, ChangeKind::Renamed);
+        assert_eq!(changes[0].path, "src/new.rs");
+        assert_eq!(changes[0].old_path.as_deref(), Some("src/old.rs"));
+    }
+
+    // `commit_paths(&[])` is refused up front on BOTH backends: the runners have
+    // no rules, so reaching the CLI would error differently — the guard must trip
+    // first (on jj an empty fileset would otherwise commit the whole working
+    // copy; on git it would exit 128).
+    #[tokio::test]
+    async fn commit_paths_refuses_an_empty_path_set() {
+        for repo in [
+            git_repo(ScriptedRunner::new()),
+            jj_repo(ScriptedRunner::new()),
+        ] {
+            let err = repo
+                .commit_paths(&[], "msg")
+                .await
+                .expect_err("empty paths must be refused");
+            assert!(
+                err.to_string().contains("at least one path"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[tokio::test]

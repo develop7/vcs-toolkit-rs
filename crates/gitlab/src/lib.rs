@@ -76,7 +76,9 @@ pub trait GitLabApi: Send + Sync {
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>>;
     /// Installed GitLab CLI version (`glab --version`).
     async fn version(&self) -> Result<String>;
-    /// Whether the user is authenticated (`glab auth status` exits zero).
+    /// Whether the user is authenticated (`glab auth status` exits zero). Reflects
+    /// the exit code as a bool — any non-zero exit reads as `false`, never an
+    /// error; only a spawn failure or timeout errors.
     ///
     /// **Caveat:** this reflects glab's exit code, and a long-standing glab bug
     /// ([gitlab-org/cli#911]) can make `glab auth status` exit `0` even when *not*
@@ -88,7 +90,9 @@ pub trait GitLabApi: Send + Sync {
     async fn auth_status(&self) -> Result<bool>;
     /// The project for `dir` (`glab repo view --output json`).
     async fn repo_view(&self, dir: &Path) -> Result<Project>;
-    /// Open merge requests for `dir` (`glab mr list --output json`).
+    /// Open merge requests for `dir`
+    /// (`glab mr list --per-page 100 --output json`). Returns up to 100 (100 is
+    /// the GitLab API per-page max); use [`run`](GitLabApi::run) for more.
     async fn mr_list(&self, dir: &Path) -> Result<Vec<MergeRequest>>;
     /// A single merge request by its project-scoped id
     /// (`glab mr view <id> --output json`).
@@ -142,10 +146,17 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
 
     async fn auth_status(&self) -> Result<bool> {
         // `glab auth status` exits 0 when authenticated, non-zero when not — an
-        // exit-code answer. `probe` reads it as a bool but still errors on a spawn
-        // failure, timeout, or any unexpected outcome, rather than silently
-        // reporting "not authenticated".
-        self.core.probe(self.core.command(["auth", "status"])).await
+        // exit-code answer. `code` reads the exit code without erroring on a
+        // non-zero one (a spawn failure or timeout still errors), so ANY non-zero
+        // exit — not just the documented 1 — maps to "not authenticated" rather
+        // than surfacing as an error (glab's exit codes are not contractual; see
+        // the #911 caveat on the trait method). `probe` would reject an unusual
+        // exit code.
+        Ok(self
+            .core
+            .code(self.core.command(["auth", "status"]))
+            .await?
+            == 0)
     }
 
     async fn repo_view(&self, dir: &Path) -> Result<Project> {
@@ -159,10 +170,12 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
     }
 
     async fn mr_list(&self, dir: &Path) -> Result<Vec<MergeRequest>> {
+        // `--per-page 100` (the GitLab API max) overrides glab's default page size
+        // of 30, which would otherwise silently truncate the list.
         self.core
             .try_parse(
                 self.core
-                    .command_in(dir, ["mr", "list", "--output", "json"]),
+                    .command_in(dir, ["mr", "list", "--per-page", "100", "--output", "json"]),
                 parse::from_json,
             )
             .await
@@ -393,7 +406,9 @@ mod tests {
         assert_eq!(mrs[0].target_branch, "main");
     }
 
-    // mr_list builds the `--output json` argv.
+    // mr_list builds the `--per-page 100 --output json` argv — the explicit
+    // per-page max overrides glab's default page size (30) so the list is not
+    // silently truncated.
     #[tokio::test]
     async fn mr_list_builds_output_json_argv() {
         let rec = RecordingRunner::replying(Reply::ok("[]"));
@@ -401,11 +416,12 @@ mod tests {
         glab.mr_list(Path::new("/repo")).await.expect("mr_list");
         assert_eq!(
             rec.only_call().args_str(),
-            ["mr", "list", "--output", "json"]
+            ["mr", "list", "--per-page", "100", "--output", "json"]
         );
     }
 
-    // Hermetic: auth_status reflects the exit code without erroring.
+    // Hermetic: auth_status reflects the exit code without erroring. ANY non-zero
+    // exit — not just the documented 1 — must read as `false`, never an error.
     #[tokio::test]
     async fn auth_status_reads_exit_code() {
         let yes = GitLab::with_runner(ScriptedRunner::new().on(["auth"], Reply::ok("")));
@@ -414,6 +430,9 @@ mod tests {
             ScriptedRunner::new().on(["auth"], Reply::fail(1, "not logged in")),
         );
         assert!(!no.auth_status().await.unwrap());
+        // An unexpected exit code (e.g. 2) is still just "not authenticated".
+        let weird = GitLab::with_runner(ScriptedRunner::new().on(["auth"], Reply::fail(2, "boom")));
+        assert!(!weird.auth_status().await.unwrap());
     }
 
     // A timed-out auth check must error, not silently report "not authenticated".

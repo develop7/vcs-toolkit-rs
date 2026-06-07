@@ -193,9 +193,10 @@ impl<R: ProcessRunner> Forge<R> {
         }
     }
 
-    /// Open a PR/MR, returning the CLI's output (the URL on success). `source`
-    /// (the source branch; `None` = the current branch) and `target` (the target;
-    /// `None` = the repo default) are owned `Option<String>`s.
+    /// Open a PR/MR, returning the CLI's success output — a URL on GitHub/GitLab;
+    /// `tea` prints a textual summary (no URL). `source` (the source branch;
+    /// `None` = the current branch) and `target` (the target; `None` = the repo
+    /// default) are owned `Option<String>`s.
     pub async fn pr_create(
         &self,
         title: &str,
@@ -374,6 +375,28 @@ mod tests {
         assert_eq!(prs[0].number, 7);
         assert_eq!(prs[0].state, ForgePrState::Merged);
         assert_eq!(prs[0].source_branch, "feat");
+    }
+
+    // GitLab `repo_view` maps a known "public" visibility to private == false.
+    #[tokio::test]
+    async fn gitlab_repo_view_maps_public_visibility() {
+        let json = r#"{"name":"cli","path_with_namespace":"gitlab-org/cli","default_branch":"main","web_url":"u","visibility":"public"}"#;
+        let forge = gitlab(ScriptedRunner::new().on(["repo", "view"], Reply::ok(json)));
+        let repo = forge.repo_view().await.unwrap();
+        assert_eq!(repo.owner, "gitlab-org");
+        assert_eq!(repo.name, "cli");
+        assert!(!repo.private);
+    }
+
+    // When glab omits `visibility`, the facade must NOT report the repo as private
+    // — an unknown visibility is the conservative `false`, never a false privacy.
+    #[tokio::test]
+    async fn gitlab_repo_view_absent_visibility_is_not_private() {
+        let json =
+            r#"{"name":"cli","path_with_namespace":"o/cli","default_branch":"main","web_url":"u"}"#;
+        let forge = gitlab(ScriptedRunner::new().on(["repo", "view"], Reply::ok(json)));
+        let repo = forge.repo_view().await.unwrap();
+        assert!(!repo.private, "absent visibility must not be private");
     }
 
     // GitLab's `iid` becomes the number and "opened" maps to Open.

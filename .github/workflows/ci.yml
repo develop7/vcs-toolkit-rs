@@ -33,6 +33,21 @@ jobs:
       # `tracing` (the per-command observability events).
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # Enforce the documented MSRV so the "machine-checked" claim is real. Pin the
+  # FULL 1.88.0 (not the `1.88` channel alias) so the floor can't silently drift.
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      # libs + bins only, deliberately NOT --all-targets: the MSRV contract is for
+      # consumers compiling the LIBRARIES, not our tests/benches/examples (which may
+      # use newer toolchain features). --all-features covers `mock` and `tracing`.
+      - run: cargo check --workspace --all-features
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
