@@ -77,7 +77,7 @@ When to reach for one — a short decision note:
 
 `vcs-git`:
 
-```rust,ignore
+```text
 pub fn RefName::new(name: impl Into<String>) -> Result<Self>  // signature shape
 pub fn RevSpec::new(rev:  impl Into<String>) -> Result<Self>
 ```

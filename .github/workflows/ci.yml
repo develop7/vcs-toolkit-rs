@@ -211,7 +211,11 @@ jobs:
       - run: glab --version || echo "glab not installed (tests will skip)"
       - run: tea --version || echo "tea not installed (tests will skip)"
       # The integration suites are `#[ignore]`d (need the real binaries); run them.
-      - run: cargo test --workspace --all-features -- --ignored
+      # `--tests` scopes this to unit + integration test targets and EXCLUDES
+      # doctests: `-- --ignored` would otherwise compile every `ignore`-marked guide
+      # fence (deliberately illustrative, not compiled — see the `doc` job, which
+      # owns doctest health via `cargo test --doc`).
+      - run: cargo test --workspace --all-features --tests -- --ignored
 
   audit:
     name: cargo-deny

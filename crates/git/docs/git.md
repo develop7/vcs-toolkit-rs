@@ -658,7 +658,7 @@ git.switch_with_stash(repo, "feature").await?;  // dirty tree comes along
 
 ### Blocking helpers
 
-```rust,ignore
+```text
 pub fn blocking::worktree_remove(dir: &Path, path: &Path, force: bool) -> std::io::Result<()>;
 ```
 
