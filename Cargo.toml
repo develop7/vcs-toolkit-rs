@@ -48,6 +48,11 @@ authors = ["Anton Zhelezniakou"]
 # git/jj/gh subprocess tree dies on close), with the `CliClient` core, the
 # `cli_client!` macro, structured `Error`, and the `ScriptedRunner`/`RecordingRunner`
 # test seams the wrappers build on. Was the internal `vcs-process` crate; now the
-# published `processkit`. 0.7.1 floor: `Error` is `#[non_exhaustive]` (gained
-# NotReady/Unsupported + feature-gated variants) and `Command` is `#[must_use]`.
-processkit = "0.7.1"
+# published `processkit`. 0.8 floor: `CliClient` verbs renamed for a single shared
+# vocabulary (`text`→`run`, `capture`→`output`, `unit`→`run_unit`, `code`→`exit_code`;
+# `ProcessResult::code()` is unchanged); `SupervisionOutcome` is `#[non_exhaustive]`;
+# `Error::Exit` Display gained a stderr-tail suffix (variant/fields unchanged); the
+# `cancellation` feature adds `CliClient::default_cancel_on` + `Reply::pending()`, and
+# the core `output_all` bounded fan-out (used by `vcs-jj`'s `workspace_roots`) ships
+# feature-free.
+processkit = "0.8"

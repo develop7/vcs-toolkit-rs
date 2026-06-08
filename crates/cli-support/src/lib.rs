@@ -189,4 +189,21 @@ mod tests {
             assert!(!is_transient_fetch_error(err));
         }
     }
+
+    // processkit 0.8's `cancellation` feature makes `Error::Cancelled` reachable
+    // (a client-level `default_cancel_on` killing an in-flight run). It must fall
+    // through every classifier to "no" — a cancelled fetch was *deliberately*
+    // stopped, so replaying it would fight the cancellation. (Behaviour already
+    // held via the `#[non_exhaustive]` fall-through above; this pins it as a
+    // first-class assertion now that the variant can be constructed.)
+    #[cfg(feature = "cancellation")]
+    #[test]
+    fn cancelled_is_not_transient_or_otherwise_classified() {
+        let cancelled = Error::Cancelled {
+            program: "git".into(),
+        };
+        assert!(!is_transient_fetch_error(&cancelled));
+        assert!(!is_merge_conflict(&cancelled));
+        assert!(!is_nothing_to_commit(&cancelled));
+    }
 }

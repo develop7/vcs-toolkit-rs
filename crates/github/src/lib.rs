@@ -15,6 +15,10 @@ use processkit::ProcessRunner;
 // Re-export the processkit types in this crate's public API (also brings
 // `Error`/`Result`/`ProcessResult` into scope here).
 pub use processkit::{Error, ProcessResult, Result};
+// Re-exported under the `cancellation` feature so a consumer can name the token
+// for `default_cancel_on` without taking a direct `processkit` dependency.
+#[cfg(feature = "cancellation")]
+pub use processkit::CancellationToken;
 
 mod parse;
 pub use parse::{
@@ -363,26 +367,26 @@ processkit::cli_client!(
 #[async_trait::async_trait]
 impl<R: ProcessRunner> GitHubApi for GitHub<R> {
     async fn run(&self, args: &[String]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     async fn version(&self) -> Result<String> {
-        self.core.text(self.core.command(["--version"])).await
+        self.core.run(self.core.command(["--version"])).await
     }
 
     async fn auth_status(&self) -> Result<bool> {
         // `gh auth status` exits 0 when authenticated, non-zero when not — an
-        // exit-code answer. `code` reads the exit code without erroring on a
+        // exit-code answer. `exit_code` reads the exit code without erroring on a
         // non-zero one (a spawn failure or timeout still errors), so ANY non-zero
         // exit — not just the documented 1 — maps to "not authenticated" rather
         // than surfacing as an error. `probe` would reject an unusual exit code.
         Ok(self
             .core
-            .code(self.core.command(["auth", "status"]))
+            .exit_code(self.core.command(["auth", "status"]))
             .await?
             == 0)
     }
@@ -476,12 +480,12 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
             args.push("--base");
             args.push(base);
         }
-        self.core.text(self.core.command_in(dir, args)).await
+        self.core.run(self.core.command_in(dir, args)).await
     }
 
     async fn api(&self, endpoint: &str) -> Result<String> {
         reject_flag_like("endpoint", endpoint)?;
-        self.core.text(self.core.command(["api", endpoint])).await
+        self.core.run(self.core.command(["api", endpoint])).await
     }
 
     async fn pr_merge(&self, dir: &Path, number: u64, merge: PrMerge) -> Result<()> {
@@ -493,13 +497,13 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
         if merge.delete_branch {
             args.push("--delete-branch");
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn pr_ready(&self, dir: &Path, number: u64) -> Result<()> {
         let n = number.to_string();
         self.core
-            .unit(self.core.command_in(dir, ["pr", "ready", n.as_str()]))
+            .run_unit(self.core.command_in(dir, ["pr", "ready", n.as_str()]))
             .await
     }
 
@@ -509,14 +513,14 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
         if delete_branch {
             args.push("--delete-branch");
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn pr_checks(&self, dir: &Path, number: u64) -> Result<Vec<CheckRun>> {
         let n = number.to_string();
         let res = self
             .core
-            .capture(
+            .output(
                 self.core
                     .command_in(dir, ["pr", "checks", n.as_str(), "--json", CHECK_FIELDS]),
             )
@@ -554,7 +558,7 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
             args.push("--body");
             args.push(body);
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn pr_comment(&self, dir: &Path, number: u64, body: &str) -> Result<String> {
@@ -562,7 +566,7 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
         // interactive prompt, which would hang a headless run.
         let n = number.to_string();
         self.core
-            .text(
+            .run(
                 self.core
                     .command_in(dir, ["pr", "comment", n.as_str(), "--body", body]),
             )
@@ -616,13 +620,13 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
         // passed: it would map the run's outcome onto the exit code (1 failed,
         // 2 cancelled), which can't be reported faithfully — the follow-up
         // `run view`'s `conclusion` can. Without it, a non-zero watch exit is a
-        // genuine error (no such run, auth, …). `capture` does NOT error on a
+        // genuine error (no such run, auth, …). `output` does NOT error on a
         // timeout (it returns the result with a timeout flag), so
         // `ensure_success` is what surfaces a killed watch as `Error::Timeout`
         // instead of reading a half-finished run below.
         let id_str = id.to_string();
         self.core
-            .capture(self.core.command_in(dir, ["run", "watch", id_str.as_str()]))
+            .output(self.core.command_in(dir, ["run", "watch", id_str.as_str()]))
             .await?
             .ensure_success()?;
         self.run_view(dir, id).await
@@ -630,7 +634,7 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
 
     async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String> {
         self.core
-            .text(
+            .run(
                 self.core
                     .command_in(dir, ["issue", "create", "--title", title, "--body", body]),
             )
@@ -687,13 +691,13 @@ impl<R: ProcessRunner> GitHub<R> {
     /// trait), so it can take `&[&str]`; forwards to the same path as
     /// [`GitHubApi::run`].
     pub async fn run_args(&self, args: &[&str]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     /// Like [`run_args`](GitHub::run_args) but never errors on a non-zero exit
     /// (mirrors [`GitHubApi::run_raw`]).
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     /// Bind this client to `dir`, returning a [`GitHubAt`] handle whose `dir`-taking
@@ -1238,7 +1242,7 @@ mod tests {
     }
 
     // A timed-out or failing watch must error — NOT report a half-finished run
-    // via the follow-up view. (`capture` does not error on a timeout; the
+    // via the follow-up view. (`output` does not error on a timeout; the
     // `ensure_success` in run_watch is what surfaces it.)
     #[tokio::test]
     async fn run_watch_surfaces_timeout_and_watch_errors() {
@@ -1258,6 +1262,35 @@ mod tests {
             gh.run_watch(Path::new("."), 42).await.unwrap_err(),
             Error::Exit { .. }
         ));
+    }
+
+    // Client-level cancellation (processkit 0.8 `cancellation` feature): a client
+    // built with `default_cancel_on(token)` threads the token into every command
+    // it builds, so a long `run_watch` parks until the token fires, then surfaces
+    // `Error::Cancelled` — a controller cancels without touching the call site
+    // (zero new vcs-* API). Hermetic via `Reply::pending()` (parks until the
+    // command's token fires) on a paused clock: the 1 h `timeout` elapses
+    // instantly while the call is parked, proving it does not resolve early.
+    #[cfg(feature = "cancellation")]
+    #[tokio::test(start_paused = true)]
+    async fn run_watch_cancels_via_client_default_token() {
+        use processkit::CancellationToken;
+        let token = CancellationToken::new();
+        let gh = GitHub::with_runner(ScriptedRunner::new().on(["run", "watch"], Reply::pending()))
+            .default_cancel_on(token.clone());
+        let call = gh.run_watch(Path::new("."), 42);
+        tokio::pin!(call);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3600), &mut call)
+                .await
+                .is_err(),
+            "run_watch must park until the token fires"
+        );
+        token.cancel();
+        match call.await {
+            Err(Error::Cancelled { program }) => assert_eq!(program, "gh"),
+            other => panic!("expected Error::Cancelled, got {other:?}"),
+        }
     }
 
     #[tokio::test]

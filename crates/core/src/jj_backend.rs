@@ -293,11 +293,14 @@ pub(crate) async fn list_worktrees<R: ProcessRunner>(
     jj: &Jj<R>,
     dir: &Path,
 ) -> Result<Vec<WorktreeInfo>> {
-    // jj's `Workspace` carries no path, so resolve each via `workspace root`.
+    // jj's `Workspace` carries no path, so resolve each via `workspace root` —
+    // batched in one bounded fan-out rather than awaited one workspace at a time.
     let workspaces = jj.workspace_list(dir).await?;
+    let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+    let roots = jj.workspace_roots(dir, &names).await;
     let mut out = Vec::new();
-    for ws in workspaces {
-        let Ok(root) = jj.workspace_root(dir, Some(ws.name.clone())).await else {
+    for (ws, root) in workspaces.into_iter().zip(roots) {
+        let Ok(root) = root else {
             continue; // No useful entry without a path.
         };
         out.push(WorktreeInfo {
@@ -367,8 +370,11 @@ async fn workspace_name_for_path<R: ProcessRunner>(
     path: &Path,
 ) -> Result<String> {
     let target = normalize_for_compare(path);
-    for ws in jj.workspace_list(dir).await? {
-        let Ok(root) = jj.workspace_root(dir, Some(ws.name.clone())).await else {
+    let workspaces = jj.workspace_list(dir).await?;
+    let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
+    let roots = jj.workspace_roots(dir, &names).await;
+    for (ws, root) in workspaces.into_iter().zip(roots) {
+        let Ok(root) = root else {
             continue;
         };
         if normalize_for_compare(&root) == target || root == path {

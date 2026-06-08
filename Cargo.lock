@@ -644,9 +644,9 @@ dependencies = [
 
 [[package]]
 name = "processkit"
-version = "0.7.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4655e65f3eb0c1f1e18ecd09ee7721ea1d3718c1ce0223347765bcf6526fb782"
+checksum = "41612896e7ada44d47ad81200ebcf67dad87ffc6bb129c84f22a6def861f70e3"
 dependencies = [
  "async-trait",
  "encoding_rs",
@@ -655,6 +655,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "windows-sys 0.61.2",
 ]

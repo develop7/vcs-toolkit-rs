@@ -48,7 +48,7 @@ exposes the same shape — an **interface trait**
 and fail with the structured `processkit::Error`; pure parsers live in each crate's
 `parse.rs`. Each client wraps a single `core: processkit::CliClient<R>` field that
 owns the binary name, runner, and optional `default_timeout` and provides the
-`command`/`command_in` builders and the `text`/`capture`/`unit`/`code`/`parse`/
+`command`/`command_in` builders and the `run`/`output`/`run_unit`/`exit_code`/`parse`/
 `try_parse` terminals — so a method is one line and a new wrapper is just a
 `const BINARY`, the `processkit::cli_client!(pub struct X => BINARY)` macro (which
 emits the `core` field, `new`/`Default`/`with_runner`/`default_timeout`), its

@@ -26,6 +26,10 @@ use processkit::ProcessRunner;
 // consumers needn't depend on processkit directly. (`Error`/`Result`/`ProcessResult`
 // are in scope here too via this `pub use`.)
 pub use processkit::{Error, ProcessResult, Result};
+// Re-exported under the `cancellation` feature so a consumer can name the token
+// for `default_cancel_on` without taking a direct `processkit` dependency.
+#[cfg(feature = "cancellation")]
+pub use processkit::CancellationToken;
 
 pub mod conflict;
 mod parse;
@@ -742,15 +746,15 @@ processkit::cli_client!(
 #[async_trait::async_trait]
 impl<R: ProcessRunner> GitApi for Git<R> {
     async fn run(&self, args: &[String]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     async fn version(&self) -> Result<String> {
-        self.core.text(self.core.command(["--version"])).await
+        self.core.run(self.core.command(["--version"])).await
     }
 
     async fn capabilities(&self) -> Result<GitCapabilities> {
@@ -774,7 +778,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn status_text(&self, dir: &Path) -> Result<String> {
         self.core
-            .text(self.core.command_in(dir, ["status", "--porcelain=v1"]))
+            .run(self.core.command_in(dir, ["status", "--porcelain=v1"]))
             .await
     }
 
@@ -819,7 +823,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn current_branch(&self, dir: &Path) -> Result<String> {
         self.core
-            .text(
+            .run(
                 self.core
                     .command_in(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
             )
@@ -878,19 +882,21 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String> {
         reject_flag_like("revision", rev)?;
         self.core
-            .text(self.core.command_in(dir, ["rev-parse", rev]))
+            .run(self.core.command_in(dir, ["rev-parse", rev]))
             .await
     }
 
     async fn rev_parse_short(&self, dir: &Path, rev: &str) -> Result<String> {
         reject_flag_like("revision", rev)?;
         self.core
-            .text(self.core.command_in(dir, ["rev-parse", "--short", rev]))
+            .run(self.core.command_in(dir, ["rev-parse", "--short", rev]))
             .await
     }
 
     async fn init(&self, dir: &Path) -> Result<()> {
-        self.core.unit(self.core.command_in(dir, ["init"])).await
+        self.core
+            .run_unit(self.core.command_in(dir, ["init"]))
+            .await
     }
 
     async fn add(&self, dir: &Path, paths: &[PathBuf]) -> Result<()> {
@@ -899,13 +905,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         for path in paths {
             command = command.arg(path);
         }
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn commit(&self, dir: &Path, message: &str) -> Result<()> {
         // C locale: a failure's output feeds `is_nothing_to_commit`.
         self.core
-            .unit(c_locale(
+            .run_unit(c_locale(
                 self.core.command_in(dir, ["commit", "-m", message]),
             ))
             .await
@@ -914,21 +920,21 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn create_branch(&self, dir: &Path, name: &str) -> Result<()> {
         reject_flag_like("branch name", name)?;
         self.core
-            .unit(self.core.command_in(dir, ["branch", name]))
+            .run_unit(self.core.command_in(dir, ["branch", name]))
             .await
     }
 
     async fn checkout(&self, dir: &Path, reference: &str) -> Result<()> {
         reject_flag_like("reference", reference)?;
         self.core
-            .unit(self.core.command_in(dir, ["checkout", reference]))
+            .run_unit(self.core.command_in(dir, ["checkout", reference]))
             .await
     }
 
     async fn checkout_detach(&self, dir: &Path, commit: &str) -> Result<()> {
         reject_flag_like("commit", commit)?;
         self.core
-            .unit(self.core.command_in(dir, ["checkout", "--detach", commit]))
+            .run_unit(self.core.command_in(dir, ["checkout", "--detach", commit]))
             .await
     }
 
@@ -944,12 +950,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         for path in &spec.paths {
             command = command.arg(path);
         }
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn last_commit_message(&self, dir: &Path) -> Result<String> {
         self.core
-            .text(self.core.command_in(dir, ["log", "-1", "--format=%B"]))
+            .run(self.core.command_in(dir, ["log", "-1", "--format=%B"]))
             .await
     }
 
@@ -977,7 +983,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn common_dir(&self, dir: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(
             self.core
-                .text(self.core.command_in(dir, ["rev-parse", "--git-common-dir"]))
+                .run(self.core.command_in(dir, ["rev-parse", "--git-common-dir"]))
                 .await?,
         ))
     }
@@ -985,7 +991,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn git_dir(&self, dir: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(
             self.core
-                .text(self.core.command_in(dir, ["rev-parse", "--git-dir"]))
+                .run(self.core.command_in(dir, ["rev-parse", "--git-dir"]))
                 .await?,
         ))
     }
@@ -995,7 +1001,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // `^{commit}` peels an annotated tag down to the commit it points at.
         let spec = format!("{rev}^{{commit}}");
         self.core
-            .text(
+            .run(
                 self.core
                     .command_in(dir, ["rev-parse", "--verify", spec.as_str()]),
             )
@@ -1008,7 +1014,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // code rather than `?`.
         let res = self
             .core
-            .capture(
+            .output(
                 self.core
                     .command_in(dir, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]),
             )
@@ -1040,7 +1046,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn remote_branch_exists(&self, dir: &Path, name: &str) -> Result<bool> {
         // No credential prompt, bounded wait: a missing helper or a flaky network
-        // must not hang the call. `capture` reports a timeout as a flagged result
+        // must not hang the call. `output` reports a timeout as a flagged result
         // (non-zero exit) rather than erroring, so an unreachable remote reads as
         // "absent" (`false`) — the best-effort answer a probe wants. A genuine
         // spawn failure (no `git`) still surfaces as an error.
@@ -1054,14 +1060,14 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .command_in(dir, ["ls-remote", "origin", refname.as_str()])
             .env("GIT_TERMINAL_PROMPT", "0")
             .timeout(Duration::from_secs(10));
-        let res = self.core.capture(cmd).await?;
+        let res = self.core.output(cmd).await?;
         Ok(res.code() == Some(0) && !res.stdout().trim().is_empty())
     }
 
     async fn remote_url(&self, dir: &Path, remote: &str) -> Result<String> {
         reject_flag_like("remote name", remote)?;
         self.core
-            .text(self.core.command_in(dir, ["remote", "get-url", remote]))
+            .run(self.core.command_in(dir, ["remote", "get-url", remote]))
             .await
     }
 
@@ -1070,7 +1076,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // exits non-zero — surface that as `None` rather than an error.
         match self
             .core
-            .capture(self.core.command_in(
+            .output(self.core.command_in(
                 dir,
                 ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
             ))
@@ -1103,7 +1109,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // never match (a false "not merged").
         let out = self
             .core
-            .text(
+            .run(
                 self.core
                     .command_in(dir, ["branch", "--merged", target, "--no-column"]),
             )
@@ -1121,7 +1127,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("branch name", branch)?;
         let flag = format!("--set-upstream-to={upstream}");
         self.core
-            .unit(self.core.command_in(dir, ["branch", flag.as_str(), branch]))
+            .run_unit(self.core.command_in(dir, ["branch", flag.as_str(), branch]))
             .await
     }
 
@@ -1129,7 +1135,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("branch name", name)?;
         let flag = if force { "-D" } else { "-d" };
         self.core
-            .unit(self.core.command_in(dir, ["branch", flag, name]))
+            .run_unit(self.core.command_in(dir, ["branch", flag, name]))
             .await
     }
 
@@ -1137,7 +1143,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("branch name", old)?;
         reject_flag_like("branch name", new)?;
         self.core
-            .unit(self.core.command_in(dir, ["branch", "-m", old, new]))
+            .run_unit(self.core.command_in(dir, ["branch", "-m", old, new]))
             .await
     }
 
@@ -1199,7 +1205,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // would otherwise change the headers and make every file silently vanish
         // from the parse. (Command-line prefixes override both config options.)
         self.core
-            .text(self.core.command_in(
+            .run(self.core.command_in(
                 dir,
                 [
                     "diff",
@@ -1249,7 +1255,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet"]))
             .env("GIT_TERMINAL_PROMPT", "0")
             .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
-        self.core.unit(cmd).await
+        self.core.run_unit(cmd).await
     }
 
     async fn fetch_from(&self, dir: &Path, remote: &str) -> Result<()> {
@@ -1262,7 +1268,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet", remote]))
             .env("GIT_TERMINAL_PROMPT", "0")
             .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
-        self.core.unit(cmd).await
+        self.core.run_unit(cmd).await
     }
 
     async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()> {
@@ -1273,7 +1279,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         )
         .env("GIT_TERMINAL_PROMPT", "0")
         .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
-        self.core.unit(cmd).await
+        self.core.run_unit(cmd).await
     }
 
     async fn push(&self, dir: &Path, spec: GitPush) -> Result<()> {
@@ -1289,13 +1295,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .core
             .command_in(dir, args)
             .env("GIT_TERMINAL_PROMPT", "0");
-        self.core.unit(cmd).await
+        self.core.run_unit(cmd).await
     }
 
     async fn merge_squash(&self, dir: &Path, branch: &str) -> Result<()> {
         reject_flag_like("branch", branch)?;
         self.core
-            .unit(self.core.command_in(dir, ["merge", "--squash", branch]))
+            .run_unit(self.core.command_in(dir, ["merge", "--squash", branch]))
             .await
     }
 
@@ -1316,7 +1322,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         args.push(&spec.branch);
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(c_locale(self.core.command_in(dir, args)))
+            .run_unit(c_locale(self.core.command_in(dir, args)))
             .await
     }
 
@@ -1333,13 +1339,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         args.push(&spec.branch);
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(c_locale(self.core.command_in(dir, args)))
+            .run_unit(c_locale(self.core.command_in(dir, args)))
             .await
     }
 
     async fn merge_abort(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(c_locale(self.core.command_in(dir, ["merge", "--abort"])))
+            .run_unit(c_locale(self.core.command_in(dir, ["merge", "--abort"])))
             .await
     }
 
@@ -1349,7 +1355,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // C locale: the failure output feeds the classifiers (a still-conflicted
         // tree reports "nothing to commit"-adjacent / conflict messages).
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["commit", "--no-edit"]),
             )))
             .await
@@ -1357,14 +1363,14 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn reset_merge(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["reset", "--merge"]))
+            .run_unit(self.core.command_in(dir, ["reset", "--merge"]))
             .await
     }
 
     async fn reset_hard(&self, dir: &Path, rev: &str) -> Result<()> {
         reject_flag_like("revision", rev)?;
         self.core
-            .unit(self.core.command_in(dir, ["reset", "--hard", rev]))
+            .run_unit(self.core.command_in(dir, ["reset", "--hard", rev]))
             .await
     }
 
@@ -1374,7 +1380,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // the message-confirm on `--continue`) never hangs a headless caller.
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["rebase", onto]),
             )))
             .await
@@ -1382,13 +1388,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn rebase_abort(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(c_locale(self.core.command_in(dir, ["rebase", "--abort"])))
+            .run_unit(c_locale(self.core.command_in(dir, ["rebase", "--abort"])))
             .await
     }
 
     async fn rebase_continue(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["rebase", "--continue"]),
             )))
             .await
@@ -1399,12 +1405,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if include_untracked {
             command = command.arg("--include-untracked");
         }
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn stash_pop(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["stash", "pop"]))
+            .run_unit(self.core.command_in(dir, ["stash", "pop"]))
             .await
     }
 
@@ -1436,7 +1442,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if let Some(commitish) = spec.commitish.as_deref() {
             command = command.arg(commitish);
         }
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn worktree_remove(&self, dir: &Path, path: &Path, force: bool) -> Result<()> {
@@ -1445,7 +1451,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             command = command.arg("--force");
         }
         command = command.arg(path);
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn worktree_move(&self, dir: &Path, from: &Path, to: &Path) -> Result<()> {
@@ -1454,12 +1460,12 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .command_in(dir, ["worktree", "move"])
             .arg(from)
             .arg(to);
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn worktree_prune(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(self.core.command_in(dir, ["worktree", "prune"]))
+            .run_unit(self.core.command_in(dir, ["worktree", "prune"]))
             .await
     }
 
@@ -1481,7 +1487,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             command = command.arg("--bare");
         }
         let command = command.arg(url).arg(dest).env("GIT_TERMINAL_PROMPT", "0");
-        self.core.unit(command).await
+        self.core.run_unit(command).await
     }
 
     async fn tag_create(&self, dir: &Path, name: &str, rev: Option<String>) -> Result<()> {
@@ -1493,7 +1499,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if let Some(rev) = rev.as_deref() {
             args.push(rev);
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn tag_create_annotated(&self, dir: &Path, spec: AnnotatedTag) -> Result<()> {
@@ -1505,7 +1511,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if let Some(rev) = spec.rev.as_deref() {
             args.push(rev);
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn tag_list(&self, dir: &Path) -> Result<Vec<String>> {
@@ -1513,7 +1519,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // onto one line even when piped, corrupting the one-per-line split.
         let out = self
             .core
-            .text(self.core.command_in(dir, ["tag", "--list", "--no-column"]))
+            .run(self.core.command_in(dir, ["tag", "--list", "--no-column"]))
             .await?;
         Ok(out.lines().map(str::to_string).collect())
     }
@@ -1521,7 +1527,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn tag_delete(&self, dir: &Path, name: &str) -> Result<()> {
         reject_flag_like("tag name", name)?;
         self.core
-            .unit(self.core.command_in(dir, ["tag", "-d", name]))
+            .run_unit(self.core.command_in(dir, ["tag", "-d", name]))
             .await
     }
 
@@ -1537,7 +1543,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         let path = path.replace('\\', "/");
         let spec = format!("{rev}:{path}");
         self.core
-            .text(self.core.command_in(dir, ["show", spec.as_str()]))
+            .run(self.core.command_in(dir, ["show", spec.as_str()]))
             .await
     }
 
@@ -1545,7 +1551,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("config key", key)?;
         let res = self
             .core
-            .capture(self.core.command_in(dir, ["config", "--get", key]))
+            .output(self.core.command_in(dir, ["config", "--get", key]))
             .await?;
         match res.code() {
             // Exit 1 = unset (git lumps "no such key/section" in here too).
@@ -1561,7 +1567,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn config_set(&self, dir: &Path, key: &str, value: &str) -> Result<()> {
         reject_flag_like("config key", key)?;
         self.core
-            .unit(self.core.command_in(dir, ["config", key, value]))
+            .run_unit(self.core.command_in(dir, ["config", key, value]))
             .await
     }
 
@@ -1569,7 +1575,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("remote name", name)?;
         reject_flag_like("url", url)?;
         self.core
-            .unit(self.core.command_in(dir, ["remote", "add", name, url]))
+            .run_unit(self.core.command_in(dir, ["remote", "add", name, url]))
             .await
     }
 
@@ -1577,7 +1583,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("remote name", name)?;
         reject_flag_like("url", url)?;
         self.core
-            .unit(self.core.command_in(dir, ["remote", "set-url", name, url]))
+            .run_unit(self.core.command_in(dir, ["remote", "set-url", name, url]))
             .await
     }
 
@@ -1604,7 +1610,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // No editor opens non-interactively, but keep the headless backstop.
         // C locale: a conflict's output feeds `is_merge_conflict`.
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["cherry-pick", rev]),
             )))
             .await
@@ -1613,7 +1619,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn revert(&self, dir: &Path, rev: &str) -> Result<()> {
         reject_flag_like("revision", rev)?;
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["revert", "--no-edit", rev]),
             )))
             .await
@@ -1621,7 +1627,7 @@ impl<R: ProcessRunner> GitApi for Git<R> {
 
     async fn rebase_skip(&self, dir: &Path) -> Result<()> {
         self.core
-            .unit(no_editor(c_locale(
+            .run_unit(no_editor(c_locale(
                 self.core.command_in(dir, ["rebase", "--skip"]),
             )))
             .await
@@ -1675,13 +1681,13 @@ impl<R: ProcessRunner> Git<R> {
     /// trait), so it can take `&[&str]`; forwards to the same path as
     /// [`GitApi::run`].
     pub async fn run_args(&self, args: &[&str]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     /// Like [`run_args`](Git::run_args) but never errors on a non-zero exit
     /// (mirrors [`GitApi::run_raw`]).
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     /// Bind this client to `dir`, returning a [`GitAt`] handle whose methods omit
@@ -1785,7 +1791,7 @@ impl<R: ProcessRunner> Git<R> {
     async fn resolved_git_dir(&self, dir: &Path) -> Result<PathBuf> {
         let git_dir = PathBuf::from(
             self.core
-                .text(self.core.command_in(dir, ["rev-parse", "--git-dir"]))
+                .run(self.core.command_in(dir, ["rev-parse", "--git-dir"]))
                 .await?,
         );
         Ok(if git_dir.is_absolute() {
@@ -2652,6 +2658,36 @@ mod tests {
         let git = Git::with_runner(&rec);
         assert!(git.fetch(Path::new("/r")).await.is_err());
         assert_eq!(rec.calls().len(), 1);
+    }
+
+    // Client-level cancellation (processkit 0.8 `cancellation` feature) on a
+    // *retried* op: a `fetch` built on a client with `default_cancel_on(token)`
+    // parks until the token fires, then surfaces `Error::Cancelled` — and because
+    // cancellation is **terminal** (not transient), the fetch-retry does NOT
+    // replay it (one spawn, not FETCH_ATTEMPTS). Hermetic via `Reply::pending()`
+    // on a paused clock.
+    #[cfg(feature = "cancellation")]
+    #[tokio::test(start_paused = true)]
+    async fn fetch_cancels_and_does_not_retry() {
+        use processkit::CancellationToken;
+        let token = CancellationToken::new();
+        let rec = RecordingRunner::new(ScriptedRunner::new().on(["fetch"], Reply::pending()));
+        let git = Git::with_runner(&rec).default_cancel_on(token.clone());
+        let call = git.fetch(Path::new("/r"));
+        tokio::pin!(call);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3600), &mut call)
+                .await
+                .is_err(),
+            "fetch must park until the token fires"
+        );
+        token.cancel();
+        assert!(matches!(call.await.unwrap_err(), Error::Cancelled { .. }));
+        assert_eq!(
+            rec.calls().len(),
+            1,
+            "cancellation is terminal — the fetch-retry must not replay it"
+        );
     }
 
     // The injection guard: a flag-shaped value in any exposed positional slot

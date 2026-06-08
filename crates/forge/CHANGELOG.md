@@ -44,9 +44,13 @@ crates; tag releases as `vcs-forge-v<version>`.
   consumer (e.g. `vcs-mcp`) can emit them as JSON. **Off by default.**
 
 ### Changed
-- Bumped `processkit` to **0.7** — `Error::Forge` wraps the now-`#[non_exhaustive]`
-  `processkit::Error`, which gains variants. Breaking for consumers matching
-  the wrapped error exhaustively.
+- Bumped `processkit` to **0.8** — `Error::Forge` wraps the `#[non_exhaustive]`
+  `processkit::Error`; `Error::Exit` Display gained a stderr-tail suffix. Breaking
+  for consumers matching the wrapped error exhaustively, or bumping their own
+  direct `processkit` separately (caret `"0.7"` does not span 0.8).
+- New off-by-default **`cancellation`** feature, forwarding to each wrapper's —
+  build a cancellable `GitHub`/`GitLab`/`Gitea` (via `default_cancel_on`) and hand
+  it to `Forge::for_github`/… to cancel a long `run_watch`/fetch. No new API.
 - `pr_create` doc honesty: it returns the CLI's success output — a URL on
   GitHub/GitLab, but a textual summary on Gitea (tea prints no URL and has no
   flag to shape the create output). `issue_create` mirrors the contract (tea

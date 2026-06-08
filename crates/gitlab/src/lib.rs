@@ -23,6 +23,10 @@ use processkit::ProcessRunner;
 // Re-export the processkit types in this crate's public API (also brings
 // `Error`/`Result`/`ProcessResult` into scope here).
 pub use processkit::{Error, ProcessResult, Result};
+// Re-exported under the `cancellation` feature so a consumer can name the token
+// for `default_cancel_on` without taking a direct `processkit` dependency.
+#[cfg(feature = "cancellation")]
+pub use processkit::CancellationToken;
 
 mod parse;
 pub use parse::{CiStatus, Issue, MergeRequest, Project, Release};
@@ -198,20 +202,20 @@ processkit::cli_client!(
 #[async_trait::async_trait]
 impl<R: ProcessRunner> GitLabApi for GitLab<R> {
     async fn run(&self, args: &[String]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     async fn version(&self) -> Result<String> {
-        self.core.text(self.core.command(["--version"])).await
+        self.core.run(self.core.command(["--version"])).await
     }
 
     async fn auth_status(&self) -> Result<bool> {
         // `glab auth status` exits 0 when authenticated, non-zero when not — an
-        // exit-code answer. `code` reads the exit code without erroring on a
+        // exit-code answer. `exit_code` reads the exit code without erroring on a
         // non-zero one (a spawn failure or timeout still errors), so ANY non-zero
         // exit — not just the documented 1 — maps to "not authenticated" rather
         // than surfacing as an error (glab's exit codes are not contractual; see
@@ -219,7 +223,7 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
         // exit code.
         Ok(self
             .core
-            .code(self.core.command(["auth", "status"]))
+            .exit_code(self.core.command(["auth", "status"]))
             .await?
             == 0)
     }
@@ -277,7 +281,7 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
             args.push("--target-branch");
             args.push(target);
         }
-        self.core.text(self.core.command_in(dir, args)).await
+        self.core.run(self.core.command_in(dir, args)).await
     }
 
     async fn mr_merge(&self, dir: &Path, id: u64, strategy: MergeStrategy) -> Result<()> {
@@ -292,13 +296,13 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
         if let Some(flag) = strategy.flag() {
             args.push(flag);
         }
-        self.core.unit(self.core.command_in(dir, args)).await
+        self.core.run_unit(self.core.command_in(dir, args)).await
     }
 
     async fn mr_ready(&self, dir: &Path, id: u64) -> Result<()> {
         let id = id.to_string();
         self.core
-            .unit(
+            .run_unit(
                 self.core
                     .command_in(dir, ["mr", "update", id.as_str(), "--ready"]),
             )
@@ -308,7 +312,7 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
     async fn mr_close(&self, dir: &Path, id: u64) -> Result<()> {
         let id = id.to_string();
         self.core
-            .unit(self.core.command_in(dir, ["mr", "close", id.as_str()]))
+            .run_unit(self.core.command_in(dir, ["mr", "close", id.as_str()]))
             .await
     }
 
@@ -352,7 +356,7 @@ impl<R: ProcessRunner> GitLabApi for GitLab<R> {
         // `--yes` skips glab's interactive submission confirmation (a headless
         // run would otherwise hang on the prompt) — same as `mr_create`.
         self.core
-            .text(self.core.command_in(
+            .run(self.core.command_in(
                 dir,
                 [
                     "issue",
@@ -399,13 +403,13 @@ impl<R: ProcessRunner> GitLab<R> {
     /// trait), so it can take `&[&str]`; forwards to the same path as
     /// [`GitLabApi::run`].
     pub async fn run_args(&self, args: &[&str]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     /// Like [`run_args`](GitLab::run_args) but never errors on a non-zero exit
     /// (mirrors [`GitLabApi::run_raw`]).
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     /// Bind a working directory, so the project-scoped methods omit that argument:

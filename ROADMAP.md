@@ -279,20 +279,34 @@ additive follow-ups, not a blocking wave.
 
 ### Upstream-gated (specs delivered to ProcessKit-rs)
 
-- **6.13 Cancellable operations — spec delivered upstream** (toolkit adoption
-  pending a processkit release). processkit 0.7 ships per-command
-  `Command::cancel_on`, but the typed wrappers consume their `Command`
-  internally, so adopting it would mean either `CancellationToken` parameters
-  in the object-safe `*Api` traits or per-call plumbing at every construction
-  site — both rejected. The requirements note handed to the ProcessKit project
-  (the client-cancellation spec, sibling of the 5.2 streaming spec) asks for a
-  **client-level** `CliClient::default_cancel_on`
-  (+ `cli_client!` emission, + a doubles story so cancellation is hermetically
-  testable). Once shipped, adoption needs **zero new vcs-* API** — consumers
-  pass a pre-configured client through the existing
-  `Repo::from_git`/`Forge::for_github` constructors; we add only a classifier
-  test (`Cancelled` → not transient) and a cookbook recipe. Until then,
-  drop-the-future (kill-on-close) remains the supported cancellation path.
+- **6.13 ✅ Cancellable operations — adopted (processkit 0.8).** The
+  client-cancellation spec landed in processkit 0.8: a **client-level**
+  `CliClient::default_cancel_on(token)` re-emitted on the `cli_client!` wrappers
+  (so `Git`/`Jj`/`GitHub`/… gain `default_cancel_on` when the `cancellation`
+  feature is on), plus `Reply::pending()` so the path is hermetically testable.
+  Adoption needed **zero new vcs-* API** exactly as predicted: an off-by-default
+  `cancellation` feature on each wrapper (forwarded by `vcs-core`/`vcs-forge`)
+  turns the builder on; a consumer builds a cancellable client and passes it
+  through the existing `Repo::from_git`/`Forge::for_github` constructors, then a
+  controller calls `token.cancel()` to kill every in-flight call (`Error::Cancelled`,
+  treated as terminal by the fetch-retry). Shipped with it: hermetic paused-clock
+  cancellation tests (`run_watch` in vcs-github, retried `fetch` in vcs-git, via
+  `Reply::pending()`), an explicit `Cancelled → not transient` classifier test, a
+  cookbook recipe, and the testing-guide pattern. (Per-command `Command::cancel_on`
+  in the object-safe `*Api` traits stays rejected — the client-level default is the
+  ergonomic, mock-friendly seam.)
+
+- **6.14 Other processkit 0.8 features — evaluated, shelved (no consumer).** The
+  0.8 bump also offered streaming hardening (R1–R3: handler-panic isolation,
+  ordering, scripted-stream replay) and `ProcessRunner::start`, pipeline
+  `unchecked()`/`|`, `ProcessResult::outcome()`, supervisor storm-guard, and
+  `kill_on_parent_death`. The toolkit has **no consumer** for any: zero
+  `on_*_line` streaming wrappers, zero `.pipe()` chains, no `Supervisor`,
+  kill-on-drop already covers process teardown, and the transient classifier is
+  message-based (so `outcome()` is a non-improvement). The one fan-out primitive
+  with a real (if minor) consumer — `output_all` for jj-workspace enumeration —
+  *was* adopted (see `vcs-jj`'s `workspace_roots`). Revisit the rest only when a
+  consumer appears.
 
 ## 7. Architecture program R → A → S (post-§6 fresh-eyes review)
 

@@ -19,10 +19,15 @@ crates; tag releases as `vcs-cli-support-v<version>`.
   classifiers can no longer drift between backends.
 
 ### Changed
-- Bumped `processkit` to **0.7** — `Error` (taken by the classifiers) is now
-  `#[non_exhaustive]` with new variants; an unfamiliar variant classifies as
-  "no" on every classifier (covered by a test). Breaking for consumers
-  matching `processkit::Error` exhaustively.
+- Bumped `processkit` to **0.8** — `Error` (taken by the classifiers) stays
+  `#[non_exhaustive]`; an unfamiliar variant classifies as "no" on every
+  classifier (covered by a test). Breaking for consumers matching
+  `processkit::Error` exhaustively.
+- New off-by-default **`cancellation`** feature (forwards to
+  `processkit/cancellation`): the classifiers only match `Exit`/`Timeout`, so
+  `Error::Cancelled` already falls through every one to "no"; the feature only lets
+  a test construct the variant to pin that (not transient, not a conflict, not
+  nothing-to-commit) as a first-class assertion.
 - `reject_flag_like` also refuses whitespace-only values (as meaning-changing as
   empty ones), not just empty and leading-`-`.
 

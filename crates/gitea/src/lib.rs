@@ -32,6 +32,10 @@ use processkit::ProcessRunner;
 // Re-export the processkit types in this crate's public API (also brings
 // `Error`/`Result`/`ProcessResult` into scope here).
 pub use processkit::{Error, ProcessResult, Result};
+// Re-exported under the `cancellation` feature so a consumer can name the token
+// for `default_cancel_on` without taking a direct `processkit` dependency.
+#[cfg(feature = "cancellation")]
+pub use processkit::CancellationToken;
 
 mod parse;
 pub use parse::{Issue, PullRequest, Release};
@@ -192,26 +196,26 @@ processkit::cli_client!(
 #[async_trait::async_trait]
 impl<R: ProcessRunner> GiteaApi for Gitea<R> {
     async fn run(&self, args: &[String]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     async fn run_raw(&self, args: &[String]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     async fn version(&self) -> Result<String> {
-        self.core.text(self.core.command(["--version"])).await
+        self.core.run(self.core.command(["--version"])).await
     }
 
     async fn auth_status(&self) -> Result<bool> {
         // `tea login list --output json` is a global (non-repo) command that
         // yields the configured logins as a JSON array; non-empty ⇒ logged in.
-        // `capture` (not `text`) so a NON-ZERO exit — e.g. tea erroring because no
+        // `output` (not `run`) so a NON-ZERO exit — e.g. tea erroring because no
         // config file exists yet — reads as "not logged in" rather than surfacing
         // as an error; a spawn failure or timeout still errors via `ensure_success`.
         let res = self
             .core
-            .capture(self.core.command(["login", "list", "--output", "json"]))
+            .output(self.core.command(["login", "list", "--output", "json"]))
             .await?;
         if res.code() != Some(0) {
             // A timeout / signal-kill (no exit code) is a genuine failure;
@@ -293,13 +297,13 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
             args.push("--base");
             args.push(base);
         }
-        self.core.text(self.core.command_in(dir, args)).await
+        self.core.run(self.core.command_in(dir, args)).await
     }
 
     async fn pr_merge(&self, dir: &Path, number: u64, strategy: MergeStrategy) -> Result<()> {
         let n = number.to_string();
         self.core
-            .unit(self.core.command_in(
+            .run_unit(self.core.command_in(
                 dir,
                 ["pr", "merge", n.as_str(), "--style", strategy.style()],
             ))
@@ -309,7 +313,7 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
     async fn pr_close(&self, dir: &Path, number: u64) -> Result<()> {
         let n = number.to_string();
         self.core
-            .unit(self.core.command_in(dir, ["pr", "close", n.as_str()]))
+            .run_unit(self.core.command_in(dir, ["pr", "close", n.as_str()]))
             .await
     }
 
@@ -354,7 +358,7 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
 
     async fn issue_create(&self, dir: &Path, title: &str, body: &str) -> Result<String> {
         self.core
-            .text(self.core.command_in(
+            .run(self.core.command_in(
                 dir,
                 ["issues", "create", "--title", title, "--description", body],
             ))
@@ -382,13 +386,13 @@ impl<R: ProcessRunner> Gitea<R> {
     /// trait), so it can take `&[&str]`; forwards to the same path as
     /// [`GiteaApi::run`].
     pub async fn run_args(&self, args: &[&str]) -> Result<String> {
-        self.core.text(self.core.command(args)).await
+        self.core.run(self.core.command(args)).await
     }
 
     /// Like [`run_args`](Gitea::run_args) but never errors on a non-zero exit
     /// (mirrors [`GiteaApi::run_raw`]).
     pub async fn run_raw_args(&self, args: &[&str]) -> Result<ProcessResult<String>> {
-        self.core.capture(self.core.command(args)).await
+        self.core.output(self.core.command(args)).await
     }
 
     /// Bind a working directory, so the repo-scoped methods omit that argument:

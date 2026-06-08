@@ -14,3 +14,10 @@ readme = "README.md"
 # launcher the wrappers share. This is the one dependency — it's why this
 # plumbing lives here and not in the std-only `vcs-diff`.
 processkit.workspace = true
+
+[features]
+# Pull in processkit's `cancellation` feature so `Error::Cancelled` is reachable.
+# The classifiers only match `Exit`/`Timeout`, so any other variant (incl.
+# `Cancelled`) already falls through to "no"; the feature only lets the test
+# construct the variant to pin that as a first-class assertion.
+cancellation = ["processkit/cancellation"]

@@ -31,10 +31,17 @@ mockall = { version = "0.13", optional = true }
 mock = ["dep:mockall", "processkit/mock"]
 # Emit a `tracing` event per command run (forwards to processkit's `tracing`).
 tracing = ["processkit/tracing"]
+# Off by default. Pulls in processkit's `cancellation` feature, which makes the
+# `cli_client!` macro emit `Git::default_cancel_on(token)` — a consumer can build
+# a cancellable client (every command it runs dies when the token fires) and pass
+# it through `Repo::from_git`. No new vcs-* API; `CancellationToken` is re-exported
+# from `processkit`.
+cancellation = ["processkit/cancellation"]
 
 [dev-dependencies]
-# `#[tokio::test]` for the async unit/integration tests.
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `#[tokio::test]` for the async unit/integration tests; `time` + `test-util`
+# back the paused-clock cancellation test (`start_paused`, `time::timeout`).
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 # Throwaway git/jj repos for the ignored integration tests. Path-only: dev-deps
 # are stripped on publish, so this adds no release coupling.
 vcs-testkit = { path = "../testkit" }

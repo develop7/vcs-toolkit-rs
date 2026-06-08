@@ -235,6 +235,37 @@ explicit client with `Repo::from_git("/repo", "/repo", Git::with_runner(runner))
 / `Repo::from_jj(…)` to test the facade's dispatch hermetically, exactly as the
 underlying crates do.
 
+### Cancellation, hermetically (the `cancellation` feature)
+
+With the `cancellation` feature, `Reply::pending()` parks a matched call until the
+command's token fires (a per-command `cancel_on` or a client `default_cancel_on`),
+then resolves `Err(Error::Cancelled)`. That tests the cancellation *behaviour* — the
+call really parks, then really unwinds — with no real binary. Run it on a paused
+clock (`#[tokio::test(start_paused = true)]`): a long `time::timeout` elapses
+instantly while the call is parked, proving it doesn't resolve early.
+
+```rust,ignore
+use processkit::{CancellationToken, Reply, ScriptedRunner};
+use vcs_github::{GitHub, GitHubApi};
+
+#[tokio::test(start_paused = true)]
+async fn run_watch_cancels() {
+    let token = CancellationToken::new();
+    let gh = GitHub::with_runner(ScriptedRunner::new().on(["run", "watch"], Reply::pending()))
+        .default_cancel_on(token.clone());
+    let call = gh.run_watch(std::path::Path::new("."), 42);
+    tokio::pin!(call);
+    // Parked: a 1 h timeout elapses (paused clock) without the call resolving.
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(3600), &mut call).await.is_err());
+    token.cancel();
+    assert!(matches!(call.await.unwrap_err(), processkit::Error::Cancelled { .. }));
+}
+```
+
+A pending reply for a command with **no** token parks forever (a hung child nobody
+can cancel) — always pair it with a token or a test timeout. `Cancelled` is
+terminal, so a retried op (e.g. `fetch`) records exactly one spawn, not a replay.
+
 ---
 
 ## Dry-run harness

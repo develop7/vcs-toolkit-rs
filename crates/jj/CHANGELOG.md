@@ -69,17 +69,32 @@ crates; tag releases as `vcs-jj-v<version>`.
 - Doc note: there is deliberately no `Jj::hardened()` — jj has no repo-local
   hooks; in a colocated repo the risk lives on the git side, so harden the
   `Git` client instead.
+- `Jj::workspace_roots(dir, names)` — resolve several workspaces' roots in one
+  **bounded fan-out** (processkit 0.8 `output_all`, ≤ 8 concurrent `workspace
+  root --name <n>` calls) instead of awaiting them one by one; per-name `Ok`/`Err`
+  mirrors `workspace_root`, results in input order. Inherent (throughput shape
+  over the trait method). The facade's worktree enumeration (`Repo::list_worktrees`)
+  uses it.
 
 ### Changed
 - `squash_paths(dir, from, into, filesets, use_destination_message)` now takes a
   single `SquashPaths` spec — `squash_paths(dir, SquashPaths::new(from, into)
   .filesets(…).use_destination_message())` — mirroring `WorkspaceAdd`. *Breaking*
   for the `squash_paths` signature; argv is byte-identical.
-- Bumped `processkit` to **0.7** — the re-exported `Error` is now
-  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
-  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
-  and `ProcessResult` gains `program()`. Breaking for consumers that match
-  the re-exported types exhaustively.
+- Bumped `processkit` to **0.8** — the re-exported `Error`/`ProcessResult` carry
+  through 0.8 (`Error` still `#[non_exhaustive]` with `NotReady`/`Unsupported` and
+  feature-gated `Cancelled`/`ResourceLimit`; `Error::Exit` Display gained a
+  stderr-tail suffix; `Command` is `#[must_use]`). **Breaking** for consumers that
+  match the re-exported types exhaustively, or that bump their own direct
+  `processkit` separately — caret `"0.7"` does not span 0.8, so bump together.
+- Internal: the `CliClient` verbs the wrapper bodies call were renamed to one
+  shared vocabulary (`text`→`run`, `capture`→`output`, `unit`→`run_unit`,
+  `code`→`exit_code`); no public-API or built-argv change.
+- New off-by-default **`cancellation`** feature: pulls in processkit's
+  `cancellation`, so `cli_client!` emits `default_cancel_on(token)` on the client —
+  build a cancellable client (every command it runs dies when the token fires) and
+  pass it through the facade. No new vcs-* API; `CancellationToken` is re-exported
+  from `processkit`.
 - Internal: the diff model + parser (`ChangeKind`/`DiffLine`/`Hunk`/`FileDiff`/
   `DiffStat`/`parse_diff`) and the version type now come from the shared
   `vcs-diff` crate, and the transient-fetch classifier + the argv injection guard

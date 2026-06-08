@@ -50,10 +50,16 @@ crates; tag releases as `vcs-core-v<version>`.
   **Off by default.**
 
 ### Changed
-- Bumped `processkit` to **0.7** — `Error::Vcs` wraps the now-`#[non_exhaustive]`
-  `processkit::Error`, which gains variants (`NotReady`, `Unsupported`; more
-  behind features). Breaking for consumers matching the wrapped error
-  exhaustively.
+- Bumped `processkit` to **0.8** — `Error::Vcs` wraps the `#[non_exhaustive]`
+  `processkit::Error`; `Error::Exit` Display gained a stderr-tail suffix. Breaking
+  for consumers matching the wrapped error exhaustively, or bumping their own
+  direct `processkit` separately (caret `"0.7"` does not span 0.8).
+- New off-by-default **`cancellation`** feature, forwarding to `vcs-git`/`vcs-jj`:
+  build a cancellable `Git`/`Jj` (via `default_cancel_on`) and hand it to
+  `Repo::from_git`/`from_jj`. No new API.
+- Internal: `Repo::list_worktrees` (jj) resolves workspace roots in one bounded
+  fan-out via the new `Jj::workspace_roots` (processkit 0.8 `output_all`) instead
+  of a per-workspace `await` loop. No behaviour change.
 - **Renamed the `Error` classifiers** for one name per concept across the
   workspace: `Error::is_conflict` → `is_merge_conflict` and
   `Error::is_transient_fetch` → `is_transient_fetch_error` (matching the wrapper

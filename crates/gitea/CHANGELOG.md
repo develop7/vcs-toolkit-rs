@@ -46,11 +46,20 @@ crates; tag releases as `vcs-gitea-v<version>`.
   tests in `tests/cli.rs`) before the first release.
 
 ### Changed
-- Bumped `processkit` to **0.7** — the re-exported `Error` is now
-  `#[non_exhaustive]` and gains variants (`NotReady`, `Unsupported`;
-  `Cancelled`/`ResourceLimit` behind features), `Command` is `#[must_use]`,
-  and `ProcessResult` gains `program()`. Breaking for consumers that match
-  the re-exported types exhaustively.
+- Bumped `processkit` to **0.8** — the re-exported `Error`/`ProcessResult` carry
+  through 0.8 (`Error` still `#[non_exhaustive]` with `NotReady`/`Unsupported` and
+  feature-gated `Cancelled`/`ResourceLimit`; `Error::Exit` Display gained a
+  stderr-tail suffix; `Command` is `#[must_use]`). **Breaking** for consumers that
+  match the re-exported types exhaustively, or that bump their own direct
+  `processkit` separately — caret `"0.7"` does not span 0.8, so bump together.
+- Internal: the `CliClient` verbs the wrapper bodies call were renamed to one
+  shared vocabulary (`text`→`run`, `capture`→`output`, `unit`→`run_unit`,
+  `code`→`exit_code`); no public-API or built-argv change.
+- New off-by-default **`cancellation`** feature: pulls in processkit's
+  `cancellation`, so `cli_client!` emits `default_cancel_on(token)` on the client —
+  build a cancellable client (every command it runs dies when the token fires) and
+  pass it through the facade. No new vcs-* API; `CancellationToken` is re-exported
+  from `processkit`.
 - `auth_status` tolerates a non-zero `tea login list` exit (e.g. no config file
   yet) and reports `false` instead of erroring, matching its "reports the bool,
   must not error" contract.
