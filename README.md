@@ -10,7 +10,7 @@ protocol, these crates shell out to the official binaries
 (`git`, `jj`, `gh`, `glab`, `tea`) and capture their output — thin, predictable
 wrappers you can compose into automation.
 
-![Cover](https://raw.githubusercontent.com/ZelAnton/vcs-flow-rs/main/cover.png)
+![Cover](https://raw.githubusercontent.com/ZelAnton/vcs-toolkit-rs/main/cover.png)
 
 Every command is **async** (tokio) and runs inside an OS **job** (a Windows Job
 Object or a Linux cgroup v2) so the whole process tree dies with the parent — no
