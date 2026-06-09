@@ -268,6 +268,37 @@ pub(crate) fn parse_release_list(json: &str) -> Result<Vec<Release>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // tea's `--output json` is an empirically reverse-engineered shape (an
+        // all-strings print-table). The parsers must only ever return Ok/Err on
+        // arbitrary or malformed bytes — never panic.
+        #[test]
+        fn parsers_never_panic_on_arbitrary_input(s in ".*") {
+            let _ = parse_pr_list(&s);
+            let _ = parse_issue_list(&s);
+            let _ = parse_issue(&s);
+            let _ = parse_release_list(&s);
+            let _ = parse_index(&s);
+        }
+
+        // A well-formed table row with arbitrary string cells exercises the
+        // `TryFrom` path — notably `parse_index` on a non-numeric `index` — which
+        // must surface a structured Err, not crash.
+        #[test]
+        fn pr_list_tolerates_arbitrary_table_values(
+            index in ".*", title in ".*", state in ".*",
+            head in ".*", base in ".*", url in ".*",
+        ) {
+            let json = serde_json::json!([{
+                "index": index, "title": title, "state": state,
+                "head": head, "base": base, "url": url,
+            }])
+            .to_string();
+            let _ = parse_pr_list(&json);
+        }
+    }
 
     // `tea pr list --output json` is a table: all-string values, `index` column,
     // flat `head`/`base`, `url` column. (We pass `--fields index,title,state,

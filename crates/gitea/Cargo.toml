@@ -39,6 +39,9 @@ cancellation = ["processkit/cancellation"]
 [dev-dependencies]
 # `#[tokio::test]` for the async unit/integration tests.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Property-test the `tea` print-table parsers for panic-freedom on arbitrary /
+# malformed input (tea's `--output json` shape is empirically reverse-engineered).
+proptest = "1"
 
 [package.metadata.docs.rs]
 # Build docs.rs with every feature so the optional surfaces (mock / tracing /
