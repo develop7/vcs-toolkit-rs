@@ -21,11 +21,11 @@ links.
 
 ## Active roadmap (do now)
 
-The committed near-term worklist from the 2026-06-09 development sweep. Seven
-high-conviction items — the sweep deliberately did **not** pad to a round number; the
-toolkit is unusually mature for pre-release, so the bar for "today" is high (the tier
-just below is in [`ideas/next-*`](ideas/)). When an item ships, mark it ✅ and fold its
-evidence into the completed program below.
+The committed near-term worklist (from the 2026-06-09 development sweep, extended after
+the **processkit 0.9.1** bump — the floor is now 0.9.1, which unlocked R8–R10 and resolved
+R2's root cause upstream). The toolkit is unusually mature for pre-release, so the bar for
+"today" is high (the tier just below is in [`ideas/next-*`](ideas/)). When an item ships,
+mark it ✅ and fold its evidence into the completed program below.
 
 - **R1 — Make jj worktree creation atomic + test the partial-failure path.**
   `crates/core/src/jj_backend.rs` `create_worktree` does `workspace_add` then
@@ -34,14 +34,14 @@ evidence into the completed program below.
   cleans up the workspace (mirroring `remove_worktree`), and a `ScriptedRunner` test
   drives a step-2 failure and asserts no workspace is left behind. *(The one bug-class
   item; the `agent-workspace` consumer drives this primitive.)*
-- **R2 — Harden the load-bearing error classifiers against output truncation.**
-  processkit truncates `Error::Exit` streams to 4 KiB before `vcs_cli_support`'s
+- **R2 — (mostly resolved upstream) optional defensive test for classifier truncation.**
+  The root cause — processkit truncating `Error::Exit` to 4 KiB before `vcs_cli_support`'s
   `is_merge_conflict` / `is_transient_fetch_error` (`crates/cli-support/src/lib.rs`) read
-  them; those drive control flow in `try_merge` (`crates/core/src/git_backend.rs`) and
-  the fetch retry. On a large real repo the decisive marker can fall past 4 KiB → silent
-  misclassification. *Done when:* the load-bearing classification sites read untruncated
-  output (or are otherwise made truncation-robust), with a regression test. Belt-and-
-  suspenders alongside the upstream fix requested in `T-20260609-vcs-processkit-feedback`.
+  them, risking silent misclassification in `try_merge` / fetch-retry on a large repo —
+  **shipped fixed in processkit 0.9.1** (full `Error::Exit` streams) and is now adopted, so
+  the classifiers see the whole stdout/stderr again. *Optional follow-up:* a regression test
+  pinning classification on a >4 KiB conflict/fetch output as belt-and-suspenders. Low
+  priority — the upstream data-loss is gone (closed `T-20260609-vcs-processkit-feedback`).
 - **R3 — Add a `cargo-semver-checks` CI job.** Makes the documented SemVer/1.0 policy
   (`crates/core/docs/stability.md`) mechanically enforced instead of prose-only.
   *Done when:* CI runs `cargo-semver-checks` per published crate, **report-only** on
@@ -65,6 +65,26 @@ evidence into the completed program below.
   discoverability for the just-published crates. *Done when:* each manifest carries
   apt `categories` (e.g. `development-tools`) and `keywords` (`git`/`jujutsu`/`vcs`/
   `automation`/`cli`, ≤5). Trivial, zero-risk.
+
+*Unlocked by the processkit 0.9.1 bump (additive features now available):*
+
+- **R8 — Adopt `Command::ok_codes([..])`** at the exit-code sites. ~12 places branch on a
+  "normal" non-zero code via `.probe()` or `.output()` + `.code()`:
+  `crates/git/src/lib.rs` `diff_is_empty` / branch & range / staged checks (~1049–1315), the
+  `auth_status` trio (`crates/github/src/lib.rs` ~481, `gitlab` ~302, `gitea` ~300), and the
+  remote-ref checks. *Done when:* those read as a plain `.run()` + `ok_codes([..])` where it
+  is clearer (`.probe()` stays where a genuine 0/1 boolean is the point). Clarity, not a bug.
+- **R9 — Lean on `Error::is_transient()`** in the fetch-retry path.
+  `crates/cli-support/src/lib.rs` `is_transient_fetch_error` classifies transient failures by
+  substring; the 6 `.retry(...)` sites in vcs-git/vcs-jj use it. *Done when:* the classifier
+  also consults processkit's io-level `is_transient()` (spawn/io transients), keeping the
+  substring set for the CLI-message cases. **Keep** the public `is_transient_fetch_error`
+  re-export (consumers depend on it).
+- **R10 — Adopt `Command::timeout_grace`** for the long git/jj ops. fetch/push/clone and
+  `run_watch` currently hard-kill on the deadline; a SIGTERM-then-kill grace window lets git
+  release `index.lock` and finish cleanup instead of an abrupt kill. *Done when:* the client
+  timeout path sets a grace window for the network/long ops (Windows has no signal tier →
+  atomic kill on the deadline, as documented upstream).
 
 ---
 

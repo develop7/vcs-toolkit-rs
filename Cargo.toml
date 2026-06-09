@@ -48,14 +48,19 @@ authors = ["Anton Zhelezniakou"]
 # git/jj/gh subprocess tree dies on close), with the `CliClient` core, the
 # `cli_client!` macro, structured `Error`, and the `ScriptedRunner`/`RecordingRunner`
 # test seams the wrappers build on. Was the internal `vcs-process` crate; now the
-# published `processkit`. 0.8 floor: `CliClient` verbs renamed for a single shared
-# vocabulary (`text`→`run`, `capture`→`output`, `unit`→`run_unit`, `code`→`exit_code`;
-# `ProcessResult::code()` is unchanged); `SupervisionOutcome` is `#[non_exhaustive]`;
-# `Error::Exit` Display gained a stderr-tail suffix (variant/fields unchanged); the
-# `cancellation` feature adds `CliClient::default_cancel_on` + `Reply::pending()`, and
-# the core `output_all` bounded fan-out (used by `vcs-jj`'s `workspace_roots`) ships
-# feature-free.
-processkit = "0.8"
+# published `processkit`. The 0.8 floor brought the `CliClient` verb rename
+# (`text`→`run`, `capture`→`output`, `unit`→`run_unit`, `code`→`exit_code`;
+# `ProcessResult::code()` unchanged), the `cancellation` feature
+# (`CliClient::default_cancel_on` + `Reply::pending()`), and the feature-free
+# `output_all` bounded fan-out (`vcs-jj`'s `workspace_roots`). The 0.9.1 floor adds
+# the fix for our HIGH classification bug — **`Error::Exit` now carries the FULL
+# `stdout`/`stderr`** (no 4 KiB truncation; the one-line `Display` stays bounded), so
+# the error classifiers see the whole stream again — plus additive `ok_codes`,
+# `timeout_grace`, `duration()`, `command_line()`, and `Error::is_transient()`. Its one
+# breaking item (five option-structs — `RestartPolicy`/`OverflowMode`/
+# `OutputBufferPolicy`/`ResourceLimits`/`ProcessGroupOptions` — became
+# `#[non_exhaustive]`) does not touch us: none are constructed here.
+processkit = "0.9.1"
 
 # ---------------------------------------------------------------------------
 # Workspace lints — inherited by every crate via `[lints] workspace = true`.
