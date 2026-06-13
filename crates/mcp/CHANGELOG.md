@@ -67,6 +67,27 @@ crates; tag releases as `vcs-mcp-v<version>`.
 - Bumped `processkit` to **0.11.0**. Test doubles moved to `processkit::testing`;
   cancellation is now core (no feature flag).
 
+## [0.2.0] - 2026-06-13
+
+### Added
+- **Read tools** (always available, `readOnlyHint`) — `repo_log`,
+  `repo_diff`, `repo_refs`. `repo_log` returns the committed history as a
+  list of [`LogEntry`](https://docs.rs/vcs-core/latest/vcs_core/guide/)s
+  (sha, parents, author/committer identity, body, optional per-commit
+  files); `repo_diff` returns a range or working-copy diff in the chosen
+  format (unified text / names / stat) with an optional `max_bytes` cap on
+  the unified text; `repo_refs` returns the ref-state bundle (HEAD,
+  current branch, default branch, remotes) in one call. All three replace
+  the workflow-side bash dispatchers (`git log` / `git diff` /
+  `git rev-parse` / `git remote get-url`) that previously had to live
+  outside the MCP seam.
+
+### Changed
+- Bumped to 0.2.0 because the new public-API surface in the tool
+  catalogue is an additive-but-meaningful change for the read side. No
+  existing tool changed.
+-
+
 ### Fixed
 - **`--allow-tools` validates tool names up front.** An unknown/misspelled name is
   now rejected with an error listing the valid write tools, instead of being added
