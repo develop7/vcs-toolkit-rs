@@ -172,6 +172,187 @@ pub enum CreateOutcome {
     CowCloned,
 }
 
+/// One commit in a [`Repo::log`](crate::Repo::log) result — enriched over the
+/// wrappers' sparse `Commit`/`Change` with parent hashes, author/committer
+/// timestamps, an optional commit body, and the per-commit changed paths
+/// (populated when [`LogSpec::with_files`] is `true`; empty otherwise so a
+/// caller never has to branch on a flag at the consumption site).
+///
+/// Backend nuance: jj's identity is the **change id** (stable across amends);
+/// the *commit id* is the working-copy revision. The `sha` field carries the
+/// commit id (the value `git log` and `jj log` would both identify the commit
+/// by in their respective range syntax). A `jj`-specific change id is **not**
+/// surfaced here — it lives in the wrapper's `Change` and is intentionally
+/// dropped on the way to the facade, because the facade's contract is "the
+/// commit hash, regardless of backend." Reach for
+/// [`Repo::jj`](crate::Repo::jj) if you need it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct LogEntry {
+    /// Full commit hash.
+    pub sha: String,
+    /// Parent commit hashes (`rev-parse %P`); empty for a root commit, two
+    /// entries for an octopus merge.
+    pub parents: Vec<String>,
+    /// Author name (`%an` / jj `author.email()`-style string).
+    pub author: String,
+    /// Author timestamp, RFC 3339 / ISO 8601 (git `%aI` / jj `author.timestamp()`).
+    pub authored_at: String,
+    /// Committer name (git only — jj has no separate committer).
+    pub committer: String,
+    /// Committer timestamp, RFC 3339 (git only — empty on jj).
+    pub committed_at: String,
+    /// First line of the commit message.
+    pub summary: String,
+    /// The full commit message body, **excluding** the summary line and the
+    /// trailing blank line; `None` when the message is single-line or
+    /// unavailable (jj templates only emit the first line by default).
+    pub body: Option<String>,
+    /// Per-commit changed paths; empty unless
+    /// [`LogSpec::with_files`](crate::LogSpec::with_files) was set.
+    pub files: Vec<FileChange>,
+}
+
+/// The query spec for [`Repo::log`](crate::Repo::log). All fields are optional;
+/// an empty `LogSpec { ..Default::default() }` returns the most recent commit.
+///
+/// `range` is the most useful field: a git range (`main..HEAD`,
+/// `abc123..def456`) or a jj revset (`@ | main..@`, `ancestors(head(), 5)`).
+/// `max_count` caps the result (git `-n` / jj `-l`); `since` is the free-form
+/// "since" filter (git `--since` / jj `since(date)` revset clause).
+///
+/// Every free-form string is rejected by the wrapper's argv guard
+/// (`reject_flag_like`) on the way through, so a leading-`-` value never
+/// reaches the underlying command.
+#[derive(Debug, Default, Clone)]
+pub struct LogSpec<'a> {
+    /// Revision range (git: `A..B`; jj: a revset). `None` = most recent commit
+    /// only.
+    pub range: Option<&'a str>,
+    /// Cap on returned entries; `None` = wrapper default (typically 50).
+    pub max_count: Option<usize>,
+    /// Free-form "since" filter; rejected by the wrapper's argv guard.
+    pub since: Option<&'a str>,
+    /// Populate [`LogEntry::files`] (per-commit changed paths) — adds a second
+    /// spawn on git (`--name-status`) and a wider template on jj.
+    pub with_files: bool,
+}
+
+/// The output of [`Repo::diff`](crate::Repo::diff). Adjacently tagged so the
+/// wire shape is **type-stable** — every variant is an object with a
+/// `format` discriminant, never a bare string for one variant and an object
+/// for another (same precedent as [`MergeProbe`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "format", content = "data"))]
+#[non_exhaustive]
+pub enum DiffOutput {
+    /// Full unified diff text (the `text` may be truncated when
+    /// [`DiffSpec::max_bytes`] was set; `truncated` is `true` in that case and
+    /// `omitted_bytes` is the count of bytes dropped after the cap).
+    Unified {
+        /// The diff text (possibly truncated — see `truncated`).
+        text: String,
+        /// `true` when the wrapper truncated the output to honour
+        /// [`DiffSpec::max_bytes`].
+        truncated: bool,
+        /// Bytes dropped after the truncation point; `0` when not truncated.
+        omitted_bytes: u64,
+    },
+    /// Just the changed paths (git `--name-only` / jj `diff --name-only`).
+    Names(Vec<String>),
+    /// Aggregate insertion/deletion/file counts (reuses the existing
+    /// [`DiffStat`] DTO so callers don't have to switch on the variant).
+    Stat(DiffStat),
+}
+
+/// The query spec for [`Repo::diff`](crate::Repo::diff). A `range` selects the
+/// committed history to diff; `paths` restricts it to a subset of the tree;
+/// `format` chooses the wire shape; `max_bytes` caps the unified blob.
+///
+/// All free-form strings go through the wrapper's argv guard before reaching
+/// the underlying command.
+#[derive(Debug, Default, Clone)]
+pub struct DiffSpec<'a> {
+    /// Revision range (git: `A..B`; jj: a revset) or single revision. `None`
+    /// = working-copy diff against the last commit (mirrors
+    /// [`Repo::diff_stat`](crate::Repo::diff_stat)).
+    pub range: Option<&'a str>,
+    /// Restrict the diff to these repo-relative paths; `None` = the whole
+    /// tree. Paths are joined after `--` in argv so they can't be smuggled
+    /// as flags.
+    pub paths: Option<&'a [String]>,
+    /// Output format — `Unified` (default), `Names`, or `Stat`.
+    pub format: DiffFormat,
+    /// Cap on the unified-diff text length; `None` = no cap. The wrapper
+    /// truncates with a marker and reports `omitted_bytes` in the result.
+    pub max_bytes: Option<usize>,
+}
+
+/// The output shape for [`Repo::diff`](crate::Repo::diff). Stringly-typed at
+/// the MCP boundary (matches the `forge_pr_merge` `strategy` precedent);
+/// parsed into this enum by the mcp layer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum DiffFormat {
+    /// Full unified diff text (the default).
+    #[default]
+    Unified,
+    /// Changed paths only.
+    Names,
+    /// Aggregate insertion/deletion/file counts.
+    Stat,
+}
+
+impl DiffFormat {
+    /// Parse the wire-side string. Accepts the lowercase / mixed-case forms
+    /// most MCP callers will pass; an unknown value is `None` — the mcp layer
+    /// is expected to surface that as an `invalid_params` MCP error (the
+    /// `vcs-mcp` `core_err` mapping prefers `io::ErrorKind::InvalidInput`).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "unified" | "Unified" => Some(DiffFormat::Unified),
+            "names" | "Names" => Some(DiffFormat::Names),
+            "stat" | "Stat" => Some(DiffFormat::Stat),
+            _ => None,
+        }
+    }
+}
+
+/// The ref-state bundle returned by [`Repo::refs`](crate::Repo::refs): HEAD,
+/// the current branch, the trunk / default branch, and the configured remotes.
+/// The fields the workflow's review passes need in one call (the wishlist's
+/// `refs` is exactly this shape — distinct from [`RepoSnapshot`], which also
+/// carries working-copy / operation state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct RefsSnapshot {
+    /// The working-copy commit's **full** object id (git `HEAD` / jj `@`).
+    pub head_sha: String,
+    /// Current branch (git) / bookmark (jj); `None` when detached or unset.
+    pub current_branch: Option<String>,
+    /// Trunk / default branch (git `origin/HEAD` short name; jj `trunk()`
+    /// revset). `None` when undetectable (no `origin`, no local `main` /
+    /// `master`).
+    pub default_branch: Option<String>,
+    /// Configured remotes; empty on a pure-jj repo with no git remote.
+    pub remotes: Vec<RemoteInfo>,
+}
+
+/// A single configured remote (git `remote.<name>.url` / jj `jj git remote`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct RemoteInfo {
+    /// Remote name (`origin` is the common case).
+    pub name: String,
+    /// The remote's fetch URL.
+    pub url: String,
+}
+
 // The optional `serde` feature derives `Serialize` on the facade DTOs.
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
@@ -225,5 +406,81 @@ mod serde_tests {
         assert_eq!(conflicts["outcome"], "Conflicts");
         assert_eq!(conflicts["files"][0], "a.rs");
         assert_eq!(conflicts["files"][1], "b.rs");
+    }
+
+    // `DiffOutput` is adjacently tagged so the wire shape is type-stable:
+    // every variant serialises as `{"format": <discriminant>, "data": ...}`,
+    // never a bare string for one variant and an object for another.
+    #[test]
+    fn diff_output_serializes_to_a_type_stable_object() {
+        let unified = serde_json::to_value(DiffOutput::Unified {
+            text: "@@ -1 +1 @@\n-a\n+b\n".into(),
+            truncated: false,
+            omitted_bytes: 0,
+        })
+        .unwrap();
+        assert_eq!(unified["format"], "Unified");
+        assert!(unified["data"]["text"].as_str().unwrap().contains("-a"));
+        assert_eq!(unified["data"]["truncated"], false);
+        assert_eq!(unified["data"]["omitted_bytes"], 0);
+
+        let names = serde_json::to_value(DiffOutput::Names(vec!["a.rs".into(), "b.rs".into()]))
+            .unwrap();
+        assert_eq!(names["format"], "Names");
+        assert_eq!(names["data"][0], "a.rs");
+        assert_eq!(names["data"][1], "b.rs");
+
+        let stat = serde_json::to_value(DiffOutput::Stat(DiffStat::new(2, 3, 1))).unwrap();
+        assert_eq!(stat["format"], "Stat");
+        assert_eq!(stat["data"]["files_changed"], 2);
+        assert_eq!(stat["data"]["insertions"], 3);
+        assert_eq!(stat["data"]["deletions"], 1);
+    }
+
+    // `RefsSnapshot` round-trips the bundle (head + branch + default + remotes).
+    #[test]
+    fn refs_snapshot_serializes_with_branch_and_remotes() {
+        let snap = RefsSnapshot {
+            head_sha: "abc123".into(),
+            current_branch: Some("feat/x".into()),
+            default_branch: Some("main".into()),
+            remotes: vec![RemoteInfo {
+                name: "origin".into(),
+                url: "git@github.com:foo/bar.git".into(),
+            }],
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["head_sha"], "abc123");
+        assert_eq!(v["current_branch"], "feat/x");
+        assert_eq!(v["default_branch"], "main");
+        assert_eq!(v["remotes"][0]["name"], "origin");
+        assert_eq!(v["remotes"][0]["url"], "git@github.com:foo/bar.git");
+    }
+
+    // `LogEntry` carries the per-commit file list when populated; empty vec
+    // when not (no `Option<Vec<…>>` shape — the caller doesn't have to branch
+    // on a flag at the consumption site).
+    #[test]
+    fn log_entry_with_files_round_trips() {
+        let entry = LogEntry {
+            sha: "deadbeef".into(),
+            parents: vec!["cafebabe".into()],
+            author: "Alice".into(),
+            authored_at: "2026-06-13T10:00:00+00:00".into(),
+            committer: "Alice".into(),
+            committed_at: "2026-06-13T10:00:00+00:00".into(),
+            summary: "fix: thing".into(),
+            body: None,
+            files: vec![FileChange {
+                path: "a.rs".into(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            }],
+        };
+        let v = serde_json::to_value(&entry).unwrap();
+        assert_eq!(v["sha"], "deadbeef");
+        assert_eq!(v["parents"][0], "cafebabe");
+        assert_eq!(v["files"][0]["path"], "a.rs");
+        assert_eq!(v["files"][0]["kind"], "Modified");
     }
 }
