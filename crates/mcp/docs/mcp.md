@@ -77,6 +77,9 @@ vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write]
 | `repo_info` | — | `{ backend, root, cwd, forge }` — git/jj, the repo root, the working dir, and the configured forge (or null). |
 | `repo_status` | — | The working-copy changes (added/modified/deleted/renamed paths). |
 | `repo_diff_stat` | — | Aggregate insertion/deletion/file counts for the working copy. |
+| `repo_log` | `{ range?, max_count?, since?, with_files? }` | The committed history as a list of [`LogEntry`](https://docs.rs/vcs-core/latest/vcs_core/guide/): sha, parents, author, authored/committed timestamps, summary, body, and (when `with_files` is set) per-commit changed paths. |
+| `repo_diff` | `{ range?, paths?, format?, max_bytes? }` | A range or working-copy diff in the chosen format — `format: "unified"` (default, the full git-format text, optionally capped by `max_bytes`), `"names"` (changed paths), or `"stat"` (aggregate counts). Returns a `DiffOutput` with a type-stable `format` discriminant. |
+| `repo_refs` | — | The ref-state bundle: HEAD commit, current branch, default branch (git `origin/HEAD` / jj `trunk()`), and configured remotes. Replaces the separate `default-branch` / `head-sha` / `remote-url` queries a workflow's review passes need. |
 | `repo_branches` | — | Local branch (git) / bookmark (jj) names. |
 | `repo_current_branch` | — | The current branch/bookmark (null when detached/unset). |
 | `repo_conflicts` | — | Paths with unresolved merge conflicts. |
@@ -158,7 +161,11 @@ The `vcs-mcp` binary applies, in order:
    a **fully untrusted** repo, so sandbox the process (OS-level) for that case.
 4. **The wrappers' argv guards underneath.** Every argument flows through the
    `vcs-core`/`vcs-forge` facades, so the injection guards (`reject_flag_like`)
-   apply — a tool parameter can't smuggle a leading-`-` flag into argv.
+   apply — a tool parameter can't smuggle a leading-`-` flag into argv. The
+   free-form strings on `repo_log` (`range`, `since`) and `repo_diff`
+   (`range`, the per-entry `paths`) all reach the wrappers' argv guards
+   before they hit the underlying command; `paths` are joined after `--`
+   in argv for the same reason.
 5. **A per-command timeout.** Every git/forge command runs under the `--timeout`
    deadline (default 120s), so a stalled network call (`repo_fetch`, the `forge_*`
    tools) can't hang a request indefinitely.

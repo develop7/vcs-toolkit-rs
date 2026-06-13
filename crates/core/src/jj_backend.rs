@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 
 use processkit::ProcessRunner;
-use vcs_jj::{ChangedPath, Jj, JjApi, JjFileset, WorkspaceAdd};
+use vcs_jj::{ChangeEntry, ChangeFileChange, ChangedPath, Jj, JjApi, JjFileset, WorkspaceAdd};
 
 use crate::dto::{
-    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
-    WorktreeInfo,
+    ChangeKind, CreateOutcome, DiffFormat, DiffOutput, DiffSpec, DiffStat, FileChange, LogEntry,
+    LogSpec, MergeProbe, OperationState, RefsSnapshot, RepoSnapshot, WorktreeInfo,
 };
 use crate::error::{Error, Result};
 
@@ -487,6 +487,121 @@ fn change_kind_from_status(status: char) -> ChangeKind {
         'R' => ChangeKind::Renamed,
         _ => ChangeKind::Modified,
     }
+}
+
+/// Map a `ChangeFileChange` to a facade [`FileChange`].
+fn file_change_from_change(c: ChangeFileChange) -> FileChange {
+    FileChange {
+        path: c.path,
+        old_path: c.old_path,
+        kind: change_kind_from_status(c.status),
+    }
+}
+
+pub(crate) async fn log<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+    spec: LogSpec<'_>,
+) -> Result<Vec<LogEntry>> {
+    let entries = jj
+        .log_enriched(dir, spec.range, spec.max_count, spec.since, spec.with_files)
+        .await?;
+    Ok(entries.into_iter().map(log_entry_from_change).collect())
+}
+
+fn log_entry_from_change(c: ChangeEntry) -> LogEntry {
+    // Backend asymmetry: jj has no separate committer. The wrapper sets
+    // both columns to the author's values; the facade surfaces that to the
+    // caller as the `committer == author` invariant documented on
+    // `LogEntry`.
+    LogEntry {
+        sha: c.commit_id,
+        parents: c.parents,
+        author: c.author.clone(),
+        authored_at: c.authored_at,
+        committer: c.committer,
+        committed_at: c.committed_at,
+        summary: c.summary,
+        body: c.body,
+        files: c.files.into_iter().map(file_change_from_change).collect(),
+    }
+}
+
+pub(crate) async fn diff<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+    spec: DiffSpec<'_>,
+) -> Result<DiffOutput> {
+    match spec.format {
+        DiffFormat::Names => {
+            // jj's `diff --summary` returns per-file status records; project
+            // to just the paths for the `Names` variant.
+            let rev = spec.range.unwrap_or("@");
+            let paths = diff_summary_paths(jj, dir, rev, spec.paths).await?;
+            Ok(DiffOutput::Names(paths))
+        }
+        DiffFormat::Stat => {
+            let rev = spec.range.unwrap_or("@");
+            let stat = jj.diff_stat(dir, rev).await?;
+            Ok(DiffOutput::Stat(stat))
+        }
+        DiffFormat::Unified => {
+            let text = match spec.range {
+                Some(r) => jj
+                    .diff_text(dir, vcs_jj::DiffSpec::Rev(r.to_string()))
+                    .await?,
+                None => jj.diff_text(dir, vcs_jj::DiffSpec::WorkingTree).await?,
+            };
+            // Reuse the same max_bytes helper from `git_backend` (it's a
+            // string-level transform, backend-agnostic). Define it here
+            // instead of duplicating, or move it to a shared module — for
+            // now, a local re-implementation to avoid the module move.
+            super::git_backend::apply_max_bytes_pub(text, spec.max_bytes)
+        }
+    }
+}
+
+/// Internal helper: project's `diff_summary` to just the paths.
+async fn diff_summary_paths<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+    rev: &str,
+    _paths: Option<&[String]>,
+) -> Result<Vec<String>> {
+    // jj's `diff --summary` is per-file across the revset; for a single-rev
+    // call (the `diff_names` use case), it's the per-file list of the
+    // rev's changes. The `paths` filter is not yet plumbed through (jj's
+    // `diff -r <rev>` doesn't accept a `--` pathspec the way git does;
+    // the equivalent is a `fileset` revset, which is out of scope here).
+    let records = jj.diff_summary(dir, rev, rev).await?;
+    Ok(records.into_iter().map(|c| c.path).collect())
+}
+
+pub(crate) async fn refs<R: ProcessRunner>(
+    jj: &Jj<R>,
+    dir: &Path,
+) -> Result<RefsSnapshot> {
+    // HEAD: the working-copy commit id (`@` in jj).
+    let head = jj.current_change(dir).await?;
+    let head_sha = head.commit_id;
+    // Current branch: the first local bookmark on `@`, if any. jj has no
+    // "current branch" in the git sense — the closest is "what bookmarks
+    // does `@` carry?" — so we report the empty list when none.
+    let reachable = jj.reachable_bookmarks(dir).await?;
+    let current_branch = reachable.first().map(|b| b.name.clone());
+    // Default branch: jj's `trunk()` revset.
+    let default_branch = trunk(jj, dir).await?;
+    // Remotes: jj has no multi-remote concept of its own; the remotes are
+    // the git sub-handle's, and only for colocated repos. A pure-jj repo
+    // returns an empty list (the `RepoSnapshot::upstream`-on-jj-is-None
+    // precedent).
+    let remotes = Vec::new();
+    Ok(RefsSnapshot {
+        head_sha,
+        current_branch,
+        default_branch,
+        remotes,
+    })
 }
 
 #[cfg(test)]

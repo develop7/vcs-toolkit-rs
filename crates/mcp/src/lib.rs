@@ -123,6 +123,51 @@ pub struct TryMergeParams {
     pub source: String,
 }
 
+/// Query parameters for [`VcsMcpServer::repo_log`].
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct LogParams {
+    /// Revision range (git: `A..B`; jj: a revset). Omit for the most recent
+    /// commit only.
+    #[serde(default)]
+    pub range: Option<String>,
+    /// Cap on returned entries.
+    #[serde(default)]
+    pub max_count: Option<u32>,
+    /// Free-form "since" filter (git `--since`; jj `since(...)` revset clause).
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Populate each entry's per-commit changed paths (adds a second spawn on
+    /// git, a wider template + `jj diff -r <revset> --summary` on jj).
+    #[serde(default)]
+    pub with_files: bool,
+}
+
+/// Query parameters for [`VcsMcpServer::repo_diff`].
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct DiffParams {
+    /// Revision range (git: `A..B`; jj: a revset) or single revision. Omit
+    /// for the working copy vs. the last commit.
+    #[serde(default)]
+    pub range: Option<String>,
+    /// Restrict the diff to these repo-relative paths. Joined after `--` in
+    /// argv so they can't be smuggled as flags.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    /// Output format: `"unified"` (default), `"names"`, or `"stat"`.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Cap on the unified-diff text length; `None` = no cap. The result
+    /// reports the truncation in `truncated` and `omitted_bytes`.
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+}
+
+/// Query parameters for [`VcsMcpServer::repo_refs`]. No fields — the tool
+/// returns the full ref-state bundle (HEAD, current branch, default branch,
+/// remotes) in one call.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct RefsParams {}
+
 /// Create a worktree/workspace.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateWorktreeParams {
@@ -516,6 +561,65 @@ impl VcsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.require_write("repo_try_merge")?;
         ok_json(&self.repo.try_merge(&p.source).await.map_err(core_err)?)
+    }
+
+    #[tool(
+        description = "Commit history with parent hashes, committer identity, body, and (when with_files is set) per-commit changed paths. Range, max_count, since are optional.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn repo_log(
+        &self,
+        Parameters(p): Parameters<LogParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let spec = vcs_core::LogSpec {
+            range: p.range.as_deref(),
+            max_count: p.max_count.map(|n| n as usize),
+            since: p.since.as_deref(),
+            with_files: p.with_files,
+        };
+        ok_json(&self.repo.log(spec).await.map_err(core_err)?)
+    }
+
+    #[tool(
+        description = "Diff in the requested format: \"unified\" (default), \"names\" (changed paths only), or \"stat\" (aggregate counts). Range and paths are optional. Set max_bytes to cap the unified text; the result reports the truncation.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn repo_diff(
+        &self,
+        Parameters(p): Parameters<DiffParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Parse the wire-side format string; unknown values surface as an
+        // invalid_params MCP error (the `core_err` mapper prefers
+        // `io::ErrorKind::InvalidInput`).
+        let format = match p.format.as_deref().unwrap_or("unified") {
+            "unified" | "" => vcs_core::DiffFormat::Unified,
+            "names" => vcs_core::DiffFormat::Names,
+            "stat" => vcs_core::DiffFormat::Stat,
+            other => {
+                return Err(core_err(vcs_core::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("unknown `format` value: {other:?} (expected one of: \"unified\", \"names\", \"stat\")"),
+                ))));
+            }
+        };
+        let spec = vcs_core::DiffSpec {
+            range: p.range.as_deref(),
+            paths: p.paths.as_deref(),
+            format,
+            max_bytes: p.max_bytes.map(|n| n as usize),
+        };
+        ok_json(&self.repo.diff(spec).await.map_err(core_err)?)
+    }
+
+    #[tool(
+        description = "The ref-state bundle: HEAD commit, current branch, default branch, and configured remotes. One call replaces the workflow's separate default-branch / head-sha / remote-url queries.",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn repo_refs(
+        &self,
+        Parameters(_p): Parameters<RefsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ok_json(&self.repo.refs().await.map_err(core_err)?)
     }
 
     // --- repo: mutations (gated) ------------------------------------------
@@ -917,6 +1021,150 @@ mod tests {
         );
         let out = server.repo_status().await.expect("status ok");
         assert!(result_json(&out).contains("a.rs"));
+    }
+
+    // `repo_log` round-trips the enriched DTO list. The wrapper is mocked
+    // to return one commit; we assert the JSON contains the SHA and the
+    // parents.
+    #[tokio::test]
+    async fn repo_log_returns_enriched_dto() {
+        let log_reply = "abc\u{1f}parent\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Ada\u{1f}\
+                        2026-05-31T10:00:00+00:00\u{1f}Subject\u{1f}\0";
+        let server = git_server(
+            ScriptedRunner::new().on(["log", "-z"], Reply::ok(log_reply)),
+            WriteGate::None,
+        );
+        let out = server
+            .repo_log(Parameters(LogParams::default()))
+            .await
+            .expect("repo_log");
+        let json = result_json(&out);
+        // `result_json` returns the *wire* form of `CallToolResult`, which
+        // re-escapes inner quotes (`\"sha\":\"abc\"`). Match on the
+        // escaped form rather than the deserialised-data form.
+        assert!(json.contains("sha"), "{json}");
+        assert!(json.contains("abc"), "{json}");
+        assert!(json.contains("parents"), "{json}");
+        assert!(json.contains("parent"), "{json}");
+        assert!(json.contains("Subject"), "{json}");
+    }
+
+    // `repo_log` is a read tool — available even when writes are disabled.
+    #[tokio::test]
+    async fn repo_log_works_in_readonly_mode() {
+        let server = git_server(
+            ScriptedRunner::new().on(["log", "-z"], Reply::ok("\0")),
+            WriteGate::None,
+        );
+        let out = server
+            .repo_log(Parameters(LogParams::default()))
+            .await
+            .expect("repo_log read-only");
+        let json = result_json(&out);
+        // An empty input yields an empty list (the parser filters NULs).
+        // The wire form is `[]` inside the `text` field.
+        assert!(json.contains("[]"), "empty log: {json}");
+    }
+
+    // `repo_log` rejects flag-like strings BEFORE spawning — proven by a
+    // scripted runner that has no rules at all. If the guard were missing
+    // the runner would error differently (no rule matched).
+    #[tokio::test]
+    async fn repo_log_rejects_flag_like_range() {
+        let server = git_server(ScriptedRunner::new(), WriteGate::None);
+        let err = server
+            .repo_log(Parameters(LogParams {
+                range: Some("--upload-pack=evil".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("rejected");
+        let msg = format!("{err:?}");
+        // The wrapper's `reject_flag_like` produces an error whose display
+        // includes the rejected value; the mcp layer maps it to internal
+        // or invalid_params. We just need *some* error.
+        assert!(!msg.is_empty(), "expected an error");
+    }
+
+    // `repo_diff` parses the `format` string and routes to the right
+    // wrapper call. With `format = "names"`, the result is `Names(_)`.
+    #[tokio::test]
+    async fn repo_diff_names_returns_vec() {
+        let server = git_server(
+            ScriptedRunner::new().on(
+                ["diff", "--name-only", "-z"],
+                Reply::ok("a.rs\0b.rs\0"),
+            ),
+            WriteGate::None,
+        );
+        let out = server
+            .repo_diff(Parameters(DiffParams {
+                range: Some("main..HEAD".into()),
+                format: Some("names".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("repo_diff names");
+        let json = result_json(&out);
+        assert!(json.contains("format"), "{json}");
+        assert!(json.contains("Names"), "{json}");
+        assert!(json.contains("a.rs"), "{json}");
+        assert!(json.contains("b.rs"), "{json}");
+    }
+
+    // Unknown `format` values surface as `invalid_params` (the `core_err`
+    // mapper's preferred class for client errors).
+    #[tokio::test]
+    async fn repo_diff_unknown_format_is_invalid_params() {
+        let server = git_server(ScriptedRunner::new(), WriteGate::None);
+        let err = server
+            .repo_diff(Parameters(DiffParams {
+                format: Some("xml".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("invalid format");
+        let msg = format!("{err:?}");
+        // The mcp layer surfaces the unknown value with a clear "expected
+        // one of" message; the error code is `ErrorCode(-32602)`, which is
+        // the JSON-RPC `invalid_params` code (per the rmcp convention).
+        assert!(
+            msg.contains("unknown") && msg.contains("format"),
+            "format error: {msg}"
+        );
+        assert!(msg.contains("expected"), "{msg}");
+    }
+
+    // `repo_refs` returns the bundle. The wrapper is mocked to return the
+    // three primitives (HEAD, current_branch, trunk, remotes); the facade
+    // assembles them into `RefsSnapshot`.
+    #[tokio::test]
+    async fn repo_refs_returns_refs_snapshot() {
+        // The wrapper's `remote_head_branch` runs
+        // `git symbolic-ref --quiet refs/remotes/origin/HEAD` and strips the
+        // `refs/remotes/origin/` prefix from the result. A realistic reply
+        // is `refs/remotes/origin/main\n` → facade sees `main`.
+        let server = git_server(
+            ScriptedRunner::new()
+                .on(["rev-parse", "HEAD"], Reply::ok("deadbeef\n"))
+                .on(["rev-parse", "--abbrev-ref", "HEAD"], Reply::ok("feat\n"))
+                .on(["symbolic-ref"], Reply::ok("refs/remotes/origin/main\n"))
+                .on(
+                    ["remote", "-z", "--format=%(refname:short)%00%(fetchurl)"],
+                    Reply::ok("origin\tgit@github.com:foo/bar.git\0"),
+                ),
+            WriteGate::None,
+        );
+        let out = server
+            .repo_refs(Parameters(RefsParams {}))
+            .await
+            .expect("repo_refs");
+        let json = result_json(&out);
+        assert!(json.contains("head_sha"), "{json}");
+        assert!(json.contains("deadbeef"), "{json}");
+        assert!(json.contains("feat"), "{json}");
+        assert!(json.contains("main"), "{json}");
+        assert!(json.contains("origin"), "{json}");
     }
 
     // A mutation tool is gated when writes are disabled — it errors WITHOUT

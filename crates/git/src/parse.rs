@@ -74,6 +74,66 @@ pub struct Commit {
     pub subject: String,
 }
 
+/// An enriched git commit for the facade's `vcs_core::Repo::log`
+/// path — extends [`Commit`] with parent hashes, committer identity, an
+/// optional body, and the per-commit changed paths. Distinct from `Commit`
+/// because the wire format is different (`%P`, `%cn`, `%cI`, `%b` and the
+/// optional `--name-status` section) and the wrapper's existing `log` method
+/// (which uses the older 5-field format) is the hot path for other callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CommitEntry {
+    /// Full commit hash (`%H`).
+    pub hash: String,
+    /// Parent commit hashes (`%P`, space-separated; empty for a root commit).
+    pub parents: Vec<String>,
+    /// Author name (`%an`).
+    pub author: String,
+    /// Author date, strict ISO-8601 (`%aI`).
+    pub authored_at: String,
+    /// Committer name (`%cn`); often the same as `author` for a non-rebased
+    /// commit.
+    pub committer: String,
+    /// Committer date, strict ISO-8601 (`%cI`).
+    pub committed_at: String,
+    /// First line of the commit message (`%s`).
+    pub summary: String,
+    /// The full commit message body (`%b`), excluding the summary line and
+    /// trailing blank line; `None` when the message is single-line.
+    pub body: Option<String>,
+    /// Per-commit changed paths, parsed from the trailing `--name-status`
+    /// section (one `XY\t<path>` record per line, rename carries an extra tab
+    /// and source path). Empty when `with_files` was `false`.
+    pub files: Vec<CommitFileChange>,
+}
+
+/// One file change in a [`CommitEntry`], parsed from the `--name-status`
+/// section. Mirrors `vcs_core::FileChange` (which the facade re-uses) but is
+/// a wrapper-local type so the git crate doesn't depend on `vcs-core`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CommitFileChange {
+    /// Two-character status code (`M`/`A`/`D`/`R`/`C`/`T` …).
+    pub code: String,
+    /// The path the status applies to (the *new* path for a rename/copy).
+    pub path: String,
+    /// The original path for a rename/copy; `None` otherwise.
+    pub old_path: Option<String>,
+}
+
+/// One remote in a `git remote -v`-style listing, parsed from a `name\turl`
+/// line (one remote per line; the wrapper passes `--format` to render each
+/// remote once even though `-v` would emit it twice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemoteEntry {
+    /// Remote name (e.g. `origin`).
+    pub name: String,
+    /// Remote URL (the fetch URL is canonical; `--format` selects fetch over
+    /// push when both differ).
+    pub url: String,
+}
+
 /// A local branch from `git branch`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -210,6 +270,111 @@ pub(crate) fn parse_log(output: &str) -> Vec<Commit> {
                 author: fields.next()?.to_string(),
                 date: fields.next()?.to_string(),
                 subject: fields.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Parse `git log -z --format=%H%x1f%P%x1f%an%x1f%aI%x1f%cn%x1f%cI%x1f%s%x1f%b`:
+/// commits are NUL-separated (robust to multi-line bodies), fields split on
+/// the ASCII unit separator. `%P` is space-separated parent hashes; `%b` is
+/// the body excluding the summary line and trailing blank.
+pub(crate) fn parse_log_enriched(output: &str) -> Vec<CommitEntry> {
+    output
+        .split('\0')
+        .filter(|rec| !rec.is_empty())
+        .filter_map(|rec| {
+            let mut fields = rec.split('\u{1f}');
+            let hash = fields.next()?.to_string();
+            let parents_str = fields.next().unwrap_or("");
+            let parents = if parents_str.is_empty() {
+                Vec::new()
+            } else {
+                parents_str
+                    .split(' ')
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            let author = fields.next().unwrap_or("").to_string();
+            let authored_at = fields.next().unwrap_or("").to_string();
+            let committer = fields.next().unwrap_or("").to_string();
+            let committed_at = fields.next().unwrap_or("").to_string();
+            let summary = fields.next().unwrap_or("").to_string();
+            let body_str = fields.next().unwrap_or("");
+            let body = if body_str.is_empty() {
+                None
+            } else {
+                Some(body_str.to_string())
+            };
+            Some(CommitEntry {
+                hash,
+                parents,
+                author,
+                authored_at,
+                committer,
+                committed_at,
+                summary,
+                body,
+                files: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// Parse `git log -z --name-status --format=` output: one NUL-separated record
+/// per commit, each record holding zero or more `<XY>\t<path>` lines (a
+/// rename/copy carries a third tab-separated field with the source path).
+/// Empty lines / blank paths are skipped, and trailing empty records (the
+/// NUL that follows the final commit) are dropped — the wrapper zips with
+/// `parse_log_enriched`, which also filters empties, so the two stay
+/// positionally aligned.
+///
+/// The records are returned in commit order (newest first, matching `git
+/// log`'s default). The caller (the `log_enriched` impl) **zips** them with
+/// the `parse_log_enriched` output by position — both spawns walk the same
+/// `<range>` in the same order, so the index alignment is exact.
+pub(crate) fn parse_log_files(output: &str) -> Vec<Vec<CommitFileChange>> {
+    output
+        .split('\0')
+        .filter(|rec| !rec.is_empty())
+        .map(|rec| {
+            rec.lines()
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| {
+                    // `XY\t<path>` (modified/added/deleted/type-changed) or
+                    // `XY\t<path>\t<old>` (rename/copy). Slice via `get` so a
+                    // malformed record (no tab) is skipped, not a panic.
+                    let mut parts = line.split('\t');
+                    let code = parts.next()?.to_string();
+                    let path = parts.next()?.to_string();
+                    if path.is_empty() {
+                        return None;
+                    }
+                    let old_path = parts.next().filter(|s| !s.is_empty()).map(str::to_string);
+                    Some(CommitFileChange { code, path, old_path })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Parse `git remote -v --format=%(refname:short)%00%(fetchurl)` output
+/// (one record per remote, NUL-separated, no trailing newline). Drops the
+/// `(push)` mirror — the wrapper passes a `--format` that emits only the
+/// fetch URL.
+pub(crate) fn parse_remotes(output: &str) -> Vec<RemoteEntry> {
+    output
+        .split('\0')
+        .filter(|rec| !rec.is_empty())
+        .filter_map(|rec| {
+            let (name, url) = rec.split_once('\t')?;
+            if name.is_empty() || url.is_empty() {
+                return None;
+            }
+            Some(RemoteEntry {
+                name: name.to_string(),
+                url: url.to_string(),
             })
         })
         .collect()
@@ -697,6 +862,99 @@ mod tests {
         assert_eq!(only_ins.insertions, 2);
         assert_eq!(only_ins.deletions, 0);
         assert_eq!(parse_shortstat(""), DiffStat::default());
+    }
+
+    #[test]
+    fn log_enriched_splits_unit_separated_fields() {
+        // Two commits: a non-merge (one parent) and a merge (two parents), with
+        // a non-empty body on the first. `%P` is space-separated, `%b` is
+        // multi-line, fields split on the unit separator. Each `\u{1f}`
+        // separates the next `%`-placeholder output.
+        let input = "abc\u{1f}parent1\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Ada\u{1f}\
+                     2026-05-31T10:00:00+00:00\u{1f}Subject 1\u{1f}Body line 1\nBody line 2\0\
+                     def\u{1f}mum dad\u{1f}Bob\u{1f}2026-05-30T09:00:00+00:00\u{1f}\
+                     Bob\u{1f}2026-05-30T09:00:00+00:00\u{1f}Merge branch\u{1f}\0";
+        let got = parse_log_enriched(input);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].hash, "abc");
+        assert_eq!(got[0].parents, vec!["parent1"]);
+        assert_eq!(got[0].author, "Ada");
+        assert_eq!(got[0].summary, "Subject 1");
+        assert_eq!(got[0].body.as_deref(), Some("Body line 1\nBody line 2"));
+        assert_eq!(got[1].hash, "def");
+        assert_eq!(got[1].parents, vec!["mum", "dad"]);
+        assert_eq!(got[1].body, None);
+        // The enriched parser does NOT populate files — `parse_log_files`
+        // does that, and the wrapper zips the two.
+        assert!(got[0].files.is_empty());
+        assert!(got[1].files.is_empty());
+    }
+
+    #[test]
+    fn log_enriched_root_commit_has_empty_parents() {
+        let input = "root\u{1f}\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Ada\u{1f}\
+                     2026-05-31T10:00:00+00:00\u{1f}first\u{1f}\0";
+        let got = parse_log_enriched(input);
+        assert_eq!(got[0].parents, Vec::<String>::new());
+        assert_eq!(got[0].body, None);
+    }
+
+    #[test]
+    fn log_files_buckets_per_commit() {
+        // Two NUL-separated records. First commit modifies a.rs (no rename);
+        // second commit renames old.rs -> new.rs. `git log --name-status`
+        // emits one record per commit that *has* file changes; a commit
+        // with no changes produces no record (the wrapper zips with
+        // `parse_log_enriched`, which also skips commits by range — so a
+        // no-change commit in the same range shows up as an empty
+        // `CommitEntry.files` in the facade's hand-off, not as a separate
+        // bucket here). Trailing empties (the NUL that follows the final
+        // record) are dropped, matching `parse_log_enriched`.
+        let input = "M\ta.rs\0R\tnew.rs\told.rs\0";
+        let got = parse_log_files(input);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].len(), 1);
+        assert_eq!(got[0][0].code, "M");
+        assert_eq!(got[0][0].path, "a.rs");
+        assert_eq!(got[0][0].old_path, None);
+        assert_eq!(got[1].len(), 1);
+        assert_eq!(got[1][0].code, "R");
+        assert_eq!(got[1][0].path, "new.rs");
+        assert_eq!(got[1][0].old_path.as_deref(), Some("old.rs"));
+    }
+
+    #[test]
+    fn log_files_skips_malformed_records() {
+        // A line with no tab is malformed; the parser drops it rather than
+        // panicking (the same invariant the `parse_log_files` callers rely
+        // on for arbitrary CLI output).
+        let input = "M\ta.rs\nno-tab-here\nM\tb.rs\0";
+        let got = parse_log_files(input);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].len(), 2);
+        assert_eq!(got[0][0].path, "a.rs");
+        assert_eq!(got[0][1].path, "b.rs");
+    }
+
+    #[test]
+    fn remotes_splits_tab_delimited_records() {
+        let input = "origin\tgit@github.com:foo/bar.git\0upstream\t\
+                    https://github.com/baz/qux.git\0";
+        let got = parse_remotes(input);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name, "origin");
+        assert_eq!(got[0].url, "git@github.com:foo/bar.git");
+        assert_eq!(got[1].name, "upstream");
+    }
+
+    #[test]
+    fn remotes_skips_empty_or_malformed_records() {
+        // A leading empty record, a missing-tab line, and a trailing empty
+        // record are all dropped.
+        let input = "\0no-tab-here\0origin\thttps://example.com/repo.git\0\0";
+        let got = parse_remotes(input);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "origin");
     }
 }
 

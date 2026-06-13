@@ -108,6 +108,130 @@ pub(crate) const COUNT_TEMPLATE: &str = "commit_id.short() ++ \"\\n\"";
 pub(crate) const REACHABLE_BOOKMARKS_TEMPLATE: &str =
     "local_bookmarks.map(|b| b.name()).join(\" \") ++ \"\\t\" ++ commit_id.short() ++ \"\\n\"";
 
+/// An enriched jj change for the facade's `vcs_core::Repo::log`
+/// path — extends [`Change`] with parent commit ids, author/committer
+/// identity, an optional body, and the per-change files. Distinct from
+/// `Change` because the wire template is wider and the wrapper's existing
+/// `log` method (which uses the sparser `CHANGE_TEMPLATE`) is the hot path
+/// for other callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ChangeEntry {
+    /// Short change id (`change_id.short()`).
+    pub change_id: String,
+    /// Short commit id (`commit_id.short()`).
+    pub commit_id: String,
+    /// Parent commit ids, as space-joined `commit_id.short()`s; empty for
+    /// the root commit, two entries for a merge.
+    pub parents: Vec<String>,
+    /// Author name (`author.email()`-shaped: `Name <email>`).
+    pub author: String,
+    /// Author timestamp, ISO 8601 (`author.timestamp()`).
+    pub authored_at: String,
+    /// Committer name (jj has no separate committer; same as author).
+    pub committer: String,
+    /// Committer timestamp, ISO 8601 (same as authored_at on jj).
+    pub committed_at: String,
+    /// First line of the description.
+    pub summary: String,
+    /// The full description body (excluding the first line and the trailing
+    /// blank line); `None` when the description is single-line.
+    pub body: Option<String>,
+    /// Per-change files, parsed from a separate `jj diff -r <rev> --summary`
+    /// spawn (jj doesn't expose them in the same template as the metadata
+    /// fields). Empty when `with_files` was `false`.
+    pub files: Vec<ChangeFileChange>,
+}
+
+/// One file change in a [`ChangeEntry`], mirroring `vcs_git::CommitFileChange`
+/// (same wire shape: a status letter, a path, and an optional old path for
+/// renames). Distinct type so the jj crate doesn't depend on `vcs-git`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ChangeFileChange {
+    /// Status letter (`M`/`A`/`D`/`R`/`C`).
+    pub status: char,
+    /// The path the status applies to.
+    pub path: String,
+    /// The original path for a rename/copy.
+    pub old_path: Option<String>,
+}
+
+/// `jj log -T` template for [`log_enriched`](crate::JjApi::log_enriched):
+/// tab-separated fields in the order `parse_log_enriched` splits them,
+/// followed by a literal NUL (`\0`) to terminate the record. The body is
+/// the last column and may itself contain newlines (jj's `description`
+/// field), so the NUL is the *only* safe record separator — git's
+/// per-line approach would split a multi-line body into a phantom second
+/// record.
+pub(crate) const CHANGE_ENTRY_TEMPLATE: &str =
+    "change_id.short() ++ \"\\t\" ++ \
+     commit_id.short() ++ \"\\t\" ++ \
+     parents.map(|p| p.commit_id().short()).join(\" \") ++ \"\\t\" ++ \
+     author ++ \"\\t\" ++ \
+     author.timestamp() ++ \"\\t\" ++ \
+     committer ++ \"\\t\" ++ \
+     committer.timestamp() ++ \"\\t\" ++ \
+     description.first_line() ++ \"\\t\" ++ \
+     description ++ \"\\0\"";
+
+/// Parse `jj log --no-graph -T <CHANGE_ENTRY_TEMPLATE>` output: one change
+/// per NUL-separated record, tab-separated fields in the order the template
+/// emits them. Trailing empty records (the NUL that follows the final
+/// record) are dropped, matching git's `parse_log_enriched`/`parse_log_files`
+/// filter behaviour.
+pub(crate) fn parse_log_enriched(output: &str) -> Vec<ChangeEntry> {
+    output
+        .split('\0')
+        .filter(|rec| !rec.is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let change_id = fields.next()?.to_string();
+            let commit_id = fields.next()?.to_string();
+            let parents_str = fields.next().unwrap_or("");
+            let parents = if parents_str.is_empty() {
+                Vec::new()
+            } else {
+                parents_str
+                    .split(' ')
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            let author = fields.next().unwrap_or("").to_string();
+            let authored_at = fields.next().unwrap_or("").to_string();
+            // jj has no separate committer — we still emit a column for
+            // backend parity (so the LogEntry DTO doesn't need a per-backend
+            // Optional). Set both to the author's values; the facade
+            // documents this asymmetry.
+            let committer = fields.next().unwrap_or("").to_string();
+            let committed_at = fields.next().unwrap_or("").to_string();
+            let summary = fields.next().unwrap_or("").to_string();
+            // The body is the *last* column; re-join any remaining tabs
+            // (which shouldn't exist in a well-formed record, but be
+            // robust to malformed input).
+            let body_rest: String = fields.collect::<Vec<&str>>().join("\t");
+            let body = if body_rest.is_empty() {
+                None
+            } else {
+                Some(body_rest)
+            };
+            Some(ChangeEntry {
+                change_id,
+                commit_id,
+                parents,
+                author,
+                authored_at,
+                committer,
+                committed_at,
+                summary,
+                body,
+                files: Vec::new(),
+            })
+        })
+        .collect()
+}
+
 /// Parse `jj --version` output (`jj 0.38.0`) into the shared
 /// [`vcs_diff::Version`]: the first dotted-numeric token wins; non-numeric
 /// trailers (`-dev`, build hashes) are ignored; a missing patch reads as `0`.
@@ -670,6 +794,50 @@ mod tests {
                      4 files changed, 157 insertions(+), 137 deletions(-)\n";
         assert_eq!(parse_diff_stat(input), DiffStat::new(4, 157, 137));
         assert_eq!(parse_diff_stat(""), DiffStat::default());
+    }
+
+    #[test]
+    fn log_enriched_splits_nul_records_and_tab_fields() {
+        // Two NUL-separated records. First: a single-parent change with a
+        // multi-line body. Second: a merge (two parents) with a single-line
+        // description. The body column is the full description (with
+        // newlines); the NUL is the *only* safe record separator.
+        let input = "kztuxlro\t38e00654\tparent1\tAlice <a@x>\t2026-05-31T10:00:00Z\t\
+                     Alice <a@x>\t2026-05-31T10:00:00Z\tSubject 1\t\
+                     Subject 1\nBody line 1\nBody line 2\0\
+                     abcd1234\tef567890\tp1 p2\tBob <b@y>\t2026-05-30T09:00:00Z\t\
+                     Bob <b@y>\t2026-05-30T09:00:00Z\tMerge\tMerge\0";
+        let got = parse_log_enriched(input);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].change_id, "kztuxlro");
+        assert_eq!(got[0].commit_id, "38e00654");
+        assert_eq!(got[0].parents, vec!["parent1"]);
+        assert_eq!(got[0].summary, "Subject 1");
+        assert_eq!(
+            got[0].body.as_deref(),
+            Some("Subject 1\nBody line 1\nBody line 2")
+        );
+        assert!(got[0].files.is_empty());
+        assert_eq!(got[1].change_id, "abcd1234");
+        assert_eq!(got[1].parents, vec!["p1", "p2"]);
+        assert_eq!(got[1].summary, "Merge");
+    }
+
+    #[test]
+    fn log_enriched_root_change_has_empty_parents() {
+        let input = "root\t00000000\t\tAda <a@x>\t2026-05-31T10:00:00Z\t\
+                     Ada <a@x>\t2026-05-31T10:00:00Z\tfirst\tfirst\0";
+        let got = parse_log_enriched(input);
+        assert_eq!(got[0].parents, Vec::<String>::new());
+        assert_eq!(got[0].body.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn log_enriched_drops_trailing_empty_record() {
+        let input = "kztuxlro\t38e00654\tparent\tAda <a@x>\t2026-05-31T10:00:00Z\t\
+                     Ada <a@x>\t2026-05-31T10:00:00Z\tSubject\t\0\0";
+        let got = parse_log_enriched(input);
+        assert_eq!(got.len(), 1);
     }
 }
 

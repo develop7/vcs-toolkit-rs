@@ -4,10 +4,13 @@
 use std::path::Path;
 
 use processkit::ProcessRunner;
-use vcs_git::{Git, GitApi, GitPush, StatusEntry, WorktreeAdd};
+use vcs_git::{
+    CommitEntry, CommitFileChange, Git, GitApi, GitPush, RemoteEntry, StatusEntry, WorktreeAdd,
+};
 
 use crate::dto::{
-    ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
+    ChangeKind, CreateOutcome, DiffFormat, DiffOutput, DiffSpec, DiffStat, FileChange, LogEntry,
+    LogSpec, MergeProbe, OperationState, RemoteInfo, RefsSnapshot, RepoSnapshot,
     UpstreamTracking, WorktreeInfo,
 };
 use crate::error::Result;
@@ -373,6 +376,152 @@ fn change_kind_from_code(code: &str) -> ChangeKind {
     }
 }
 
+/// Map a `git log --name-status` `XY` code to a [`ChangeKind`]. Same rule as
+/// the porcelain mapper but applied to the wrapper's `CommitFileChange`
+/// records (the leading `X` carries the index status, the trailing `Y` the
+/// worktree — for `--name-status` they tend to agree for non-merge commits).
+fn change_kind_from_name_status_code(code: &str) -> ChangeKind {
+    if code.contains('R') {
+        ChangeKind::Renamed
+    } else if code.contains('D') {
+        ChangeKind::Deleted
+    } else if code.contains('A') || code.contains('C') || code.contains('?') {
+        ChangeKind::Added
+    } else {
+        ChangeKind::Modified
+    }
+}
+
+fn file_change_from_commit(c: CommitFileChange) -> FileChange {
+    FileChange {
+        path: c.path,
+        old_path: c.old_path,
+        kind: change_kind_from_name_status_code(&c.code),
+    }
+}
+
+pub(crate) async fn log<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+    spec: LogSpec<'_>,
+) -> Result<Vec<LogEntry>> {
+    let entries = git
+        .log_enriched(dir, spec.range, spec.max_count, spec.since, spec.with_files)
+        .await?;
+    Ok(entries.into_iter().map(log_entry_from_commit).collect())
+}
+
+fn log_entry_from_commit(c: CommitEntry) -> LogEntry {
+    LogEntry {
+        sha: c.hash,
+        parents: c.parents,
+        author: c.author,
+        authored_at: c.authored_at,
+        committer: c.committer,
+        committed_at: c.committed_at,
+        summary: c.summary,
+        body: c.body,
+        files: c.files.into_iter().map(file_change_from_commit).collect(),
+    }
+}
+
+pub(crate) async fn diff<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+    spec: DiffSpec<'_>,
+) -> Result<DiffOutput> {
+    match spec.format {
+        DiffFormat::Names => {
+            let names = git.diff_names(dir, spec.range, spec.paths).await?;
+            Ok(DiffOutput::Names(names))
+        }
+        DiffFormat::Stat => {
+            // The wrapper's `diff_stat` takes a `&str` range; the facade's
+            // `None` means "working tree" which the wrapper handles via
+            // `git diff --shortstat` (no range arg) on git's side. To keep
+            // the call site simple, fall back to `HEAD` (matching the
+            // `diff_stat` precedent at `Repo::diff_stat`).
+            let range = spec.range.unwrap_or("HEAD");
+            let stat = git.diff_stat(dir, range).await?;
+            Ok(DiffOutput::Stat(stat))
+        }
+        DiffFormat::Unified => {
+            let text = match spec.range {
+                Some(r) => git
+                    .diff_text(
+                        dir,
+                        vcs_git::DiffSpec::Rev(r.to_string()),
+                    )
+                    .await?,
+                None => git.diff_text(dir, vcs_git::DiffSpec::WorkingTree).await?,
+            };
+            apply_max_bytes_pub(text, spec.max_bytes)
+        }
+    }
+}
+
+pub(crate) fn apply_max_bytes_pub(text: String, max_bytes: Option<usize>) -> Result<DiffOutput> {
+    let Some(limit) = max_bytes else {
+        return Ok(DiffOutput::Unified {
+            text,
+            truncated: false,
+            omitted_bytes: 0,
+        });
+    };
+    if text.len() <= limit {
+        return Ok(DiffOutput::Unified {
+            text,
+            truncated: false,
+            omitted_bytes: 0,
+        });
+    }
+    // The truncation marker is appended at the limit, leaving the cut point
+    // *before* the marker (so a caller reading the first N bytes still
+    // sees a valid diff prefix). The marker is included in the returned
+    // text so a downstream `len() == text.len()` check still holds.
+    let mut end = limit;
+    // Walk back to a UTF-8 char boundary so the cut doesn't split a
+    // multi-byte sequence. The boundary is at-or-before `end`.
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &text[..end];
+    let omitted = (text.len() - end) as u64;
+    let marker = format!(
+        "\n…\n[truncated, {omitted} more bytes]\n"
+    );
+    Ok(DiffOutput::Unified {
+        text: format!("{head}{marker}"),
+        truncated: true,
+        omitted_bytes: omitted,
+    })
+}
+
+pub(crate) async fn refs<R: ProcessRunner>(
+    git: &Git<R>,
+    dir: &Path,
+) -> Result<RefsSnapshot> {
+    let head_sha = git.rev_parse(dir, "HEAD").await?;
+    let current_branch = current_branch(git, dir).await?;
+    let default_branch = trunk(git, dir).await?;
+    let remotes: Vec<RemoteInfo> = git
+        .remote_url_list(dir)
+        .await?
+        .into_iter()
+        .map(remote_info_from_git)
+        .collect();
+    Ok(RefsSnapshot {
+        head_sha,
+        current_branch,
+        default_branch,
+        remotes,
+    })
+}
+
+fn remote_info_from_git(r: RemoteEntry) -> RemoteInfo {
+    RemoteInfo { name: r.name, url: r.url }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +535,88 @@ mod tests {
         assert_eq!(change_kind_from_code("R "), ChangeKind::Renamed);
         // A copy (only emitted with copy detection on) is a new file, not a modify.
         assert_eq!(change_kind_from_code("C "), ChangeKind::Added);
+    }
+
+    #[test]
+    fn name_status_code_maps_to_change_kind() {
+        assert_eq!(
+            change_kind_from_name_status_code("M"),
+            ChangeKind::Modified
+        );
+        assert_eq!(change_kind_from_name_status_code("A"), ChangeKind::Added);
+        assert_eq!(change_kind_from_name_status_code("D"), ChangeKind::Deleted);
+        assert_eq!(change_kind_from_name_status_code("R"), ChangeKind::Renamed);
+        assert_eq!(change_kind_from_name_status_code("C"), ChangeKind::Added);
+    }
+
+    #[test]
+    fn apply_max_bytes_truncates_at_utf8_boundary() {
+        let text = "abcdefghij".to_string();
+        let out = apply_max_bytes_pub(text.clone(), Some(5)).expect("truncate");
+        match out {
+            DiffOutput::Unified { text, truncated, omitted_bytes } => {
+                assert!(truncated);
+                assert_eq!(omitted_bytes, 5);
+                assert!(text.starts_with("abcde"));
+                assert!(text.contains("[truncated, 5 more bytes]"));
+            }
+            other => panic!("expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_max_bytes_no_truncation_when_under_limit() {
+        let out = apply_max_bytes_pub("hello".to_string(), Some(100)).expect("no-trunc");
+        match out {
+            DiffOutput::Unified { text, truncated, omitted_bytes } => {
+                assert!(!truncated);
+                assert_eq!(omitted_bytes, 0);
+                assert_eq!(text, "hello");
+            }
+            other => panic!("expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_max_bytes_respects_utf8_boundaries() {
+        // "αβγδ" is 8 bytes (2 each). Char boundaries: 0, 2, 4, 6, 8.
+        // Cutting at byte 3: byte 3 is NOT a boundary (mid-β). The
+        // function walks back to byte 2 (start of β), so the head is "α".
+        // The test asserts that the cut happens at the *previous* boundary,
+        // not at the requested byte.
+        let text = "αβγδ".to_string();
+        let out = apply_max_bytes_pub(text, Some(3)).expect("utf8");
+        match out {
+            DiffOutput::Unified { text, truncated, omitted_bytes } => {
+                assert!(truncated);
+                assert!(text.starts_with("α"));
+                // β is dropped (we cut mid-`β`, walked back to "α").
+                assert!(!text.contains("β"), "β should be dropped: {text:?}");
+                // 6 bytes dropped.
+                assert_eq!(omitted_bytes, 6);
+            }
+            other => panic!("expected Unified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_max_bytes_walks_back_when_cut_splits_a_codepoint() {
+        // "αβγδ" is 8 bytes (2 each). Char boundaries: 0, 2, 4, 6, 8.
+        // Cutting at byte 5: byte 5 is mid-γ, NOT a boundary. The function
+        // walks back to byte 4 (start of γ), so the head is "αβ".
+        let text = "αβγδ".to_string();
+        let out = apply_max_bytes_pub(text, Some(5)).expect("utf8");
+        match out {
+            DiffOutput::Unified { text, truncated, omitted_bytes } => {
+                assert!(truncated);
+                assert!(text.starts_with("αβ"));
+                // γ and δ are dropped; 4 bytes dropped (γ+δ).
+                assert!(!text.contains("γ"), "γ should be dropped: {text:?}");
+                assert!(!text.contains("δ"), "δ should be dropped: {text:?}");
+                // The head is 4 bytes; the rest is 4 bytes.
+                assert_eq!(omitted_bytes, 4);
+            }
+            other => panic!("expected Unified, got {other:?}"),
+        }
     }
 }
