@@ -119,7 +119,7 @@ pub use processkit::CancellationToken;
 
 pub mod conflict;
 mod parse;
-pub use parse::{BlameLine, Branch, BranchStatus, Commit, StatusEntry, Worktree};
+pub use parse::{BlameLine, Branch, BranchStatus, Commit, CommitEntry, CommitFileChange, RemoteEntry, StatusEntry, Worktree};
 // The git-format diff model + parser and the version type are shared with
 // `vcs-jj` (identical output) — re-exported so `vcs_git::FileDiff`,
 // `vcs_git::parse_diff`, `vcs_git::GitVersion`, … still resolve.
@@ -628,6 +628,33 @@ pub trait GitApi: Send + Sync {
     /// so cross-backend code uses one signature. The `revspec` is guarded against
     /// being parsed as a flag.
     async fn log(&self, dir: &Path, revspec: &str, max: usize) -> Result<Vec<Commit>>;
+    /// Commits in `range` (or the most recent when `range` is `None`), newest
+    /// first, with the enriched fields the facade's `vcs_core::Repo::log`
+    /// needs: parent hashes, committer identity, body, and — when
+    /// `with_files` is `true` — per-commit changed paths.
+    ///
+    /// `since` is the free-form "since" filter (git `--since`); `max` caps
+    /// the result. The wrapper rejects leading-`-` strings in `range` and
+    /// `since` via `reject_flag_like` before they reach argv.
+    async fn log_enriched(
+        &self,
+        dir: &Path,
+        range: Option<&str>,
+        max: Option<usize>,
+        since: Option<&str>,
+        with_files: bool,
+    ) -> Result<Vec<CommitEntry>>;
+    /// Changed paths in `range` (or the working tree when `range` is `None`),
+    /// one path per line; `paths` restricts the diff to those repo-relative
+    /// paths (joined after `--` so they can't be smuggled as flags).
+    async fn diff_names(
+        &self,
+        dir: &Path,
+        range: Option<&str>,
+        paths: Option<&[String]>,
+    ) -> Result<Vec<String>>;
+    /// All configured remotes (name + fetch URL), one entry per remote.
+    async fn remote_url_list(&self, dir: &Path) -> Result<Vec<RemoteEntry>>;
     /// Resolve a revision to a full hash (`git rev-parse <rev>`).
     async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String>;
     /// Resolve a revision to its abbreviated hash (`git rev-parse --short <rev>`) —
@@ -1106,6 +1133,69 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .await
     }
 
+    async fn log_enriched(
+        &self,
+        dir: &Path,
+        range: Option<&str>,
+        max: Option<usize>,
+        since: Option<&str>,
+        with_files: bool,
+    ) -> Result<Vec<CommitEntry>> {
+        if let Some(r) = range {
+            reject_flag_like("range", r)?;
+        }
+        if let Some(s) = since {
+            reject_flag_like("since", s)?;
+        }
+        let n_flag = max.map(|m| format!("-n{m}"));
+        // Two spawns when `with_files` is true, one otherwise. The records
+        // align by position (same range, same order, both NUL-delimited);
+        // the wrapper zips them. Two spawns is simpler than smuggling a
+        // sentinel-separated format through a single one.
+        let mut args: Vec<&str> = vec!["log", "-z"];
+        if let Some(r) = range {
+            args.push(r);
+        }
+        if let Some(ref n) = n_flag {
+            args.push(n.as_str());
+        }
+        let since_flag;
+        if let Some(s) = since {
+            since_flag = format!("--since={s}");
+            args.push(since_flag.as_str());
+        }
+        args.push("--format=%H%x1f%P%x1f%an%x1f%aI%x1f%cn%x1f%cI%x1f%s%x1f%b");
+        let mut entries = self
+            .core
+            .parse(self.core.command_in(dir, &args), parse::parse_log_enriched)
+            .await?;
+        if with_files {
+            let mut files_args: Vec<&str> = vec!["log", "-z", "--name-status", "--format="];
+            if let Some(r) = range {
+                files_args.push(r);
+            }
+            if let Some(ref n) = n_flag {
+                files_args.push(n.as_str());
+            }
+            let since_flag_files;
+            if let Some(s) = since {
+                since_flag_files = format!("--since={s}");
+                files_args.push(since_flag_files.as_str());
+            }
+            let files_buckets: Vec<Vec<CommitFileChange>> = self
+                .core
+                .parse(
+                    self.core.command_in(dir, &files_args),
+                    parse::parse_log_files,
+                )
+                .await?;
+            for (entry, files) in entries.iter_mut().zip(files_buckets.into_iter()) {
+                entry.files = files;
+            }
+        }
+        Ok(entries)
+    }
+
     async fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String> {
         reject_flag_like("revision", rev)?;
         self.core
@@ -1310,6 +1400,26 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .await
     }
 
+    async fn remote_url_list(&self, dir: &Path) -> Result<Vec<RemoteEntry>> {
+        // `git remote` with a custom `--format` emits one tab-separated
+        // `name\turl` record per remote, no trailing newline, NUL-separated
+        // (via `-z`) for safe parsing. The default `git remote -v` emits each
+        // remote twice (fetch + push) — `--format` collapses to one row.
+        self.core
+            .parse(
+                self.core.command_in(
+                    dir,
+                    [
+                        "remote",
+                        "-z",
+                        "--format=%(refname:short)%00%(fetchurl)",
+                    ],
+                ),
+                parse::parse_remotes,
+            )
+            .await
+    }
+
     async fn upstream(&self, dir: &Path) -> Result<Option<String>> {
         // `@{u}` resolves the configured upstream; with no upstream the command
         // exits **128** — but so does a genuine failure (detached HEAD, not a repo),
@@ -1430,6 +1540,39 @@ impl<R: ProcessRunner> GitApi for Git<R> {
             .parse(
                 self.core.command_in(dir, ["diff", "--shortstat", range]),
                 parse::parse_shortstat,
+            )
+            .await
+    }
+
+    async fn diff_names(
+        &self,
+        dir: &Path,
+        range: Option<&str>,
+        paths: Option<&[String]>,
+    ) -> Result<Vec<String>> {
+        // `git diff --name-only [-z]` is stable and machine-parseable: one
+        // path per NUL-delimited record, no quoting. `range` and `paths` go
+        // through `reject_flag_like` so a leading-`-` value can't be smuggled
+        // as a flag; `paths` are joined after `--` so they can't either.
+        let mut args: Vec<String> = vec!["diff".into(), "--name-only".into(), "-z".into()];
+        if let Some(r) = range {
+            reject_flag_like("range", r)?;
+            args.push(r.to_string());
+        }
+        if let Some(p) = paths {
+            args.push("--".into());
+            for path in p {
+                reject_flag_like("path", path)?;
+                args.push(path.clone());
+            }
+        }
+        self.core
+            .parse(
+                self.core.command_in(
+                    dir,
+                    args.iter().map(String::as_str).collect::<Vec<_>>(),
+                ),
+                parse::parse_nul_paths,
             )
             .await
     }
@@ -2232,6 +2375,12 @@ git_at_forwarders! {
         fn current_branch() -> Result<Option<String>>;
         fn branches() -> Result<Vec<Branch>>;
         fn log(revspec: &str, max: usize) -> Result<Vec<Commit>>;
+        fn log_enriched(
+            range: Option<&str>,
+            max: Option<usize>,
+            since: Option<&str>,
+            with_files: bool,
+        ) -> Result<Vec<CommitEntry>>;
         fn rev_parse(rev: &str) -> Result<String>;
         fn rev_parse_short(rev: &str) -> Result<String>;
         fn init() -> Result<()>;
@@ -2251,6 +2400,7 @@ git_at_forwarders! {
         fn branch_exists(name: &str) -> Result<bool>;
         fn remote_branch_exists(name: &str) -> Result<bool>;
         fn remote_url(remote: &str) -> Result<String>;
+        fn remote_url_list() -> Result<Vec<RemoteEntry>>;
         fn upstream() -> Result<Option<String>>;
         fn remote_branches(remote: &str) -> Result<Vec<String>>;
         fn is_merged(branch: &str, target: &str) -> Result<bool>;
@@ -2260,6 +2410,7 @@ git_at_forwarders! {
         fn rev_list_count(range: &str) -> Result<usize>;
         fn diff_range_is_empty(range: &str) -> Result<bool>;
         fn diff_stat(range: &str) -> Result<DiffStat>;
+        fn diff_names(range: Option<&str>, paths: Option<&[String]>) -> Result<Vec<String>>;
         fn diff_text(spec: DiffSpec) -> Result<String>;
         fn diff(spec: DiffSpec) -> Result<Vec<FileDiff>>;
         fn staged_is_empty() -> Result<bool>;
@@ -2851,6 +3002,116 @@ mod tests {
             (stat.files_changed, stat.insertions, stat.deletions),
             (2, 5, 1)
         );
+    }
+
+    #[tokio::test]
+    async fn log_enriched_parses_one_spawn() {
+        // One spawn (with_files=false): the wrapper emits --format only.
+        let reply = "abc\u{1f}parent\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Ada\u{1f}\
+                    2026-05-31T10:00:00+00:00\u{1f}Subject\u{1f}\0";
+        let git = Git::with_runner(ScriptedRunner::new().on(
+            ["log", "-z", "main..HEAD", "-n10"],
+            Reply::ok(reply),
+        ));
+        let entries = git
+            .log_enriched(Path::new("."), Some("main..HEAD"), Some(10), None, false)
+            .await
+            .expect("log_enriched");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hash, "abc");
+        assert_eq!(entries[0].parents, vec!["parent"]);
+        assert_eq!(entries[0].summary, "Subject");
+        assert!(entries[0].files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_enriched_with_files_zips_two_spawns() {
+        // Two spawns: --format=... (header) and --name-status --format= (files).
+        // The scripted runner is exact-argv, so both rules must be listed
+        // and the first one (which the wrapper hits first) matches the
+        // header spawn. The `--name-status` rule is matched by the second
+        // spawn because its argv has the extra flag.
+        let header = "abc\u{1f}parent\u{1f}Ada\u{1f}2026-05-31T10:00:00+00:00\u{1f}Ada\u{1f}\
+                      2026-05-31T10:00:00+00:00\u{1f}Subject\u{1f}\0";
+        let files = "M\ta.rs\0";
+        let runner = ScriptedRunner::new()
+            .on(["log", "-z", "main..HEAD", "-n10"], Reply::ok(header))
+            .on(
+                ["log", "-z", "--name-status", "--format=", "main..HEAD", "-n10"],
+                Reply::ok(files),
+            );
+        let git = Git::with_runner(runner);
+        let entries = git
+            .log_enriched(Path::new("."), Some("main..HEAD"), Some(10), None, true)
+            .await
+            .expect("log_enriched");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hash, "abc");
+        assert_eq!(entries[0].files.len(), 1);
+        assert_eq!(entries[0].files[0].path, "a.rs");
+        assert_eq!(entries[0].files[0].code, "M");
+    }
+
+    #[tokio::test]
+    async fn log_enriched_rejects_flag_like_range() {
+        // `reject_flag_like` short-circuits before the spawn, so a scripted
+        // runner that has no rules would never be reached.
+        let git = Git::with_runner(ScriptedRunner::new());
+        assert!(
+            git.log_enriched(Path::new("."), Some("--upload-pack=evil"), None, None, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            git.log_enriched(Path::new("."), None, None, Some("--since=evil"), false)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_names_returns_nul_parsed_paths() {
+        let git = Git::with_runner(ScriptedRunner::new().on(
+            ["diff", "--name-only", "-z", "main..HEAD"],
+            Reply::ok("a.rs\0b.rs\0"),
+        ));
+        let names = git
+            .diff_names(Path::new("."), Some("main..HEAD"), None)
+            .await
+            .expect("diff_names");
+        assert_eq!(names, vec!["a.rs", "b.rs"]);
+    }
+
+    #[tokio::test]
+    async fn diff_names_rejects_flag_like_range_and_path() {
+        let git = Git::with_runner(ScriptedRunner::new());
+        assert!(
+            git.diff_names(Path::new("."), Some("-evil"), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            git.diff_names(
+                Path::new("."),
+                None,
+                Some(&["--upload-pack=evil".to_string()])
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_url_list_parses_nul_separated_records() {
+        let git = Git::with_runner(ScriptedRunner::new().on(
+            ["remote", "-z", "--format=%(refname:short)%00%(fetchurl)"],
+            Reply::ok("origin\tgit@github.com:foo/bar.git\0upstream\thttps://x/y.git\0"),
+        ));
+        let remotes = git.remote_url_list(Path::new(".")).await.expect("remote_url_list");
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].url, "git@github.com:foo/bar.git");
+        assert_eq!(remotes[1].name, "upstream");
     }
 
     #[tokio::test]
