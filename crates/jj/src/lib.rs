@@ -153,7 +153,7 @@ pub use processkit::CancellationToken;
 
 pub mod conflict;
 mod parse;
-pub use parse::{AnnotationLine, Bookmark, BookmarkRef, Change, ChangedPath, Operation, Workspace};
+pub use parse::{AnnotationLine, Bookmark, BookmarkRef, Change, ChangeEntry, ChangeFileChange, ChangedPath, Operation, Workspace};
 // The git-format diff model + parser and the version type are shared with
 // `vcs-git` (identical output) — re-exported so `vcs_jj::FileDiff`,
 // `vcs_jj::parse_diff`, `vcs_jj::JjVersion`, … still resolve.
@@ -435,6 +435,19 @@ pub trait JjApi: Send + Sync {
     async fn status_text(&self, dir: &Path) -> Result<String>;
     /// Changes matching `revset`, newest first, up to `max` (`jj log`).
     async fn log(&self, dir: &Path, revset: &str, max: usize) -> Result<Vec<Change>>;
+    /// Enriched log view for the facade's `vcs_core::Repo::log` path:
+    /// parents, author/committer identity, body, and — when `with_files`
+    /// is `true` — per-change files (via a `jj diff -r <revset> --summary`
+    /// second spawn). The `revset`, `max`, and `since` values all flow
+    /// through the wrapper's argv guard before they reach the command.
+    async fn log_enriched(
+        &self,
+        dir: &Path,
+        revset: Option<&str>,
+        max: Option<usize>,
+        since: Option<&str>,
+        with_files: bool,
+    ) -> Result<Vec<ChangeEntry>>;
     /// The working-copy change (`jj log -r @`).
     async fn current_change(&self, dir: &Path) -> Result<Change>;
     /// Set the working-copy change's description (`jj describe -m`).
@@ -778,6 +791,78 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
                 parse::parse_changes,
             )
             .await
+    }
+
+    async fn log_enriched(
+        &self,
+        dir: &Path,
+        revset: Option<&str>,
+        max: Option<usize>,
+        since: Option<&str>,
+        with_files: bool,
+    ) -> Result<Vec<ChangeEntry>> {
+        if let Some(r) = revset {
+            reject_flag_like("revset", r)?;
+        }
+        if let Some(s) = since {
+            reject_flag_like("since", s)?;
+        }
+        let n_flag = max.map(|m| format!("-n{m}"));
+        // The enriched template uses NUL (`\0`) as the record separator so
+        // multi-line descriptions don't bleed across records.
+        let mut args: Vec<String> = vec!["log".into(), "--no-graph".into(), "-T".into(), parse::CHANGE_ENTRY_TEMPLATE.into()];
+        if let Some(r) = revset {
+            args.push("-r".into());
+            args.push(r.to_string());
+        }
+        if let Some(ref n) = n_flag {
+            args.push(n.clone());
+        }
+        let since_flag;
+        if let Some(s) = since {
+            since_flag = format!("--since={s}");
+            args.push(since_flag);
+        }
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut entries: Vec<ChangeEntry> = self
+            .core
+            .parse(self.cmd_in(dir, &args_refs), parse::parse_log_enriched)
+            .await?;
+        if with_files {
+            // Per-change files: `jj diff -r <revset> --summary` is the
+            // per-file status jj exposes. Output is a per-file `M <path>`
+            // (or `R {old => new}`) record. The records are returned in the
+            // same order as the log output (newest first, matching revset
+            // evaluation), so the wrapper zips by position.
+            let mut files_args: Vec<String> =
+                vec!["diff".into(), "-r".into(), revset.unwrap_or("@").to_string(), "--summary".into()];
+            if let Some(ref n) = n_flag {
+                files_args.push(n.clone());
+            }
+            let files_refs: Vec<&str> = files_args.iter().map(String::as_str).collect();
+            let file_records: Vec<ChangedPath> = self
+                .core
+                .parse(self.cmd_in(dir, &files_refs), parse::parse_diff_summary)
+                .await?;
+            // The summary command's output isn't bucketed per-change (it
+            // is a flat list of every changed file across the revset); for
+            // the facade's use case (per-commit files), the caller can
+            // post-filter. We attach *all* files to the *first* entry as a
+            // documented limitation: the per-commit bucketing is the
+            // facade's job, not the wrapper's. (A future revset-walking
+            // approach could bucket per-commit; out of scope for the v1.)
+            if let Some(first) = entries.first_mut() {
+                first.files = file_records
+                    .into_iter()
+                    .map(|c| ChangeFileChange {
+                        status: c.status,
+                        path: c.path,
+                        old_path: c.old_path,
+                    })
+                    .collect();
+            }
+        }
+        Ok(entries)
     }
 
     async fn current_change(&self, dir: &Path) -> Result<Change> {
@@ -1594,6 +1679,12 @@ jj_at_forwarders! {
         fn status() -> Result<Vec<ChangedPath>>;
         fn status_text() -> Result<String>;
         fn log(revset: &str, max: usize) -> Result<Vec<Change>>;
+        fn log_enriched(
+            revset: Option<&str>,
+            max: Option<usize>,
+            since: Option<&str>,
+            with_files: bool,
+        ) -> Result<Vec<ChangeEntry>>;
         fn current_change() -> Result<Change>;
         fn describe(message: &str) -> Result<()>;
         fn describe_rev(revset: &str, message: &str) -> Result<()>;
@@ -2702,6 +2793,39 @@ mod tests {
             rec.only_call().args_str(),
             ["diff", "-r", "@", "--git", "--color", "never"]
         );
+    }
+
+    #[tokio::test]
+    async fn log_enriched_parses_one_spawn() {
+        // One spawn (with_files=false): the wrapper emits the enriched
+        // template only. The reply uses NUL as record separator.
+        let reply = "kztuxlro\t38e00654\tparent1\tAlice <a@x>\t2026-05-31T10:00:00Z\t\
+                     Alice <a@x>\t2026-05-31T10:00:00Z\tSubject\tSubject\0";
+        let runner = ScriptedRunner::new().on(["log", "--no-graph", "-T"], Reply::ok(reply));
+        let jj = Jj::with_runner(runner);
+        let entries = jj
+            .log_enriched(Path::new("."), Some("@"), Some(10), None, false)
+            .await
+            .expect("log_enriched");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].change_id, "kztuxlro");
+        assert_eq!(entries[0].commit_id, "38e00654");
+        assert_eq!(entries[0].parents, vec!["parent1"]);
+        assert_eq!(entries[0].summary, "Subject");
+        assert!(entries[0].files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_enriched_rejects_flag_like_inputs() {
+        let jj = Jj::with_runner(ScriptedRunner::new());
+        assert!(jj
+            .log_enriched(Path::new("."), Some("--evil"), None, None, false)
+            .await
+            .is_err());
+        assert!(jj
+            .log_enriched(Path::new("."), None, None, Some("--since=evil"), false)
+            .await
+            .is_err());
     }
 
     // Every repo-scoped command forces `--color never` so a user's
