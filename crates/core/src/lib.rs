@@ -181,8 +181,9 @@ mod git_backend;
 mod jj_backend;
 
 pub use dto::{
-    BackendKind, ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState,
-    RepoSnapshot, UpstreamTracking, WorktreeInfo,
+    BackendKind, ChangeKind, CreateOutcome, DiffFormat, DiffOutput, DiffSpec, DiffStat, FileChange,
+    LogEntry, LogSpec, MergeProbe, OperationState, RefsSnapshot, RemoteInfo, RepoSnapshot, UpstreamTracking,
+    WorktreeInfo,
 };
 pub use error::{Error, Result};
 
@@ -445,6 +446,41 @@ impl<R: ProcessRunner> Repo<R> {
             }
         }
         Ok(None)
+    }
+
+    /// Commit history for the working copy (or a range), enriched with
+    /// parents, committer identity, body, and — when [`LogSpec::with_files`]
+    /// is `true` — per-commit changed paths. See [`LogEntry`] for the field
+    /// set and the backend asymmetries (jj has no separate committer; the
+    /// wrapper sets both columns to the author's values).
+    pub async fn log(&self, spec: LogSpec<'_>) -> Result<Vec<LogEntry>> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::log(g, &self.cwd, spec).await,
+            Backend::Jj(j) => jj_backend::log(j, &self.cwd, spec).await,
+        }
+    }
+
+    /// A range/working-copy diff in the requested format (unified text /
+    /// paths-only / aggregate stat). Free-form strings in [`DiffSpec`] go
+    /// through the wrapper's argv guard before they reach the command;
+    /// `max_bytes` caps the unified blob and the wrapper reports the
+    /// truncation in the result.
+    pub async fn diff(&self, spec: DiffSpec<'_>) -> Result<DiffOutput> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::diff(g, &self.cwd, spec).await,
+            Backend::Jj(j) => jj_backend::diff(j, &self.cwd, spec).await,
+        }
+    }
+
+    /// The repo's ref-state bundle: HEAD, current branch, default branch, and
+    /// configured remotes. Backend asymmetries: a pure-jj repo with no git
+    /// remote has an empty `remotes`; a colocated jj repo returns the same
+    /// remotes as its git sub-handle.
+    pub async fn refs(&self) -> Result<RefsSnapshot> {
+        match &self.backend {
+            Backend::Git(g) => git_backend::refs(g, &self.cwd).await,
+            Backend::Jj(j) => jj_backend::refs(j, &self.cwd).await,
+        }
     }
 
     /// Local branch (git) / bookmark (jj) names.
@@ -857,6 +893,7 @@ facade_trait! {
     async {
         fn current_branch() -> Result<Option<String>>;
         fn trunk() -> Result<Option<String>>;
+        fn refs() -> Result<RefsSnapshot>;
         fn local_branches() -> Result<Vec<String>>;
         fn branch_exists(name: &str) -> Result<bool>;
         fn has_uncommitted_changes() -> Result<bool>;
@@ -866,6 +903,8 @@ facade_trait! {
         fn rename_branch(old: &str, new: &str) -> Result<()>;
         fn changed_files() -> Result<Vec<FileChange>>;
         fn diff_stat() -> Result<DiffStat>;
+        fn log(spec: LogSpec<'_>) -> Result<Vec<LogEntry>>;
+        fn diff(spec: DiffSpec<'_>) -> Result<DiffOutput>;
         fn snapshot() -> Result<RepoSnapshot>;
         fn commit_paths(paths: &[String], message: &str) -> Result<()>;
         fn fetch() -> Result<()>;
