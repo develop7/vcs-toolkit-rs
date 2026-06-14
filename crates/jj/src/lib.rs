@@ -2103,9 +2103,10 @@ mod tests {
     // Hermetic: real log() arg-building + template parsing against canned output.
     #[tokio::test]
     async fn current_change_parses_scripted_output() {
-        let jj = Jj::with_runner(
-            ScriptedRunner::new().on(["jj", "log"], Reply::ok("kztuxlro\t38e00654\tfalse\thello jj\n")),
-        );
+        let jj = Jj::with_runner(ScriptedRunner::new().on(
+            ["jj", "log"],
+            Reply::ok("kztuxlro\t38e00654\tfalse\thello jj\n"),
+        ));
         let change = jj
             .current_change(Path::new("."))
             .await
@@ -2288,8 +2289,9 @@ mod tests {
     // gates precisely on the validated 0.38 floor.
     #[tokio::test]
     async fn capabilities_parse_and_gate_versions() {
-        let jj =
-            Jj::with_runner(ScriptedRunner::new().on(["jj", "--version"], Reply::ok("jj 0.38.0\n")));
+        let jj = Jj::with_runner(
+            ScriptedRunner::new().on(["jj", "--version"], Reply::ok("jj 0.38.0\n")),
+        );
         let caps = jj.capabilities().await.expect("capabilities");
         assert!(caps.is_supported());
         caps.ensure_supported().expect("supported");
@@ -2300,8 +2302,9 @@ mod tests {
         );
         assert!(dev.capabilities().await.unwrap().is_supported());
 
-        let old =
-            Jj::with_runner(ScriptedRunner::new().on(["jj", "--version"], Reply::ok("jj 0.35.0\n")));
+        let old = Jj::with_runner(
+            ScriptedRunner::new().on(["jj", "--version"], Reply::ok("jj 0.35.0\n")),
+        );
         let caps = old.capabilities().await.expect("capabilities");
         assert!(!caps.is_supported());
         let err = caps.ensure_supported().expect_err("unsupported");

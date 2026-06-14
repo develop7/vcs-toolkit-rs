@@ -592,7 +592,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_args_forwards_str_slices() {
-        let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "whoami"], Reply::ok("me\n")));
+        let tea =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "whoami"], Reply::ok("me\n")));
         assert_eq!(tea.run_args(&["whoami"]).await.unwrap(), "me");
     }
 
@@ -602,7 +603,8 @@ mod tests {
     #[tokio::test]
     async fn pr_list_parses_scripted_json() {
         let json = r#"[{"index":"7","title":"Add X","state":"open","head":"feat/x","base":"main","url":"u"}]"#;
-        let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(json)));
+        let tea =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(json)));
         let prs = tea.pr_list(Path::new(".")).await.expect("pr_list");
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 7);
@@ -617,7 +619,8 @@ mod tests {
             {"index":"7","title":"Seven","state":"open","head":"a","base":"main","url":"u"},
             {"index":"9","title":"Nine","state":"merged","head":"b","base":"main","url":"u"}
         ]"#;
-        let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(json)));
+        let tea =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(json)));
         let pr = tea.pr_view(Path::new("."), 9).await.expect("pr_view");
         assert_eq!(pr.title, "Nine");
         assert!(pr.merged);
@@ -677,11 +680,13 @@ mod tests {
             ScriptedRunner::new().on(["tea", "login", "list"], Reply::ok(r#"[{"name":"gitea"}]"#)),
         );
         assert!(yes.auth_status().await.unwrap());
-        let no = Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::ok("[]")));
+        let no =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::ok("[]")));
         assert!(!no.auth_status().await.unwrap());
         // Some tea builds print nothing (not `[]`) when no login is configured;
         // that must read as `false`, not a parse error.
-        let empty = Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::ok("")));
+        let empty =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::ok("")));
         assert!(!empty.auth_status().await.unwrap());
         // A non-zero exit (e.g. tea erroring because no config file exists) must
         // read as "not logged in" — never an error.
@@ -689,15 +694,18 @@ mod tests {
             ScriptedRunner::new().on(["tea", "login", "list"], Reply::fail(1, "no config")),
         );
         assert!(!failed.auth_status().await.unwrap());
-        let weird =
-            Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::fail(2, "boom")));
+        let weird = Gitea::with_runner(
+            ScriptedRunner::new().on(["tea", "login", "list"], Reply::fail(2, "boom")),
+        );
         assert!(!weird.auth_status().await.unwrap());
     }
 
     // A timed-out login check must error, not silently report "not logged in".
     #[tokio::test]
     async fn auth_status_errors_on_timeout() {
-        let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "login", "list"], Reply::timeout()));
+        let tea = Gitea::with_runner(
+            ScriptedRunner::new().on(["tea", "login", "list"], Reply::timeout()),
+        );
         assert!(matches!(
             tea.auth_status().await.unwrap_err(),
             Error::Timeout { .. }
@@ -756,7 +764,9 @@ mod tests {
     #[tokio::test]
     async fn issue_list_parses_scripted_json() {
         let json = r#"[{"index":"12","title":"Bug","state":"open","body":"broken","url":"u"}]"#;
-        let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "issues", "list"], Reply::ok(json)));
+        let tea = Gitea::with_runner(
+            ScriptedRunner::new().on(["tea", "issues", "list"], Reply::ok(json)),
+        );
         let issues = tea.issue_list(Path::new(".")).await.expect("issue_list");
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].number, 12);
@@ -834,8 +844,9 @@ mod tests {
     #[tokio::test]
     async fn release_list_parses_scripted_json() {
         let json = r#"[{"tag-_name":"0.1","title":"First","status":"released","published _at":"2023-07-26T13:02:36Z","tar/_zip url":"https://gitea/0.1.tar.gz\nhttps://gitea/0.1.zip"}]"#;
-        let tea =
-            Gitea::with_runner(ScriptedRunner::new().on(["tea", "releases", "list"], Reply::ok(json)));
+        let tea = Gitea::with_runner(
+            ScriptedRunner::new().on(["tea", "releases", "list"], Reply::ok(json)),
+        );
         let releases = tea
             .release_list(Path::new("."))
             .await

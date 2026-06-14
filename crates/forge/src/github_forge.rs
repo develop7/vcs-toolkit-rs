@@ -209,12 +209,14 @@ fn aggregate(checks: &[CheckRun]) -> CiStatus {
     let mut any_pending = false;
     let mut any_pass = false;
     for c in checks {
-        match c.bucket.as_str() {
-            "fail" | "cancel" => return CiStatus::Failing,
-            "pending" => any_pending = true,
-            "pass" => any_pass = true,
-            _ => {} // "skipping" and unknowns don't move the needle.
+        if c.bucket.is_failing() {
+            return CiStatus::Failing;
+        } else if c.bucket.is_pending() {
+            any_pending = true;
+        } else if c.bucket.is_passing() {
+            any_pass = true;
         }
+        // `Skipping`/`Unknown` don't move the needle.
     }
     if any_pending {
         CiStatus::Pending

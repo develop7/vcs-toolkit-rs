@@ -163,7 +163,7 @@ async fn main() -> Result<(), Error> {
 
     let branch = git.current_branch(repo).await?; // String
     let status = git.status(repo).await?; // Vec<StatusEntry>
-    let log = git.log(repo, 5).await?; // Vec<Commit>, newest first
+    let log = git.log(repo, "HEAD", 5).await?; // Vec<Commit>, newest first
 
     println!(
         "on {branch}: {} change(s), HEAD = {}",

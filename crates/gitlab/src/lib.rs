@@ -610,8 +610,9 @@ mod tests {
 
     #[tokio::test]
     async fn run_args_forwards_str_slices() {
-        let glab =
-            GitLab::with_runner(ScriptedRunner::new().on(["glab", "api", "/version"], Reply::ok("ok\n")));
+        let glab = GitLab::with_runner(
+            ScriptedRunner::new().on(["glab", "api", "/version"], Reply::ok("ok\n")),
+        );
         assert_eq!(glab.run_args(&["api", "/version"]).await.unwrap(), "ok");
     }
 
@@ -620,7 +621,8 @@ mod tests {
     #[tokio::test]
     async fn mr_list_parses_scripted_json() {
         let json = r#"[{"iid":7,"title":"Add X","state":"opened","source_branch":"feat/x","target_branch":"main","web_url":"u","draft":false}]"#;
-        let glab = GitLab::with_runner(ScriptedRunner::new().on(["glab", "mr", "list"], Reply::ok(json)));
+        let glab =
+            GitLab::with_runner(ScriptedRunner::new().on(["glab", "mr", "list"], Reply::ok(json)));
         let mrs = glab.mr_list(Path::new(".")).await.expect("mr_list");
         assert_eq!(mrs.len(), 1);
         assert_eq!(mrs[0].iid, 7);
@@ -652,14 +654,16 @@ mod tests {
         );
         assert!(!no.auth_status().await.unwrap());
         // An unexpected exit code (e.g. 2) is still just "not authenticated".
-        let weird = GitLab::with_runner(ScriptedRunner::new().on(["glab", "auth"], Reply::fail(2, "boom")));
+        let weird =
+            GitLab::with_runner(ScriptedRunner::new().on(["glab", "auth"], Reply::fail(2, "boom")));
         assert!(!weird.auth_status().await.unwrap());
     }
 
     // A timed-out auth check must error, not silently report "not authenticated".
     #[tokio::test]
     async fn auth_status_errors_on_timeout() {
-        let glab = GitLab::with_runner(ScriptedRunner::new().on(["glab", "auth"], Reply::timeout()));
+        let glab =
+            GitLab::with_runner(ScriptedRunner::new().on(["glab", "auth"], Reply::timeout()));
         assert!(matches!(
             glab.auth_status().await.unwrap_err(),
             Error::Timeout { .. }
@@ -778,7 +782,8 @@ mod tests {
     #[tokio::test]
     async fn mr_checks_buckets_pipeline_status() {
         let json = r#"{"iid":4,"head_pipeline":{"status":"failed"}}"#;
-        let glab = GitLab::with_runner(ScriptedRunner::new().on(["glab", "mr", "view"], Reply::ok(json)));
+        let glab =
+            GitLab::with_runner(ScriptedRunner::new().on(["glab", "mr", "view"], Reply::ok(json)));
         assert_eq!(
             glab.mr_checks(Path::new("."), 4).await.unwrap(),
             CiStatus::Failing
@@ -902,7 +907,9 @@ mod tests {
     #[tokio::test]
     async fn repo_view_parses_project() {
         let json = r#"{"name":"cli","path_with_namespace":"gitlab-org/cli","default_branch":"main","web_url":"u","visibility":"public"}"#;
-        let glab = GitLab::with_runner(ScriptedRunner::new().on(["glab", "repo", "view"], Reply::ok(json)));
+        let glab = GitLab::with_runner(
+            ScriptedRunner::new().on(["glab", "repo", "view"], Reply::ok(json)),
+        );
         let p = glab.repo_view(Path::new(".")).await.expect("repo_view");
         assert_eq!(p.path_with_namespace, "gitlab-org/cli");
         assert_eq!(p.default_branch, "main");

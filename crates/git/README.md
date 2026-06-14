@@ -30,7 +30,7 @@ let repo = Path::new(".");
 
 let branch = git.current_branch(repo).await?; // String, e.g. "main"
 let status = git.status(repo).await?; // Vec<StatusEntry>
-let log = git.log(repo, 10).await?; // Vec<Commit>, newest first
+let log = git.log(repo, "HEAD", 10).await?; // Vec<Commit>, newest first
 ```
 
 ### Stage, commit, inspect
@@ -50,7 +50,7 @@ use vcs_git::{Git, GitApi};
         println!("working tree still has unstaged changes");
     }
 
-    for c in git.log(repo, 5).await? {
+    for c in git.log(repo, "HEAD", 5).await? {
         println!("{} {} — {} <{}>", c.short_hash, c.subject, c.author, c.date);
     }
 # Ok(()) }
@@ -65,7 +65,7 @@ use vcs_git::{Git, GitApi};
 # use vcs_git::{Git, GitApi};
 # async fn demo(git: &Git, repo: &Path) -> Result<(), processkit::Error> {
     for entry in git.status(repo).await? {
-        match entry.orig_path {
+        match entry.old_path {
             Some(from) => println!("rename {from} -> {}", entry.path),
             None => println!("{} {}", entry.code, entry.path),
         }

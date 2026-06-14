@@ -202,15 +202,15 @@ timeout — is a genuine error. A JSON that fails to parse surfaces as
 `Error::Parse`, never masked by the exit code.
 
 ```rust,ignore
-# use vcs_github::{GitHub, GitHubApi};
+# use vcs_github::{CheckBucket, GitHub, GitHubApi};
 use std::path::Path;
 # async fn demo(repo: &Path) -> Result<(), processkit::Error> {
 let gh = GitHub::new();
 for c in gh.pr_checks(repo, 7).await? {
-    match c.bucket.as_str() {
-        "fail"    => println!("✗ {} ({})", c.name, c.link),
-        "pending" => println!("… {}", c.name),
-        _         => {}
+    match c.bucket {
+        CheckBucket::Fail | CheckBucket::Cancel => println!("✗ {} ({})", c.name, c.link),
+        CheckBucket::Pending => println!("… {}", c.name),
+        _ => {}
     }
 }
 # Ok(()) }

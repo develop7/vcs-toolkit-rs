@@ -136,7 +136,7 @@ async fn conflicted_files(&self, dir: &Path) -> Result<Vec<String>>;
 git.add(repo, &[PathBuf::from("src/lib.rs")]).await?;       // `git add -- src/lib.rs`
 
 for entry in git.status(repo).await? {                       // Vec<StatusEntry>
-    match entry.orig_path {
+    match entry.old_path {
         Some(from) => println!("rename {from} -> {}", entry.path),
         None => println!("{} {}", entry.code, entry.path),
     }
@@ -154,16 +154,16 @@ for path in git.conflicted_files(repo).await? {             // Vec<String>
 ## Commits & log
 
 ```rust,ignore
-async fn log(&self, dir: &Path, max: usize) -> Result<Vec<Commit>>;
-async fn log_range(&self, dir: &Path, range: &str, max: usize) -> Result<Vec<Commit>>;
+async fn log(&self, dir: &Path, revspec: &str, max: usize) -> Result<Vec<Commit>>;
 async fn commit(&self, dir: &Path, message: &str) -> Result<()>;
 async fn commit_paths(&self, dir: &Path, spec: CommitPaths) -> Result<()>;
 async fn last_commit_message(&self, dir: &Path) -> Result<String>;
 async fn rev_list_count(&self, dir: &Path, range: &str) -> Result<usize>;
 ```
 
-- **`log`** — the latest `max` commits, newest first.
-- **`log_range`** — commits in `range` (e.g. `main..HEAD`), newest first, up to `max`.
+- **`log`** — up to `max` commits reachable from `revspec`, newest first. Pass
+  `"HEAD"` for the current branch, or a range like `main..HEAD`. One signature
+  mirrors `JjApi::log`'s revset argument.
 - **`commit`** — `git commit -m <message>` of the staged index.
 - **`commit_paths`** — commit exactly the spec's paths' working-tree content,
   ignoring the index (`commit [--amend] -m <message> --only -- <paths>`); built
@@ -172,17 +172,17 @@ async fn rev_list_count(&self, dir: &Path, range: &str) -> Result<usize>;
   pre-fill an amend.
 - **`rev_list_count`** — how many commits a `range` spans (`rev-list --count
   <range>`), e.g. how far ahead of the upstream you are — cheaper than fetching
-  and counting `log_range`.
+  and counting `log`.
 
 ```rust,ignore
 # use std::path::Path;
 # use vcs_git::{Git, GitApi};
 # async fn demo(git: &Git, repo: &Path) -> Result<(), processkit::Error> {
 git.commit(repo, "feat: tidy lib").await?;
-for c in git.log(repo, 5).await? {                          // Vec<Commit>, newest first
+for c in git.log(repo, "HEAD", 5).await? {                  // Vec<Commit>, newest first
     println!("{} {} — {} <{}>", c.short_hash, c.subject, c.author, c.date);
 }
-let ahead = git.log_range(repo, "origin/main..HEAD", 50).await?; // Vec<Commit>
+let ahead = git.log(repo, "origin/main..HEAD", 50).await?;  // Vec<Commit>
 let n = git.rev_list_count(repo, "origin/main..HEAD").await?;    // usize — # commits ahead
 let _ = (ahead, n);
 # Ok(()) }
@@ -691,7 +691,7 @@ One entry from `git status --porcelain=v1 -z`.
 |-------|------|---------|
 | `code` | `String` | two-character status code, e.g. `" M"`, `"??"`, `"A "`, `"R "` |
 | `path` | `String` | the path (the *new* path for a rename/copy); raw, unquoted |
-| `orig_path` | `Option<String>` | the original path for a rename/copy; `None` otherwise |
+| `old_path` | `Option<String>` | the original path for a rename/copy; `None` otherwise |
 
 ### `BranchStatus`
 

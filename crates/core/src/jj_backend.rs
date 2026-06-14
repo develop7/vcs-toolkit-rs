@@ -133,9 +133,7 @@ pub(crate) async fn snapshot<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result
         head,
         branch,
         // jj has no git-style upstream tracking.
-        upstream: None,
-        ahead: None,
-        behind: None,
+        tracking: None,
         dirty,
         change_count,
         conflicted,

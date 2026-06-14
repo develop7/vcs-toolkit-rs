@@ -10,9 +10,15 @@ crates; tag releases as `vcs-core-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- `UpstreamTracking { branch, ahead, behind }` — the upstream ref and ahead/behind
+  counts as one value, carried by `RepoSnapshot::tracking`.
 
 ### Changed
+- **`RepoSnapshot` tracking shape (breaking).** The three coupled `Option` fields
+  `upstream` / `ahead` / `behind` are replaced by a single
+  `tracking: Option<UpstreamTracking>` — `Some` only when an upstream is set,
+  `None` otherwise (always `None` on jj). A half-populated state (e.g. an upstream
+  with no counts) is now unrepresentable; serde nests it under `tracking`.
 - Bumped `processkit` to **0.10.1** (via `vcs-git`/`vcs-jj`). Re-exported
   `processkit::Error` changed (partial `stdout`/`stderr` on `Timeout`/`Signalled`;
   new `Signalled`/`NotFound`/`CassetteMiss` variants; `Invocation::cwd: Option<PathBuf>`)

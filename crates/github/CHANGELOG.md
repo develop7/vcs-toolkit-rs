@@ -10,9 +10,14 @@ crates; tag releases as `vcs-github-v<version>`.
 ## [Unreleased]
 
 ### Added
--
+- `CheckBucket` enum (`Pass`/`Fail`/`Pending`/`Skipping`/`Cancel`/`Unknown`) with
+  `is_failing`/`is_pending`/`is_passing` helpers — the typed form of gh's check
+  categorisation, `#[non_exhaustive]` with an `Unknown` catch-all so a future gh
+  bucket never breaks the parse.
 
 ### Changed
+- **`CheckRun::bucket` is now `CheckBucket` (breaking)**, replacing the
+  stringly-typed `String` — exhaustive matching instead of comparing string slices.
 - Bumped `processkit` to **0.10.1** (from 0.9.1), a major breaking release ahead
   of processkit's 1.0 freeze. Breaking for downstream via the re-exported
   `processkit::Error`: `Error::Timeout`/`Signalled` now carry partial

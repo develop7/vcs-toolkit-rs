@@ -84,6 +84,52 @@ pub struct WorkflowRun {
     pub created_at: String,
 }
 
+/// gh's coarse categorisation of a [`CheckRun`]'s state — the field to branch on
+/// when deciding whether CI passed. `gh` derives it from the raw `state`; this is
+/// the typed form of its `pass`/`fail`/`pending`/`skipping`/`cancel` strings.
+///
+/// `#[non_exhaustive]` with an [`Unknown`](CheckBucket::Unknown) catch-all: a
+/// bucket name a future `gh` introduces (or a missing field) deserialises to
+/// `Unknown` rather than failing the parse, so the wrapper never breaks on an
+/// unmodelled value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum CheckBucket {
+    /// The check succeeded.
+    Pass,
+    /// The check failed.
+    Fail,
+    /// The check is queued or still running.
+    Pending,
+    /// The check was skipped (e.g. a conditional job that didn't run).
+    Skipping,
+    /// The check was cancelled.
+    Cancel,
+    /// A bucket `gh` reported that this version doesn't model, or an absent field.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+impl CheckBucket {
+    /// Whether this bucket means the check failed or was cancelled — the states
+    /// that should fail an aggregate CI verdict.
+    pub fn is_failing(self) -> bool {
+        matches!(self, CheckBucket::Fail | CheckBucket::Cancel)
+    }
+
+    /// Whether this bucket means the check is still in flight (queued/running).
+    pub fn is_pending(self) -> bool {
+        matches!(self, CheckBucket::Pending)
+    }
+
+    /// Whether this bucket means the check completed successfully.
+    pub fn is_passing(self) -> bool {
+        matches!(self, CheckBucket::Pass)
+    }
+}
+
 /// One check on a PR (`gh pr checks --json …`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[non_exhaustive]
@@ -93,10 +139,9 @@ pub struct CheckRun {
     /// Raw state, e.g. `"SUCCESS"`, `"FAILURE"`, `"IN_PROGRESS"`.
     #[serde(default)]
     pub state: String,
-    /// gh's categorisation of `state`: one of `"pass"`, `"fail"`, `"pending"`,
-    /// `"skipping"`, `"cancel"` — the field to branch on.
+    /// gh's categorisation of `state` — the field to branch on. See [`CheckBucket`].
     #[serde(default)]
-    pub bucket: String,
+    pub bucket: CheckBucket,
     /// Workflow the check belongs to (empty for non-Actions checks).
     #[serde(default)]
     pub workflow: String,
@@ -415,8 +460,21 @@ mod tests {
              "workflow": "", "link": "", "startedAt": "", "completedAt": ""}
         ]"#;
         let checks: Vec<CheckRun> = from_json(json).expect("parse checks");
-        let buckets: Vec<&str> = checks.iter().map(|c| c.bucket.as_str()).collect();
-        assert_eq!(buckets, ["pass", "fail", "pending", "skipping", "cancel"]);
+        let buckets: Vec<CheckBucket> = checks.iter().map(|c| c.bucket).collect();
+        assert_eq!(
+            buckets,
+            [
+                CheckBucket::Pass,
+                CheckBucket::Fail,
+                CheckBucket::Pending,
+                CheckBucket::Skipping,
+                CheckBucket::Cancel,
+            ]
+        );
+        // An unrecognised bucket deserialises to the forward-compatible catch-all.
+        let exotic: CheckRun =
+            serde_json::from_str(r#"{"name":"x","bucket":"teleport"}"#).expect("parse");
+        assert_eq!(exotic.bucket, CheckBucket::Unknown);
         assert_eq!(checks[0].name, "build");
     }
 

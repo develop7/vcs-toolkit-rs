@@ -182,7 +182,7 @@ mod jj_backend;
 
 pub use dto::{
     BackendKind, ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState,
-    RepoSnapshot, WorktreeInfo,
+    RepoSnapshot, UpstreamTracking, WorktreeInfo,
 };
 pub use error::{Error, Result};
 
@@ -505,7 +505,8 @@ impl<R: ProcessRunner> Repo<R> {
     /// two** spawns instead of a call per field (git: `status --porcelain=v2
     /// --branch` + the in-progress probe; jj: one `log -r @` template + a change
     /// count). Built for prompt/status-bar/TUI refreshes. Note the asymmetry:
-    /// `upstream`/`ahead`/`behind` are always `None` on jj.
+    /// [`tracking`](RepoSnapshot::tracking) (the upstream ref + ahead/behind) is
+    /// always `None` on jj, which has no git-style upstream tracking.
     pub async fn snapshot(&self) -> Result<RepoSnapshot> {
         match &self.backend {
             Backend::Git(g) => git_backend::snapshot(g, &self.cwd).await,
@@ -942,8 +943,9 @@ mod tests {
         );
         let s = repo.snapshot().await.unwrap();
         assert_eq!(s.branch.as_deref(), Some("main"));
-        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
-        assert_eq!((s.ahead, s.behind), (Some(2), Some(0)));
+        let tracking = s.tracking.as_ref().expect("upstream tracking");
+        assert_eq!(tracking.branch, "origin/main");
+        assert_eq!((tracking.ahead, tracking.behind), (2, 0));
         assert!(s.dirty);
         assert_eq!(s.change_count, 2, "1 tracked + 1 untracked");
         assert!(!s.conflicted);
@@ -966,8 +968,7 @@ mod tests {
         assert_eq!(s.change_count, 2);
         assert!(s.conflicted);
         assert_eq!(s.operation, OperationState::Conflict);
-        assert_eq!(s.upstream, None);
-        assert_eq!((s.ahead, s.behind), (None, None));
+        assert!(s.tracking.is_none(), "jj has no upstream tracking");
     }
 
     // jj: a clean `@` (empty=1) skips the change-count spawn entirely — the test
@@ -1068,7 +1069,8 @@ mod tests {
             named.current_branch().await.unwrap().as_deref(),
             Some("main")
         );
-        let detached = git_repo(ScriptedRunner::new().on(["git", "rev-parse"], Reply::ok("HEAD\n")));
+        let detached =
+            git_repo(ScriptedRunner::new().on(["git", "rev-parse"], Reply::ok("HEAD\n")));
         assert!(detached.current_branch().await.unwrap().is_none());
     }
 
@@ -1088,7 +1090,8 @@ mod tests {
 
     #[tokio::test]
     async fn local_branches_maps_git_branch_output() {
-        let repo = git_repo(ScriptedRunner::new().on(["git", "branch"], Reply::ok("* main\n  feat\n")));
+        let repo =
+            git_repo(ScriptedRunner::new().on(["git", "branch"], Reply::ok("* main\n  feat\n")));
         assert_eq!(repo.local_branches().await.unwrap(), ["main", "feat"]);
     }
 
@@ -1146,20 +1149,23 @@ mod tests {
 
     #[tokio::test]
     async fn jj_branch_exists_scans_bookmarks() {
-        let repo = jj_repo(
-            ScriptedRunner::new().on(["jj", "bookmark", "list"], Reply::ok("main: chg cmt desc\n")),
-        );
+        let repo = jj_repo(ScriptedRunner::new().on(
+            ["jj", "bookmark", "list"],
+            Reply::ok("main: chg cmt desc\n"),
+        ));
         assert!(repo.branch_exists("main").await.unwrap());
-        let repo2 = jj_repo(
-            ScriptedRunner::new().on(["jj", "bookmark", "list"], Reply::ok("main: chg cmt desc\n")),
-        );
+        let repo2 = jj_repo(ScriptedRunner::new().on(
+            ["jj", "bookmark", "list"],
+            Reply::ok("main: chg cmt desc\n"),
+        ));
         assert!(!repo2.branch_exists("missing").await.unwrap());
     }
 
     #[tokio::test]
     async fn jj_has_uncommitted_changes_reads_empty_flag() {
         // CHANGE_TEMPLATE row: change_id \t commit_id \t empty \t description
-        let dirty = jj_repo(ScriptedRunner::new().on(["jj", "log"], Reply::ok("kz\t38\tfalse\twip\n")));
+        let dirty =
+            jj_repo(ScriptedRunner::new().on(["jj", "log"], Reply::ok("kz\t38\tfalse\twip\n")));
         assert!(dirty.has_uncommitted_changes().await.unwrap());
         let clean = jj_repo(ScriptedRunner::new().on(["jj", "log"], Reply::ok("kz\t38\ttrue\t\n")));
         assert!(!clean.has_uncommitted_changes().await.unwrap());
@@ -1182,8 +1188,9 @@ mod tests {
     // form) — `old_path` is populated on both backends, as the DTO documents.
     #[tokio::test]
     async fn jj_changed_files_populates_rename_old_path() {
-        let repo =
-            jj_repo(ScriptedRunner::new().on(["jj", "diff"], Reply::ok("R src/{old.rs => new.rs}\n")));
+        let repo = jj_repo(
+            ScriptedRunner::new().on(["jj", "diff"], Reply::ok("R src/{old.rs => new.rs}\n")),
+        );
         let changes = repo.changed_files().await.unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].kind, ChangeKind::Renamed);
@@ -1362,20 +1369,23 @@ mod tests {
     // jj has no untracked concept — `has_tracked_changes` follows `@`'s emptiness.
     #[tokio::test]
     async fn jj_has_tracked_changes_follows_working_copy() {
-        let dirty = jj_repo(ScriptedRunner::new().on(["jj", "log"], Reply::ok("kz\t38\tfalse\twip\n")));
+        let dirty =
+            jj_repo(ScriptedRunner::new().on(["jj", "log"], Reply::ok("kz\t38\tfalse\twip\n")));
         assert!(dirty.has_tracked_changes().await.unwrap());
     }
 
     #[tokio::test]
     async fn conflicted_files_dispatches_per_backend() {
-        let git = git_repo(ScriptedRunner::new().on(["git", "diff"], Reply::ok("a.rs\0b dir/c.rs\0")));
+        let git =
+            git_repo(ScriptedRunner::new().on(["git", "diff"], Reply::ok("a.rs\0b dir/c.rs\0")));
         assert_eq!(
             git.conflicted_files().await.unwrap(),
             ["a.rs", "b dir/c.rs"]
         );
 
-        let jj =
-            jj_repo(ScriptedRunner::new().on(["jj", "resolve"], Reply::ok("a.rs    2-sided conflict\n")));
+        let jj = jj_repo(
+            ScriptedRunner::new().on(["jj", "resolve"], Reply::ok("a.rs    2-sided conflict\n")),
+        );
         assert_eq!(jj.conflicted_files().await.unwrap(), ["a.rs"]);
         // The benign "no conflicts" non-zero exit still reads as an empty list.
         let clean = jj_repo(ScriptedRunner::new().on(
@@ -1452,7 +1462,10 @@ mod tests {
                     Reply::fail(128, "fatal: cannot abort"),
                 )
                 .on(["git", "merge"], Reply::ok(""))
-                .on(["git", "rev-parse"], Reply::ok(tmp.path().to_str().unwrap())),
+                .on(
+                    ["git", "rev-parse"],
+                    Reply::ok(tmp.path().to_str().unwrap()),
+                ),
         );
         assert!(repo.try_merge("other").await.is_err());
     }
@@ -1509,7 +1522,8 @@ mod tests {
     #[tokio::test]
     async fn git_continue_blocked_by_conflicts_does_not_act() {
         use processkit::testing::RecordingRunner;
-        let rec = RecordingRunner::new(ScriptedRunner::new().on(["git", "diff"], Reply::ok("a.rs\0")));
+        let rec =
+            RecordingRunner::new(ScriptedRunner::new().on(["git", "diff"], Reply::ok("a.rs\0")));
         let repo = Repo::from_git("/repo", "/repo", Git::with_runner(&rec));
         assert_eq!(
             repo.continue_in_progress().await.unwrap(),
@@ -1545,7 +1559,10 @@ mod tests {
                     Reply::ok("a.rs\0"),
                 )
                 .on(["git", "diff"], Reply::ok(""))
-                .on(["git", "rev-parse"], Reply::ok(tmp.path().to_str().unwrap()))
+                .on(
+                    ["git", "rev-parse"],
+                    Reply::ok(tmp.path().to_str().unwrap()),
+                )
                 .on(
                     ["git", "rebase", "--continue"],
                     Reply::fail(1, "CONFLICT (content): Merge conflict in a.rs"),
@@ -1565,7 +1582,10 @@ mod tests {
         std::fs::write(tmp.path().join("MERGE_HEAD"), "deadbeef\n").unwrap();
         let rec = RecordingRunner::new(
             ScriptedRunner::new()
-                .on(["git", "rev-parse"], Reply::ok(tmp.path().to_str().unwrap()))
+                .on(
+                    ["git", "rev-parse"],
+                    Reply::ok(tmp.path().to_str().unwrap()),
+                )
                 .on(["git", "merge", "--abort"], Reply::ok("")),
         );
         let repo = Repo::from_git("/repo", "/repo", Git::with_runner(&rec));
@@ -1590,10 +1610,10 @@ mod tests {
         let merge_repo = Repo::from_git(
             "/repo",
             "/repo",
-            Git::with_runner(
-                ScriptedRunner::new()
-                    .on(["git", "rev-parse"], Reply::ok(merging.path().to_str().unwrap())),
-            ),
+            Git::with_runner(ScriptedRunner::new().on(
+                ["git", "rev-parse"],
+                Reply::ok(merging.path().to_str().unwrap()),
+            )),
         );
         assert_eq!(
             merge_repo.in_progress_state().await.unwrap(),
@@ -1605,10 +1625,10 @@ mod tests {
         let rebase_repo = Repo::from_git(
             "/repo",
             "/repo",
-            Git::with_runner(
-                ScriptedRunner::new()
-                    .on(["git", "rev-parse"], Reply::ok(rebasing.path().to_str().unwrap())),
-            ),
+            Git::with_runner(ScriptedRunner::new().on(
+                ["git", "rev-parse"],
+                Reply::ok(rebasing.path().to_str().unwrap()),
+            )),
         );
         assert_eq!(
             rebase_repo.in_progress_state().await.unwrap(),

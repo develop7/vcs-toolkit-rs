@@ -20,8 +20,8 @@ let s = repo.snapshot().await?;                 // RepoSnapshot — one/two spaw
 
 let branch = s.branch.as_deref().unwrap_or("(detached)");
 let mut line = branch.to_string();
-if let (Some(a), Some(b)) = (s.ahead, s.behind) {
-    line.push_str(&format!(" ↑{a}↓{b}"));       // upstream tracking — git only
+if let Some(t) = &s.tracking {
+    line.push_str(&format!(" ↑{}↓{}", t.ahead, t.behind)); // upstream tracking — git only
 }
 if s.dirty {
     line.push_str(" *");                        // uncommitted changes

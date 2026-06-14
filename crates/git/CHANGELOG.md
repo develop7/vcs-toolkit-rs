@@ -9,10 +9,14 @@ crates; tag releases as `vcs-git-v<version>`.
 
 ## [Unreleased]
 
-### Added
--
-
 ### Changed
+- **`GitApi::log` unified (breaking).** `log(dir, max)` + `log_range(dir, range, max)`
+  collapse into one `log(dir, revspec, max)` — pass `"HEAD"` for the current branch
+  or a range like `"main..HEAD"`. Mirrors `JjApi::log`'s revset argument so
+  cross-backend code shares one signature; the `revspec` is guarded against being
+  parsed as a flag.
+- **`StatusEntry::orig_path` renamed to `old_path` (breaking)** — matches
+  `vcs_jj::ChangedPath::old_path`, so the rename source reads the same on both wrappers.
 - Bumped `processkit` to **0.10.1** (from 0.9.1), a major breaking release ahead
   of processkit's 1.0 freeze. Breaking for downstream via the re-exported
   `processkit::Error`: `Error::Timeout`/`Signalled` now carry partial

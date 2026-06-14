@@ -8,7 +8,7 @@ use vcs_git::{Git, GitApi, GitPush, StatusEntry, WorktreeAdd};
 
 use crate::dto::{
     ChangeKind, CreateOutcome, DiffStat, FileChange, MergeProbe, OperationState, RepoSnapshot,
-    WorktreeInfo,
+    UpstreamTracking, WorktreeInfo,
 };
 use crate::error::Result;
 
@@ -134,12 +134,19 @@ pub(crate) async fn snapshot<R: ProcessRunner>(git: &Git<R>, dir: &Path) -> Resu
     let dirty = bs.is_dirty();
     let change_count = bs.tracked_changes + bs.untracked;
     let conflicted = bs.conflicts > 0;
+    // Upstream + ahead/behind travel together: git reports the counts only when an
+    // upstream is set. Bundle them into one `UpstreamTracking`.
+    let ahead = bs.ahead.unwrap_or(0);
+    let behind = bs.behind.unwrap_or(0);
+    let tracking = bs.upstream.map(|branch| UpstreamTracking {
+        branch,
+        ahead,
+        behind,
+    });
     Ok(RepoSnapshot {
         head: bs.head,
         branch: bs.branch,
-        upstream: bs.upstream,
-        ahead: bs.ahead,
-        behind: bs.behind,
+        tracking,
         dirty,
         change_count,
         conflicted,
@@ -346,7 +353,7 @@ fn file_change_from_status(entry: StatusEntry) -> FileChange {
     FileChange {
         kind: change_kind_from_code(&entry.code),
         path: entry.path,
-        old_path: entry.orig_path,
+        old_path: entry.old_path,
     }
 }
 

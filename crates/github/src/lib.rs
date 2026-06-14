@@ -121,7 +121,8 @@ pub use processkit::CancellationToken;
 
 mod parse;
 pub use parse::{
-    CheckRun, Comment, Issue, PrFeedback, PullRequest, Release, Repo, Review, WorkflowRun,
+    CheckBucket, CheckRun, Comment, Issue, PrFeedback, PullRequest, Release, Repo, Review,
+    WorkflowRun,
 };
 
 /// Name of the underlying CLI binary this crate drives.
@@ -922,7 +923,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_args_forwards_str_slices() {
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "api", "user"], Reply::ok("ok\n")));
+        let gh =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "api", "user"], Reply::ok("ok\n")));
         assert_eq!(gh.run_args(&["api", "user"]).await.unwrap(), "ok");
     }
 
@@ -931,7 +933,8 @@ mod tests {
     #[tokio::test]
     async fn pr_list_parses_scripted_json() {
         let json = r#"[{"number":7,"title":"Add X","state":"OPEN","headRefName":"feat/x","baseRefName":"main","url":"u"}]"#;
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "pr", "list"], Reply::ok(json)));
+        let gh =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "pr", "list"], Reply::ok(json)));
         let prs = gh.pr_list(Path::new(".")).await.expect("pr_list");
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 7);
@@ -950,7 +953,8 @@ mod tests {
         );
         assert!(!no.auth_status().await.unwrap());
         // An unexpected exit code (e.g. 2) is still just "not authenticated".
-        let weird = GitHub::with_runner(ScriptedRunner::new().on(["gh", "auth"], Reply::fail(2, "boom")));
+        let weird =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "auth"], Reply::fail(2, "boom")));
         assert!(!weird.auth_status().await.unwrap());
     }
 
@@ -1155,7 +1159,7 @@ mod tests {
             let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "pr", "checks"], reply));
             let checks = gh.pr_checks(Path::new("."), 7).await.expect("pr_checks");
             assert_eq!(checks.len(), 1);
-            assert_eq!(checks[0].bucket, "pass");
+            assert_eq!(checks[0].bucket, CheckBucket::Pass);
         }
 
         // A PR with no checks at all: gh exits 1 with NO JSON and a
@@ -1189,7 +1193,8 @@ mod tests {
             Error::Exit { .. }
         ));
 
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "pr", "checks"], Reply::timeout()));
+        let gh =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "pr", "checks"], Reply::timeout()));
         assert!(matches!(
             gh.pr_checks(Path::new("."), 7).await.unwrap_err(),
             Error::Timeout { .. }
@@ -1281,7 +1286,8 @@ mod tests {
     async fn pr_feedback_requests_reviews_and_comments() {
         let json = r#"{"reviews":[{"author":{"login":"a"},"state":"APPROVED",
             "body":"","submittedAt":""}],"comments":[]}"#;
-        let rec = RecordingRunner::new(ScriptedRunner::new().on(["gh", "pr", "view"], Reply::ok(json)));
+        let rec =
+            RecordingRunner::new(ScriptedRunner::new().on(["gh", "pr", "view"], Reply::ok(json)));
         let gh = GitHub::with_runner(&rec);
         let feedback = gh.pr_feedback(Path::new("."), 7).await.expect("feedback");
         assert_eq!(feedback.reviews[0].author, "a");
@@ -1344,8 +1350,9 @@ mod tests {
     // `ensure_success` in run_watch is what surfaces it.)
     #[tokio::test]
     async fn run_watch_surfaces_timeout_and_watch_errors() {
-        let rec =
-            RecordingRunner::new(ScriptedRunner::new().on(["gh", "run", "watch"], Reply::timeout()));
+        let rec = RecordingRunner::new(
+            ScriptedRunner::new().on(["gh", "run", "watch"], Reply::timeout()),
+        );
         let gh = GitHub::with_runner(&rec);
         assert!(matches!(
             gh.run_watch(Path::new("."), 42).await.unwrap_err(),
@@ -1373,8 +1380,9 @@ mod tests {
     async fn run_watch_cancels_via_client_default_token() {
         use processkit::CancellationToken;
         let token = CancellationToken::new();
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "run", "watch"], Reply::pending()))
-            .default_cancel_on(token.clone());
+        let gh =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "run", "watch"], Reply::pending()))
+                .default_cancel_on(token.clone());
         let call = gh.run_watch(Path::new("."), 42);
         tokio::pin!(call);
         assert!(
@@ -1394,8 +1402,9 @@ mod tests {
     async fn release_view_requests_view_fields() {
         let json = r#"{"tagName":"v1","name":"","body":"notes","url":"u",
             "publishedAt":"p","isDraft":false,"isPrerelease":false}"#;
-        let rec =
-            RecordingRunner::new(ScriptedRunner::new().on(["gh", "release", "view"], Reply::ok(json)));
+        let rec = RecordingRunner::new(
+            ScriptedRunner::new().on(["gh", "release", "view"], Reply::ok(json)),
+        );
         let gh = GitHub::with_runner(&rec);
         let release = gh
             .release_view(Path::new("."), "v1")
@@ -1414,7 +1423,8 @@ mod tests {
     #[tokio::test]
     async fn repo_view_parses_scripted_json() {
         let json = r#"{"name":"r","owner":{"login":"o"},"description":"d","url":"u","isPrivate":false,"defaultBranchRef":{"name":"main"}}"#;
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(["gh", "repo", "view"], Reply::ok(json)));
+        let gh =
+            GitHub::with_runner(ScriptedRunner::new().on(["gh", "repo", "view"], Reply::ok(json)));
         let repo = gh.repo_view(Path::new(".")).await.expect("repo_view");
         assert_eq!(repo.owner, "o");
         assert_eq!(repo.default_branch, "main");

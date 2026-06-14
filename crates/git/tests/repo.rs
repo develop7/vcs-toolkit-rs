@@ -36,7 +36,7 @@ async fn init_status_add_commit_log_cycle() {
     assert!(git.status(dir).await.expect("status").is_empty());
 
     // Log reflects the commit, with the enriched fields.
-    let log = git.log(dir, 10).await.expect("log");
+    let log = git.log(dir, "HEAD", 10).await.expect("log");
     assert_eq!(log.len(), 1);
     assert_eq!(log[0].subject, "initial commit");
     assert_eq!(log[0].author, "Test");
@@ -92,10 +92,10 @@ async fn diff_is_empty_tracks_worktree_changes() {
 }
 
 // End-to-end check of the `-z` rename parsing: a real `git mv` must surface as a
-// rename entry carrying both the new path and the original (`orig_path`).
+// rename entry carrying both the new path and the original (`old_path`).
 #[tokio::test]
 #[ignore = "requires the git binary"]
-async fn status_reports_rename_with_orig_path() {
+async fn status_reports_rename_with_old_path() {
     let tmp = TempDir::new("rename");
     let dir = tmp.path();
     let git = Git::new();
@@ -118,7 +118,7 @@ async fn status_reports_rename_with_orig_path() {
         .expect("a rename entry");
     assert_eq!(renamed.path, "new.txt", "new path");
     assert_eq!(
-        renamed.orig_path.as_deref(),
+        renamed.old_path.as_deref(),
         Some("old.txt"),
         "original path"
     );
@@ -449,7 +449,7 @@ async fn clone_repo_from_local_bare_remote() {
     .await
     .expect("clone");
     assert!(dest.join("seed.txt").exists(), "worktree materialised");
-    let log = git.log(&dest, 10).await.expect("log");
+    let log = git.log(&dest, "HEAD", 10).await.expect("log");
     assert_eq!(log.len(), 1);
     assert_eq!(log[0].subject, "seed");
     assert_eq!(git.current_branch(&dest).await.expect("branch"), "main");

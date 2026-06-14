@@ -806,7 +806,10 @@ mod pipeline_tests {
     fn scripted(gitdir: &Path, head: &str) -> ScriptedRunner {
         ScriptedRunner::new()
             .on(["git", "status"], Reply::ok(v2(head)))
-            .on(["git", "rev-parse"], Reply::ok(format!("{}\n", gitdir.display())))
+            .on(
+                ["git", "rev-parse"],
+                Reply::ok(format!("{}\n", gitdir.display())),
+            )
             .on(["git", "branch"], Reply::ok("* main\n"))
     }
 

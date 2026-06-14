@@ -84,6 +84,22 @@ pub enum OperationState {
     Conflict,
 }
 
+/// Upstream tracking for the current branch: the upstream ref and how far the
+/// branch is ahead/behind it. Only meaningful as a whole — git reports the three
+/// together or not at all — so [`RepoSnapshot`] carries it as one
+/// `Option<UpstreamTracking>` rather than three coupled `Option`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct UpstreamTracking {
+    /// The upstream tracking branch, e.g. `"origin/main"`.
+    pub branch: String,
+    /// Commits the local branch is ahead of the upstream.
+    pub ahead: usize,
+    /// Commits the local branch is behind the upstream.
+    pub behind: usize,
+}
+
 /// A one-shot snapshot of the common repository state — branch, upstream
 /// tracking, ahead/behind, dirtiness, and operation state — gathered in **one or
 /// two** process spawns instead of a call per field. The data a prompt, status
@@ -98,13 +114,12 @@ pub struct RepoSnapshot {
     pub head: Option<String>,
     /// Current branch (git) / bookmark (jj); `None` when detached or unset.
     pub branch: Option<String>,
-    /// Upstream tracking branch; `None` when unset, and **always `None` on jj**
-    /// (jj has no git-style upstream tracking).
-    pub upstream: Option<String>,
-    /// Commits ahead of the upstream; `None` with no upstream (always on jj).
-    pub ahead: Option<usize>,
-    /// Commits behind the upstream; `None` with no upstream (always on jj).
-    pub behind: Option<usize>,
+    /// Upstream tracking and how far the branch is ahead/behind it, as one unit —
+    /// `Some` only when an upstream is configured, `None` otherwise (and **always
+    /// `None` on jj**, which has no git-style upstream tracking). Bundling the
+    /// three together makes the "all-or-nothing" relationship unrepresentable as a
+    /// half-populated state. See [`UpstreamTracking`].
+    pub tracking: Option<UpstreamTracking>,
     /// Whether the working copy has any uncommitted change (tracked or untracked).
     pub dirty: bool,
     /// Number of changed paths (tracked + untracked on git; the `@` change's
@@ -167,9 +182,11 @@ mod serde_tests {
         let snap = RepoSnapshot {
             head: Some("abc".into()),
             branch: Some("main".into()),
-            upstream: None,
-            ahead: Some(1),
-            behind: Some(0),
+            tracking: Some(UpstreamTracking {
+                branch: "origin/main".into(),
+                ahead: 1,
+                behind: 0,
+            }),
             dirty: true,
             change_count: 2,
             conflicted: false,
@@ -179,6 +196,9 @@ mod serde_tests {
         assert_eq!(v["branch"], "main");
         assert_eq!(v["operation"], "Merge"); // enum → variant name
         assert_eq!(v["change_count"], 2);
+        // Tracking serialises as one nested object (or null), not three fields.
+        assert_eq!(v["tracking"]["branch"], "origin/main");
+        assert_eq!(v["tracking"]["ahead"], 1);
 
         let fc = FileChange {
             path: "a.rs".into(),

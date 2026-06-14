@@ -18,8 +18,10 @@ pub struct StatusEntry {
     /// Path the status applies to (the *new* path for a rename/copy). Raw bytes
     /// from `-z` — no C-quoting/escaping to undo, even for paths with spaces.
     pub path: String,
-    /// For a rename/copy, the original path; `None` otherwise.
-    pub orig_path: Option<String>,
+    /// For a rename/copy, the original path; `None` otherwise. Named to match
+    /// `vcs_jj::ChangedPath::old_path` so cross-backend code reads the rename
+    /// source the same way on both wrappers.
+    pub old_path: Option<String>,
 }
 
 /// A combined branch + working-tree snapshot from `git status --porcelain=v2
@@ -115,7 +117,7 @@ pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
         };
         // A rename/copy (R/C in the index column) carries its source path as the
         // immediately following NUL record; consume it.
-        let orig_path = if matches!(rec.as_bytes().first(), Some(b'R' | b'C')) {
+        let old_path = if matches!(rec.as_bytes().first(), Some(b'R' | b'C')) {
             records.next().map(str::to_string)
         } else {
             None
@@ -123,7 +125,7 @@ pub(crate) fn parse_porcelain(output: &str) -> Vec<StatusEntry> {
         entries.push(StatusEntry {
             code: code.to_string(),
             path: path.to_string(),
-            orig_path,
+            old_path,
         });
     }
     entries
@@ -426,24 +428,24 @@ mod tests {
                 StatusEntry {
                     code: " M".into(),
                     path: "src/lib.rs".into(),
-                    orig_path: None,
+                    old_path: None,
                 },
                 StatusEntry {
                     code: "??".into(),
                     path: "new file.txt".into(),
-                    orig_path: None,
+                    old_path: None,
                 },
                 StatusEntry {
                     code: "A ".into(),
                     path: "added.rs".into(),
-                    orig_path: None,
+                    old_path: None,
                 },
             ]
         );
     }
 
     #[test]
-    fn porcelain_parses_rename_with_orig_path() {
+    fn porcelain_parses_rename_with_old_path() {
         // `R  new\0old\0` — the source path is the next NUL record.
         let got = parse_porcelain("R  new.rs\0old.rs\0 M other.rs\0");
         assert_eq!(
@@ -452,12 +454,12 @@ mod tests {
                 StatusEntry {
                     code: "R ".into(),
                     path: "new.rs".into(),
-                    orig_path: Some("old.rs".into()),
+                    old_path: Some("old.rs".into()),
                 },
                 StatusEntry {
                     code: " M".into(),
                     path: "other.rs".into(),
-                    orig_path: None,
+                    old_path: None,
                 },
             ]
         );

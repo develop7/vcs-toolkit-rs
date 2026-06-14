@@ -115,9 +115,11 @@ impl WatchState {
         WatchState {
             head: snapshot.head.clone(),
             branch: snapshot.branch.clone(),
-            upstream: snapshot.upstream.clone(),
-            ahead: snapshot.ahead,
-            behind: snapshot.behind,
+            // Flatten the bundled tracking back into the watcher's per-field deltas
+            // so `UpstreamChanged` / `AheadBehindChanged` stay distinct signals.
+            upstream: snapshot.tracking.as_ref().map(|t| t.branch.clone()),
+            ahead: snapshot.tracking.as_ref().map(|t| t.ahead),
+            behind: snapshot.tracking.as_ref().map(|t| t.behind),
             dirty: snapshot.dirty,
             change_count: snapshot.change_count,
             conflicted: snapshot.conflicted,

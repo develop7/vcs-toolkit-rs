@@ -34,8 +34,7 @@ async fn snapshot_git_branch_upstream_ahead_and_dirty() {
     let s = repo.snapshot().await.expect("snapshot");
     assert_eq!(s.branch.as_deref(), Some(branch.as_str()));
     assert!(!s.dirty && s.change_count == 0);
-    assert_eq!(s.upstream, None);
-    assert_eq!((s.ahead, s.behind), (None, None));
+    assert!(s.tracking.is_none());
     assert_eq!(s.operation, OperationState::Clear);
     assert!(s.head.is_some());
 
@@ -47,9 +46,10 @@ async fn snapshot_git_branch_upstream_ahead_and_dirty() {
     sandbox.write("dirty.txt", "x\n"); // an untracked change
 
     let s = repo.snapshot().await.expect("snapshot");
-    assert_eq!(s.upstream.as_deref(), Some("base"));
-    assert_eq!(s.ahead, Some(1), "one commit ahead of base");
-    assert_eq!(s.behind, Some(0));
+    let tracking = s.tracking.as_ref().expect("upstream tracking");
+    assert_eq!(tracking.branch, "base");
+    assert_eq!(tracking.ahead, 1, "one commit ahead of base");
+    assert_eq!(tracking.behind, 0);
     assert!(s.dirty);
     assert!(s.change_count >= 1);
 }
@@ -66,8 +66,7 @@ async fn snapshot_jj_dirty_bookmark_and_no_upstream() {
     // A fresh empty `@`: clean, no git-style upstream.
     let s = repo.snapshot().await.expect("snapshot");
     assert!(!s.dirty && s.change_count == 0);
-    assert_eq!(s.upstream, None);
-    assert_eq!((s.ahead, s.behind), (None, None));
+    assert!(s.tracking.is_none());
     assert_eq!(s.operation, OperationState::Clear);
     assert!(s.head.is_some());
 
