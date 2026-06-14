@@ -319,10 +319,15 @@ pub struct GitCredentialHelper {
 /// process environment. A leading empty `credential.helper=` first clears any
 /// inherited helper so only ours runs.
 ///
-/// The helper is a tiny POSIX-shell snippet (git runs `credential.helper`
-/// values that begin with `!` via the shell, available wherever `git` is). It is
-/// opt-in: it is built only when a [`CredentialProvider`] yields a credential, so
-/// the default path is unchanged.
+/// The helper is a tiny POSIX-shell snippet: git runs `credential.helper` values
+/// that begin with `!` via the shell it ships with (so this works on Windows too,
+/// where Git for Windows bundles its own `sh` — it never goes through `cmd.exe`).
+/// It applies to **HTTPS remotes only**: git invokes a credential helper just for
+/// HTTP(S) user/password auth, so an SSH remote ignores it and falls through to
+/// the SSH agent. It is opt-in — built only when a [`CredentialProvider`] yields a
+/// credential — so the default path is unchanged. The helper answers only git's
+/// `get` action (never `store`/`erase`), so the secret is never written to a
+/// credential cache or config; it lives only in the child's environment.
 #[must_use]
 pub fn git_credential_helper(cred: &Credential) -> GitCredentialHelper {
     let username = cred.username().unwrap_or(DEFAULT_GIT_USERNAME).to_string();

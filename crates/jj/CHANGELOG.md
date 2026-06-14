@@ -18,6 +18,11 @@ crates; tag releases as `vcs-jj-v<version>`.
   `RetryingClient` — no change to existing methods.
 
 ### Changed
+- Documented that **jj remote authentication is ambient**: unlike `vcs-git`'s new
+  per-operation `with_credentials` token provider, `jj`'s in-process git backend
+  offers no per-invocation credential override, so `jj git fetch`/`push`
+  authenticate from the ambient git credential helpers / SSH agent. (The shared
+  `vcs-cli-support` credentials seam documents this; `jj` adds no injection.)
 - Bumped `processkit` to **0.10.1** (from 0.9.1), a major breaking release ahead
   of processkit's 1.0 freeze. Breaking for downstream via the re-exported
   `processkit::Error`: `Error::Timeout`/`Signalled` now carry partial

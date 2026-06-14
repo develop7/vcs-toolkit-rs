@@ -101,9 +101,10 @@
 //! sub-guides).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use processkit::ProcessRunner;
+use processkit::{Command, ProcessRunner};
 // Re-export the processkit types that appear in this crate's public API, so
 // consumers needn't depend on processkit directly. (`Error`/`Result`/`ProcessResult`
 // are in scope here too via this `pub use`.)
@@ -123,11 +124,12 @@ pub use vcs_diff::{
 };
 // The error classifiers live in the shared plumbing crate — re-exported so
 // `vcs_git::is_merge_conflict`, … still resolve.
-use vcs_cli_support::RetryingClient;
 pub use vcs_cli_support::{
-    RetryPolicy, is_lock_contention, is_merge_conflict, is_nothing_to_commit,
-    is_transient_fetch_error,
+    Credential, CredentialProvider, CredentialRequest, CredentialService, EnvToken, RetryPolicy,
+    Secret, StaticCredential, is_lock_contention, is_merge_conflict, is_nothing_to_commit,
+    is_transient_fetch_error, provider_fn,
 };
+use vcs_cli_support::{RetryingClient, git_credential_helper};
 
 /// Name of the underlying CLI binary this crate drives.
 pub const BINARY: &str = "git";
@@ -894,6 +896,44 @@ impl<R: ProcessRunner> Git<R> {
         self.core = self.core.with_retry(policy);
         self
     }
+
+    /// Supply credentials for **HTTPS** remote operations (`fetch`/`push`/`clone`/
+    /// `ls-remote`) via a [`CredentialProvider`] — opt-in, off by default (ambient
+    /// git credential helpers / SSH agent). When the provider yields a credential,
+    /// each remote op runs with an inline `credential.helper` that feeds the secret
+    /// from an environment variable, so the token never appears in `argv`. Local
+    /// operations are unaffected. This covers HTTPS only — an **SSH** remote ignores
+    /// the helper and authenticates via the ambient SSH agent, as before.
+    #[must_use]
+    pub fn with_credentials(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
+        self.core = self.core.with_credentials(provider);
+        self
+    }
+
+    /// Resolve HTTPS credentials for a remote op into the leading `-c` config args
+    /// (an inline `credential.helper`) and the secret env to set on the command.
+    /// Both are empty when no provider is configured — ambient git auth, unchanged.
+    /// The secret lives only in the returned env, never in the args.
+    async fn remote_credentials(&self) -> Result<(Vec<String>, Vec<(String, Secret)>)> {
+        match self
+            .core
+            .resolve_credential(CredentialService::Git, None)
+            .await?
+        {
+            Some(cred) => {
+                let helper = git_credential_helper(&cred);
+                Ok((helper.config_args, helper.env))
+            }
+            None => Ok((Vec::new(), Vec::new())),
+        }
+    }
+}
+
+/// Set each secret environment variable on `cmd` (the values from
+/// [`Git::remote_credentials`]). A no-op when `envs` is empty.
+fn apply_secret_env(cmd: Command, envs: &[(String, Secret)]) -> Command {
+    envs.iter()
+        .fold(cmd, |cmd, (name, value)| cmd.env(name, value.expose()))
 }
 
 #[async_trait::async_trait]
@@ -1190,11 +1230,16 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // path components, so a bare `foo` would also match `refs/heads/bar/foo`.
         // `refs/heads/<name>` matches only the exact branch.
         let refname = format!("refs/heads/{name}");
-        let cmd = self
-            .core
-            .command_in(dir, ["ls-remote", "origin", refname.as_str()])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .timeout(Duration::from_secs(10));
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.extend(["ls-remote", "origin", refname.as_str()].map(String::from));
+        let cmd = apply_secret_env(
+            self.core
+                .command_in(dir, &args)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .timeout(Duration::from_secs(10)),
+            &envs,
+        );
         let res = self.core.output(cmd).await?;
         Ok(res.code() == Some(0) && !res.stdout().trim().is_empty())
     }
@@ -1228,11 +1273,17 @@ impl<R: ProcessRunner> GitApi for Git<R> {
     async fn remote_branches(&self, dir: &Path, remote: &str) -> Result<Vec<String>> {
         reject_flag_like("remote name", remote)?;
         // `GIT_TERMINAL_PROMPT=0`: a remote needing credentials must fail fast,
-        // never block on an interactive auth prompt.
-        let cmd = self
-            .core
-            .command_in(dir, ["ls-remote", "--heads", remote])
-            .env("GIT_TERMINAL_PROMPT", "0");
+        // never block on an interactive auth prompt. A provider, if set, supplies
+        // the credential via an inline helper (token kept out of argv).
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.extend(["ls-remote", "--heads", remote].map(String::from));
+        let cmd = apply_secret_env(
+            self.core
+                .command_in(dir, &args)
+                .env("GIT_TERMINAL_PROMPT", "0"),
+            &envs,
+        );
         self.core.parse(cmd, parse::parse_ls_remote_heads).await
     }
 
@@ -1387,12 +1438,19 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // Fetch is idempotent, so `retry` replays it on a transient failure
         // (DNS/timeout/dropped connection); a non-transient error fails at once.
         // C locale: the retry decision classifies the failure's message.
-        let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet"]))
-            .env("GIT_TERMINAL_PROMPT", "0")
-            // On a per-client timeout, terminate gracefully (then hard-kill after a
-            // grace window) so a timed-out fetch can close the connection cleanly.
-            .timeout_grace(FETCH_TIMEOUT_GRACE)
-            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
+        // Leading `-c` credential.helper (+ secret env) when a provider is set.
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.extend(["fetch", "--quiet"].map(String::from));
+        let cmd = apply_secret_env(
+            c_locale(self.core.command_in(dir, &args))
+                .env("GIT_TERMINAL_PROMPT", "0")
+                // On a per-client timeout, terminate gracefully (then hard-kill
+                // after a grace window) so a timed-out fetch closes cleanly.
+                .timeout_grace(FETCH_TIMEOUT_GRACE)
+                .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error),
+            &envs,
+        );
         self.core.run_unit(cmd).await
     }
 
@@ -1401,40 +1459,53 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         // `--upload-pack=<cmd>` would run an arbitrary local program for a
         // local/ext transport, so this guard is load-bearing for security.
         reject_flag_like("remote", remote)?;
-        // Same containment as `fetch` (prompt off, C locale, transient retry),
-        // with the remote named explicitly.
-        let cmd = c_locale(self.core.command_in(dir, ["fetch", "--quiet", remote]))
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .timeout_grace(FETCH_TIMEOUT_GRACE)
-            .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
+        // Same containment as `fetch` (prompt off, C locale, transient retry,
+        // optional credential helper), with the remote named explicitly.
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.extend(["fetch", "--quiet", remote].map(String::from));
+        let cmd = apply_secret_env(
+            c_locale(self.core.command_in(dir, &args))
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .timeout_grace(FETCH_TIMEOUT_GRACE)
+                .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error),
+            &envs,
+        );
         self.core.run_unit(cmd).await
     }
 
     async fn fetch_remote_branch(&self, dir: &Path, branch: &str) -> Result<()> {
         let refspec = format!("refs/heads/{branch}:refs/remotes/origin/{branch}");
-        let cmd = c_locale(
-            self.core
-                .command_in(dir, ["fetch", "--quiet", "origin", refspec.as_str()]),
-        )
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .timeout_grace(FETCH_TIMEOUT_GRACE)
-        .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error);
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.extend(["fetch", "--quiet", "origin", refspec.as_str()].map(String::from));
+        let cmd = apply_secret_env(
+            c_locale(self.core.command_in(dir, &args))
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .timeout_grace(FETCH_TIMEOUT_GRACE)
+                .retry(FETCH_ATTEMPTS, FETCH_BACKOFF, is_transient_fetch_error),
+            &envs,
+        );
         self.core.run_unit(cmd).await
     }
 
     async fn push(&self, dir: &Path, spec: GitPush) -> Result<()> {
         reject_flag_like("remote", &spec.remote)?;
         reject_flag_like("refspec", &spec.refspec)?;
-        let mut args: Vec<&str> = vec!["push"];
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut args: Vec<String> = pre;
+        args.push("push".to_string());
         if spec.set_upstream {
-            args.push("-u");
+            args.push("-u".to_string());
         }
-        args.push(spec.remote.as_str());
-        args.push(spec.refspec.as_str());
-        let cmd = self
-            .core
-            .command_in(dir, args)
-            .env("GIT_TERMINAL_PROMPT", "0");
+        args.push(spec.remote.clone());
+        args.push(spec.refspec.clone());
+        let cmd = apply_secret_env(
+            self.core
+                .command_in(dir, &args)
+                .env("GIT_TERMINAL_PROMPT", "0"),
+            &envs,
+        );
         self.core.run_unit(cmd).await
     }
 
@@ -1616,7 +1687,11 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         reject_flag_like("url", url)?;
         // No working directory: clone creates `dest` itself, so `dest` should
         // be absolute (a relative path would resolve against this process' cwd).
-        let mut command = self.core.command(["clone"]);
+        // Leading `-c` credential.helper (+ secret env) when a provider is set.
+        let (pre, envs) = self.remote_credentials().await?;
+        let mut initial: Vec<String> = pre;
+        initial.push("clone".to_string());
+        let mut command = self.core.command(&initial);
         if let Some(branch) = spec.branch.as_deref() {
             command = command.arg("--branch").arg(branch);
         }
@@ -1626,7 +1701,10 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         if spec.bare {
             command = command.arg("--bare");
         }
-        let command = command.arg(url).arg(dest).env("GIT_TERMINAL_PROMPT", "0");
+        let command = apply_secret_env(
+            command.arg(url).arg(dest).env("GIT_TERMINAL_PROMPT", "0"),
+            &envs,
+        );
         self.core.run_unit(command).await
     }
 
@@ -2704,6 +2782,113 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rec.only_call().args_str(), ["push", "upstream", "feature"]);
+    }
+
+    // With a credential provider, a remote op gets a leading `-c credential.helper`
+    // pair (the secret referenced by env-var NAME) plus the secret in the env — and
+    // the token value never appears in argv. Covers push (mutating) and fetch.
+    #[tokio::test]
+    async fn with_credentials_injects_helper_and_secret_env_for_remote_ops() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec)
+            .with_credentials(Arc::new(StaticCredential::token("ghp_secret123")));
+        git.push(Path::new("/r"), GitPush::branch("feature"))
+            .await
+            .unwrap();
+        let call = rec.only_call();
+        let args = call.args_str();
+        // A leading helper-reset + inline helper precede the subcommand.
+        assert_eq!(args[0], "-c", "config flag leads the argv");
+        assert!(
+            args.iter().any(|a| a == "credential.helper="),
+            "inherited helpers are cleared first: {args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|a| a.contains("credential.helper=!f()")
+                    && a.contains("VCS_TOOLKIT_GIT_PASSWORD")),
+            "inline helper references the secret by env-var name: {args:?}"
+        );
+        assert!(
+            args.contains(&"push".to_string()) && args.contains(&"feature".to_string()),
+            "the real subcommand still runs: {args:?}"
+        );
+        // The secret value is NEVER in argv.
+        assert!(
+            !args.iter().any(|a| a.contains("ghp_secret123")),
+            "secret leaked into argv: {args:?}"
+        );
+        // The secret lives in the env, under the helper's var name.
+        let pw = call
+            .envs
+            .iter()
+            .find(|(k, _)| k.to_str() == Some("VCS_TOOLKIT_GIT_PASSWORD"))
+            .and_then(|(_, v)| v.as_ref())
+            .and_then(|v| v.to_str());
+        assert_eq!(pw, Some("ghp_secret123"), "secret carried in env");
+    }
+
+    // Without a provider, remote ops are byte-identical to before — no `-c`
+    // credential helper, no secret env (ambient git auth, unchanged).
+    #[tokio::test]
+    async fn default_client_injects_no_credential_helper() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec);
+        git.push(Path::new("/r"), GitPush::branch("feature"))
+            .await
+            .unwrap();
+        let call = rec.only_call();
+        assert_eq!(
+            call.args_str(),
+            ["push", "origin", "feature"],
+            "no credential `-c` args without a provider"
+        );
+        assert!(
+            !call
+                .envs
+                .iter()
+                .any(|(k, _)| k.to_str() == Some("VCS_TOOLKIT_GIT_PASSWORD")),
+            "no secret env without a provider"
+        );
+    }
+
+    // `clone_repo` builds its argv via a different path (`command()` + `.arg()`
+    // chaining, not `command_in` + extend), so verify the `-c` credential args
+    // still LEAD it and the real clone flags/url/dest follow the subcommand.
+    #[tokio::test]
+    async fn with_credentials_clone_puts_config_flags_before_subcommand() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git =
+            Git::with_runner(&rec).with_credentials(Arc::new(StaticCredential::token("s3cr3t")));
+        git.clone_repo(
+            "https://example.com/r.git",
+            Path::new("/dest"),
+            CloneSpec::default().branch("main"),
+        )
+        .await
+        .unwrap();
+        let call = rec.only_call();
+        let args = call.args_str();
+        assert_eq!(args[0], "-c", "config flags lead the clone argv");
+        let clone_at = args
+            .iter()
+            .position(|a| a == "clone")
+            .expect("clone present");
+        // Only credential `-c` flags precede the `clone` subcommand.
+        assert!(
+            args[..clone_at]
+                .iter()
+                .all(|a| a == "-c" || a.starts_with("credential.helper")),
+            "only credential -c flags precede `clone`: {args:?}"
+        );
+        // The real clone flags/url/dest follow the subcommand.
+        let tail = &args[clone_at..];
+        assert!(tail.iter().any(|a| a == "--branch") && tail.iter().any(|a| a == "main"));
+        assert!(tail.iter().any(|a| a == "https://example.com/r.git"));
+        assert!(
+            !args.iter().any(|a| a.contains("s3cr3t")),
+            "secret not in argv"
+        );
     }
 
     #[tokio::test]

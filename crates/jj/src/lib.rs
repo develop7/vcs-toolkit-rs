@@ -626,6 +626,12 @@ pub trait JjApi: Send + Sync {
 ///
 /// Wraps a [`RetryingClient`]: enable lock-contention retry with
 /// [`with_retry`](Jj::with_retry) (opt-in; off by default).
+///
+/// **Remote authentication is ambient.** Unlike `vcs-git` (which accepts a
+/// per-operation `CredentialProvider` via `with_credentials`), `jj`'s git remote
+/// support runs through its own in-process backend, which offers no per-invocation
+/// credential override — `jj git fetch`/`push` authenticate from the ambient git
+/// credential helpers / SSH agent. Configure those out of band.
 pub struct Jj<R: ProcessRunner = processkit::JobRunner> {
     core: RetryingClient<R>,
 }
