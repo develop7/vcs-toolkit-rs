@@ -23,6 +23,15 @@ crates; tag releases as `vcs-github-v<version>`.
   `is_failing`/`is_pending`/`is_passing` helpers — the typed form of gh's check
   categorisation, `#[non_exhaustive]` with an `Unknown` catch-all so a future gh
   bucket never breaks the parse.
+- `pr_edit(dir, number, PrEdit)` — edit a pull request's title and/or body
+  (`gh pr edit <n> [--title <title>] [--body <body>]`). A new `PrEdit` builder
+  (`new()`, `.title(..)`, `.body(..)`) carries the optional fields; absent
+  flags are not emitted, so the argv reflects exactly the fields the caller
+  set. An empty string is treated as a real value (gh clears the field on
+  `--title ""` / `--body ""`), not as `None`. The trait method is
+  **defaulted** to `Error::Unsupported` so external implementers keep
+  compiling when the crate bumps — only the `GitHub` concrete impl and the
+  regenerated `MockGitHubApi` override it.
 
 ### Changed
 - `issue_list` now fetches `body` and `url` too (widened `--json` field list), so
