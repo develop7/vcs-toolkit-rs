@@ -287,8 +287,10 @@ pub enum WriteGate {
     /// Every mutating tool is callable (`--allow-write`).
     All,
     /// Only the named mutating tools are callable (`--allow-tools a,b,c`).
-    /// Tool names are the method names (e.g. `"repo_commit"`); read tools are
-    /// unaffected (always available) and unknown names simply never match.
+    /// Tool names are the method names (e.g. `"repo_commit"`, the [`WRITE_TOOLS`]
+    /// set); read tools are unaffected (always available). At the gate an unknown
+    /// name simply never matches; the `vcs-mcp` binary additionally rejects an
+    /// unknown `--allow-tools` name up front rather than building an inert entry.
     Set(std::collections::HashSet<String>),
 }
 

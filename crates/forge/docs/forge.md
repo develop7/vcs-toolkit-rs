@@ -53,6 +53,8 @@ pub async fn repo_view(&self)    -> Result<ForgeRepo>;
 pub async fn pr_list(&self)      -> Result<Vec<ForgePr>>;
 pub async fn pr_view(&self, number: u64) -> Result<ForgePr>;
 pub async fn pr_create(&self, spec: PrCreate) -> Result<String>;
+pub async fn pr_comment(&self, number: u64, body: &str) -> Result<String>;
+pub async fn pr_edit(&self, number: u64, edit: PrEdit) -> Result<()>;
 pub async fn pr_merge(&self, number: u64, strategy: MergeStrategy) -> Result<()>;
 pub async fn pr_mark_ready(&self, number: u64) -> Result<()>;
 pub async fn pr_close(&self, number: u64, delete_branch: bool) -> Result<()>;
@@ -69,6 +71,10 @@ pub async fn release_view(&self, tag: &str) -> Result<ForgeRelease>;
 defaults to the current branch and `target` to the repo default; the facade maps
 them to each CLI's own flags (gh/tea `--head`/`--base`, glab
 `--source-branch`/`--target-branch`).
+
+[`PrEdit`] is the unified edit spec — `PrEdit::new().title(t).body(b)`, each field
+optional; `pr_edit` rejects both-`None` with `Error::InvalidInput` before any
+spawn. `pr_comment` likewise rejects an empty/whitespace-only body up front.
 
 Every method mirrors an inherent method on [`Forge`]; the object-safe `ForgeApi`
 trait adds nothing but the `&dyn` boundary.

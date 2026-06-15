@@ -678,10 +678,11 @@ impl<R: ProcessRunner> Repo<R> {
     /// the consumer.
     ///
     /// `branch` must not already exist. The jj path is two steps (`workspace add`
-    /// then `bookmark create`) and is not atomic: if the bookmark step fails, the
-    /// freshly-added workspace is left in place for the caller to clean up. A
-    /// consumer needing resume-existing or rollback semantics should drive the
-    /// underlying client via [`jj`](Repo::jj) / [`git`](Repo::git).
+    /// then `bookmark create`) and is not atomic, but a failed bookmark step
+    /// **rolls back**: the workspace directory is removed only when `workspace add`
+    /// created it (a pre-existing directory the caller already had is left intact),
+    /// the workspace is forgotten best-effort, and the original error is surfaced —
+    /// so a failed call doesn't leak a half-made worktree.
     pub async fn create_worktree(
         &self,
         path: &Path,

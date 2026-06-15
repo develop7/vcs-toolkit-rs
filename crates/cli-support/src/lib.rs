@@ -186,9 +186,10 @@ pub fn is_transient_fetch_error(err: &Error) -> bool {
 /// These are deliberately limited to the locks that guard the *entire* operation
 /// up front, so retrying is safe even on a **mutating** command: the repo was not
 /// modified at all. We intentionally do **not** include per-ref lock messages
-/// (`cannot lock ref`, `<ref>.lock: File exists`): a multi-ref `push`/`fetch`
-/// updates refs sequentially, so a ref-lock failure can arrive *after* earlier refs
-/// already moved — replaying that is not idempotent. Network markers
+/// (`cannot lock ref`, `<ref>.lock`/`packed-refs.lock: File exists`): a multi-ref
+/// `push`/`fetch` updates refs sequentially, so a ref-lock failure can arrive
+/// *after* earlier refs already moved — replaying that is not idempotent. Network
+/// markers
 /// ([`TRANSIENT_FETCH_MARKERS`]) and conflict/exit failures are likewise absent.
 const LOCK_CONTENTION_MARKERS: &[&str] = &[
     "index.lock': file exists", // git: the whole-repo index lock (pre-write)

@@ -340,10 +340,11 @@ pub fn cleanup_worktree_blocking(&self, path: &Path) -> Result<()>;
 `create_worktree` creates a worktree/workspace at `path` on a **new** `branch`
 based on `base`. It always reports `CreateOutcome::Plain` — a copy-on-write
 strategy stays in the consumer. `branch` must not already exist. **The jj path is
-not atomic**: it's two steps (`workspace add`, then `bookmark create`), and if
-the bookmark step fails the freshly-added workspace is left in place for the
-caller to clean up. A consumer needing resume-existing or rollback semantics
-should drive the underlying client via `jj()` / `git()`.
+two steps** (`workspace add`, then `bookmark create`) and is not atomic, but a
+failed bookmark step **rolls back**: the workspace directory is removed only when
+`workspace add` created it (a pre-existing directory the caller already had is
+left intact), the workspace is forgotten best-effort, and the original error is
+surfaced — so a failed call doesn't leak a half-made worktree.
 
 `remove_worktree` removes the worktree/workspace at `path`. For jj this resolves
 the workspace name by matching `path`, deletes the directory, then forgets it; a

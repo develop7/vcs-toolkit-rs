@@ -307,8 +307,9 @@ additive follow-ups, not a blocking wave.
 - **6.3 ✅ Hardened execution profile.** Shipped as `Git::harden()` /
   `Git::hardened()`: hooks off via env-based config
   (`core.hooksPath=/dev/null`, verified to suppress hooks on Windows),
-  `core.fsmonitor=false`, repo-redirecting `GIT_*` scrubbed, system config
-  skipped, prompts off — applied to every command via processkit's
+  `core.fsmonitor=false`, repo-redirecting *and* command-hook `GIT_*` scrubbed
+  (`GIT_SSH_COMMAND`/`GIT_ASKPASS`/`GIT_EXTERNAL_DIFF`/`GIT_PAGER`/`GIT_EDITOR`/…),
+  system config skipped, prompts off — applied to every command via processkit's
   `default_env`/`default_env_remove` (no upstream work needed). jj
   deliberately has no equivalent (no repo-local hooks; documented).
 

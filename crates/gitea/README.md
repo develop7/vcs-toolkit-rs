@@ -82,7 +82,7 @@ use std::path::Path;
 use vcs_gitea::{Gitea, GiteaApi};
 
 # async fn demo() {
-    let json = r#"[{"number":7,"title":"Add X","state":"open"}]"#;
+    let json = r#"[{"index":"7","title":"Add X","state":"open"}]"#;
     let tea = Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(json)));
     assert_eq!(tea.pr_list(Path::new(".")).await.unwrap()[0].number, 7);
 # }

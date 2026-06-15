@@ -392,9 +392,11 @@ Two layers, both on by default or one call away:
 - **`Git::hardened()`.** Running `git` inside a repository you didn't create
   executes that repo's hooks and honours its config. The hardened profile
   disables hooks and `core.fsmonitor`, scrubs repo-redirecting `GIT_*`
-  variables, skips system config, and keeps prompts off — on every command
-  the client runs. jj needs no equivalent (no repo-local hooks); in a
-  colocated repo, harden the `Git` client you point at it.
+  variables *and* the env-based command hooks that make git spawn an arbitrary
+  program (`GIT_SSH_COMMAND`/`GIT_ASKPASS`/`GIT_EXTERNAL_DIFF`/`GIT_PAGER`/…),
+  skips system config, and keeps prompts off — on every command the client
+  runs. jj needs no equivalent (no repo-local hooks); in a colocated repo,
+  harden the `Git` client you point at it.
 
 A related opt-in is **supplying** a secret rather than guarding against one:
 `Git`/`GitHub`/`GitLab` accept a `CredentialProvider` via `with_credentials(...)`,

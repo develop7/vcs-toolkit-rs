@@ -46,9 +46,12 @@ Requires the `tea` binary on `PATH`, configured via `tea login add`.
 PR-checks command, and no single-release view (`tea releases` ignores any
 positional and always lists). Consequences:
 
-- **`pr_view` is synthesized** by listing with `--state all` and filtering by
-  number — a missing number is an `Error::Parse`. (`issue_view`, by contrast, is
-  a *first-class* `tea issues <index>` — see [Issues & releases](#issues--releases).)
+- **`pr_view` is synthesized** by listing with `--state all --limit 999` and
+  filtering by number — a missing number is an `Error::Parse`. When the listing
+  fills that 999-row cap, the not-found error says so (a *possible* page-miss: a
+  higher-numbered PR may exist beyond the page) rather than asserting a flat
+  absence. (`issue_view`, by contrast, is a *first-class* `tea issues <index>` —
+  see [Issues & releases](#issues--releases).)
 - **`repo_view`, `pr_mark_ready`, `pr_checks`, and `release_view` are simply
   absent** from `GiteaApi`. Through the [`vcs-forge`](https://docs.rs/vcs-forge/latest/vcs_forge/guide/) facade they return
   `Error::Unsupported` for the Gitea backend (`err.is_unsupported()`).
@@ -86,6 +89,8 @@ configured.
 | `pr_create(dir, spec)` | `tea pr create --title … --description … [--head …] [--base …]` | `String` |
 | `pr_merge(dir, number, strategy)` | `tea pr merge <number> --style merge\|rebase\|squash` | `()` |
 | `pr_close(dir, number)` | `tea pr close <number>` | `()` |
+| `pr_comment(dir, number, body)` | `tea comment <number> <body>` | `String` |
+| `pr_edit(dir, number, spec)` | `tea pr edit <number> [--title …] [--description …]` | `()` |
 
 `PullRequest` carries `number` (tea's `index` column), `title`, `state`, `merged`,
 `head_branch`, `base_branch`, and `url` — read from tea's table columns (we select

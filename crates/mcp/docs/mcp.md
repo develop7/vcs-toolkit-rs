@@ -63,7 +63,7 @@ vcs-mcp [--repo <path>] [--forge github|gitlab|gitea] [--allow-write]
 | `--repo <path>` | Repository to serve (default: the current directory); git vs jj is detected from the path. |
 | `--forge <github\|gitlab\|gitea>` | Force the forge for the PR/MR tools. Default: auto-detect from the `origin` remote. |
 | `--allow-write` | Enable **all** mutating tools. Off by default — read tools only. |
-| `--allow-tools <name,…>` | Enable **only the named** mutating tools (comma-separated; repeatable — occurrences accumulate). Tool names are the method names from the catalogue below. Read tools are unaffected. `--allow-write` wins when both are given. |
+| `--allow-tools <name,…>` | Enable **only the named** mutating tools (comma-separated; repeatable — occurrences accumulate). Tool names are the method names from the catalogue below (the canonical set is `vcs_mcp::WRITE_TOOLS`); an unknown/misspelled name is **rejected up front** with an error listing the valid write tools, rather than being silently inert. Read tools are unaffected. `--allow-write` wins when both are given. |
 | `--timeout <seconds>` | Per-command deadline so a stalled fetch/forge call can't hang a request (default: 120; `--timeout 0` disables it). |
 | `-h`, `--help` | Print usage and exit. |
 
