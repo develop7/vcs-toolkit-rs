@@ -51,6 +51,11 @@ command the client runs:
   `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
   `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_PARAMETERS`,
   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`.
+- **Scrubs inherited command hooks** that make git spawn an arbitrary program
+  from the environment: `GIT_SSH_COMMAND`/`GIT_SSH`, `GIT_ASKPASS`,
+  `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`. The
+  opt-in `with_credentials` auth seam still works (it injects a
+  `credential.helper` / token env, not these variables).
 - **Skips system config** (`GIT_CONFIG_NOSYSTEM=1`) and keeps terminal prompts
   off everywhere (`GIT_TERMINAL_PROMPT=0`).
 

@@ -133,6 +133,16 @@ settings to **every** command the client runs:
   `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
   `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_PARAMETERS`,
   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`.
+- **Scrubs command-hook `GIT_*` variables** that make git spawn an arbitrary
+  program from the environment — a second code-execution path besides repo hooks:
+  `GIT_SSH_COMMAND`/`GIT_SSH` (transport), `GIT_ASKPASS` (credential prompt),
+  `GIT_EXTERNAL_DIFF` (diff driver), `GIT_PAGER`, and
+  `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`. The opt-in
+  [`with_credentials`](#credential-provisioning-opt-in) auth seam injects a
+  `credential.helper` / token env rather than these variables,
+  so it keeps working through a hardened client; an operator who deliberately
+  relies on an ambient `GIT_SSH_COMMAND`/`GIT_ASKPASS` for a hardened run should
+  inject it per-call instead of inheriting it.
 - **Skips system config** (`GIT_CONFIG_NOSYSTEM=1`) and keeps terminal prompts
   off everywhere (`GIT_TERMINAL_PROMPT=0`).
 

@@ -1797,7 +1797,13 @@ impl<R: ProcessRunner> GitApi for Git<R> {
         match res.code() {
             // Exit 1 = unset (git lumps "no such key/section" in here too).
             Some(1) => Ok(None),
-            Some(0) => Ok(Some(res.stdout().trim_end().to_string())),
+            // Strip only git's trailing line terminator (`\n`, or `\r\n`), not all
+            // trailing whitespace: a config value can legitimately end in spaces or
+            // a tab (e.g. a templated prefix), and `--get` returns a single line, so
+            // it never itself ends in a newline.
+            Some(0) => Ok(Some(
+                res.stdout().trim_end_matches(['\r', '\n']).to_string(),
+            )),
             _ => {
                 res.ensure_success()?;
                 Ok(None) // unreachable: a non-zero exit always errors above.
@@ -1955,6 +1961,16 @@ impl<R: ProcessRunner> Git<R> {
     ///   `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`,
     ///   `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_PARAMETERS`,
     ///   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`.
+    /// - **Removes inherited command hooks** that make git spawn an arbitrary
+    ///   program from the *environment* (a second code-execution path besides
+    ///   repo hooks): `GIT_SSH_COMMAND`/`GIT_SSH` (transport), `GIT_ASKPASS`
+    ///   (credential prompt), `GIT_EXTERNAL_DIFF` (diff driver), `GIT_PAGER`,
+    ///   `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`. The library's own auth seam
+    ///   ([`with_credentials`](Git::with_credentials)) injects credentials via a
+    ///   git `credential.helper` / token env, **not** these variables, so it keeps
+    ///   working through a hardened client; an operator who deliberately relies on
+    ///   an ambient `GIT_SSH_COMMAND`/`GIT_ASKPASS` should inject it per-call
+    ///   instead of inheriting it into an untrusted-repo run.
     /// - **Skips system config** (`GIT_CONFIG_NOSYSTEM=1`) and keeps terminal
     ///   prompts off everywhere (`GIT_TERMINAL_PROMPT=0`).
     ///
@@ -1967,6 +1983,7 @@ impl<R: ProcessRunner> Git<R> {
     /// [`Git::hardened()`](Git::hardened) for the common case.
     pub fn harden(self) -> Self {
         let removed = [
+            // Repo redirectors — point git at another repo/index/object store.
             "GIT_DIR",
             "GIT_WORK_TREE",
             "GIT_INDEX_FILE",
@@ -1977,6 +1994,14 @@ impl<R: ProcessRunner> Git<R> {
             "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_SYSTEM",
+            // Command hooks — make git spawn an arbitrary program from the env.
+            "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "GIT_ASKPASS",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_PAGER",
+            "GIT_EDITOR",
+            "GIT_SEQUENCE_EDITOR",
         ];
         let mut hardened = self;
         for key in removed {
@@ -1987,6 +2012,12 @@ impl<R: ProcessRunner> Git<R> {
             .default_env("GIT_TERMINAL_PROMPT", "0")
             .default_env("GIT_CONFIG_COUNT", "2")
             .default_env("GIT_CONFIG_KEY_0", "core.hooksPath")
+            // `/dev/null` as the hooks dir disables hooks on every platform,
+            // Windows included: git looks for `<hooksPath>/<hook-name>`, and no
+            // such file can exist under `/dev/null` (it is not a directory), so the
+            // lookup always misses and no hook runs. A literal POSIX path is fine
+            // on Windows here — it is used as a path *prefix* to probe, never
+            // opened — and it reads unambiguously as "nowhere."
             .default_env("GIT_CONFIG_VALUE_0", "/dev/null")
             .default_env("GIT_CONFIG_KEY_1", "core.fsmonitor")
             .default_env("GIT_CONFIG_VALUE_1", "false")
@@ -3295,6 +3326,11 @@ mod tests {
             assert!(has("GIT_TERMINAL_PROMPT", "0"));
             assert!(removed("GIT_DIR"), "GIT_DIR scrubbed");
             assert!(removed("GIT_CONFIG_GLOBAL"), "global config scrubbed");
+            // Command-hook env vectors are scrubbed too.
+            assert!(removed("GIT_SSH_COMMAND"), "GIT_SSH_COMMAND scrubbed");
+            assert!(removed("GIT_ASKPASS"), "GIT_ASKPASS scrubbed");
+            assert!(removed("GIT_EXTERNAL_DIFF"), "GIT_EXTERNAL_DIFF scrubbed");
+            assert!(removed("GIT_PAGER"), "GIT_PAGER scrubbed");
         }
     }
 
@@ -3508,6 +3544,15 @@ mod tests {
             set.config_get(Path::new("."), "user.name").await.unwrap(),
             Some("Alice".to_string())
         );
+        // Only git's trailing newline (here `\r\n`) is stripped — a value's own
+        // trailing spaces are preserved (they can be meaningful).
+        let spaced = Git::with_runner(
+            ScriptedRunner::new().on(["git", "config", "--get"], Reply::ok("prefix:  \r\n")),
+        );
+        assert_eq!(
+            spaced.config_get(Path::new("."), "x.y").await.unwrap(),
+            Some("prefix:  ".to_string())
+        );
         let unset = Git::with_runner(
             ScriptedRunner::new().on(["git", "config", "--get"], Reply::fail(1, "")),
         );
@@ -3570,6 +3615,42 @@ mod tests {
                 call.args_str()
             );
         }
+    }
+
+    // harden() scrubs GIT_EDITOR/GIT_SEQUENCE_EDITOR from the inherited
+    // environment, but a sequencer command sets its own `GIT_EDITOR=true` per call
+    // (no_editor). `command_in` applies the client-level removal eagerly, so the env
+    // list ends up `[…, (GIT_EDITOR, None), …, (GIT_EDITOR, "true")]` — and at spawn
+    // each op is applied in order (processkit's `Command` does `env_remove` then
+    // `env`), so the LAST write wins. The effective value MUST be `true`, else a
+    // hardened `revert`/`cherry-pick`/`rebase` would lose its no-op editor and hang
+    // a headless caller. Pin that effective-precedence (fold in spawn order).
+    #[tokio::test]
+    async fn hardened_sequencer_keeps_its_no_op_editor() {
+        let rec = RecordingRunner::replying(Reply::ok(""));
+        let git = Git::with_runner(&rec).harden();
+        git.revert(Path::new("/r"), "abc").await.unwrap();
+        let call = rec.only_call();
+        // Resolve each editor var the way the OS does: last op for the key wins.
+        let effective = |var: &str| {
+            call.envs
+                .iter()
+                .rfind(|(k, _)| k.to_str() == Some(var))
+                .and_then(|(_, v)| v.as_deref())
+                .and_then(|v| v.to_str())
+        };
+        // Both no-op editors must survive harden()'s scrub (symmetric precedence),
+        // else a hardened sequencer command hangs a headless caller.
+        assert_eq!(
+            effective("GIT_EDITOR"),
+            Some("true"),
+            "the per-command no-op editor must survive harden()'s scrub"
+        );
+        assert_eq!(
+            effective("GIT_SEQUENCE_EDITOR"),
+            Some("true"),
+            "the per-command no-op sequence editor must survive harden()'s scrub"
+        );
     }
 
     #[tokio::test]

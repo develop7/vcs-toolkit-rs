@@ -35,6 +35,14 @@ crates; tag releases as `vcs-git-v<version>`.
   parsed as a flag.
 - **`StatusEntry::orig_path` renamed to `old_path` (breaking)** — matches
   `vcs_jj::ChangedPath::old_path`, so the rename source reads the same on both wrappers.
+- **`harden()` also scrubs the env-based command hooks** — `GIT_SSH_COMMAND`/
+  `GIT_SSH`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, and
+  `GIT_EDITOR`/`GIT_SEQUENCE_EDITOR` — closing a second arbitrary-code-execution
+  path (a poisoned environment making git spawn a helper) alongside the existing
+  repo-redirector and config scrubbing. The opt-in `with_credentials` auth seam is
+  unaffected (it injects a `credential.helper` / token env, not these variables); an
+  operator who relies on an ambient `GIT_SSH_COMMAND`/`GIT_ASKPASS` for a hardened
+  run should inject it per-call rather than inherit it.
 - Bumped `processkit` to **0.11.0** (from 0.9.1), a major breaking release ahead
   of processkit's 1.0 freeze. Breaking for downstream via the re-exported
   `processkit::Error`: `Error::Timeout`/`Signalled` now carry partial
@@ -49,7 +57,9 @@ crates; tag releases as `vcs-git-v<version>`.
   behind a feature. Downstream that enabled `vcs-git/cancellation` should drop it.
 
 ### Fixed
--
+- `config_get` strips only git's trailing line terminator (`\n`/`\r\n`) instead of
+  all trailing whitespace, so a config value that legitimately ends in spaces or a
+  tab is returned intact.
 
 ## [0.5.0] - 2026-06-08
 
