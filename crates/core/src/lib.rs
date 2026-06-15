@@ -233,7 +233,7 @@ pub fn detect(start: &Path) -> Option<Located> {
                 root: dir.to_path_buf(),
             });
         }
-        if dir.join(".git").exists() {
+        if is_git_marker(&dir.join(".git")) {
             return Some(Located {
                 kind: BackendKind::Git,
                 root: dir.to_path_buf(),
@@ -242,6 +242,37 @@ pub fn detect(start: &Path) -> Option<Located> {
         current = dir.parent();
     }
     None
+}
+
+/// Whether `path` (a candidate `.git`) is a real git repository marker — a `.git`
+/// **directory**, or a **gitlink file** (a linked worktree / submodule) whose
+/// content starts with `gitdir:`. A stray/garbage file merely *named* `.git` is
+/// rejected, so it can't shadow a real repository higher up the tree, and a binary
+/// or unreadable file is rejected too (the read fails → `false`). Symmetric with
+/// the `.jj` `is_dir()` probe: both require a *valid* marker, not mere existence.
+fn is_git_marker(path: &Path) -> bool {
+    use std::io::Read;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => true,
+        Ok(meta) if meta.is_file() => {
+            // A gitlink file is tiny (`gitdir: <path>\n`), so read only a small
+            // prefix: `detect` walks *up to the filesystem root*, so a huge/garbage
+            // file merely named `.git` in an ancestor we don't own must not force an
+            // unbounded read. `read_to_end` loops over short reads (unlike a single
+            // `read`, which the `Read` contract lets return fewer bytes), and
+            // `from_utf8_lossy` tolerates a binary file or a multibyte char split at
+            // the cap — the `gitdir:` marker is ASCII and within the first bytes.
+            let Ok(file) = std::fs::File::open(path) else {
+                return false;
+            };
+            let mut buf = Vec::new();
+            let _ = file.take(32).read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf)
+                .trim_start()
+                .starts_with("gitdir:")
+        }
+        _ => false,
+    }
 }
 
 /// The per-tool client behind a [`Repo`]. Shared via `Arc` so [`Repo::at`] can
@@ -914,6 +945,48 @@ mod tests {
         assert!(detect(tmp.path()).is_none());
     }
 
+    // A gitlink `.git` *file* (a linked worktree / submodule) is a valid git marker;
+    // a stray file merely named `.git` is NOT — so it can't shadow a real repo above.
+    #[test]
+    fn detect_validates_dotgit_file_is_a_gitlink() {
+        let tmp = TempDir::new("gitlink");
+        let root = tmp.path();
+
+        // A gitlink file → detected as a git repo at this dir.
+        std::fs::write(root.join(".git"), "gitdir: /somewhere/.git/worktrees/wt\n").unwrap();
+        assert_eq!(
+            detect(root).expect("gitlink detected").kind,
+            BackendKind::Git
+        );
+
+        // A garbage file named `.git` (not a gitlink) is rejected — and must NOT
+        // shadow a real `.git` directory in the parent.
+        let parent = TempDir::new("gitlink-parent");
+        std::fs::create_dir_all(parent.path().join(".git")).unwrap();
+        let child = parent.path().join("sub");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join(".git"), "not a gitlink, just noise\n").unwrap();
+        let located = detect(&child).expect("walks up past the bogus .git file");
+        assert_eq!(located.root, parent.path(), "the real repo is the parent");
+
+        // An empty `.git` file is not a marker.
+        let empty = TempDir::new("gitlink-empty");
+        std::fs::write(empty.path().join(".git"), "").unwrap();
+        assert!(detect(empty.path()).is_none(), "empty .git is not a repo");
+
+        // Leading whitespace before `gitdir:` is tolerated (the `trim_start`).
+        let spaced = TempDir::new("gitlink-spaced");
+        std::fs::write(
+            spaced.path().join(".git"),
+            "  gitdir: /x/.git/worktrees/w\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect(spaced.path()).expect("spaced gitlink detected").kind,
+            BackendKind::Git
+        );
+    }
+
     // --- dispatch (hermetic, ScriptedRunner-backed) ------------------------
 
     fn git_repo(runner: ScriptedRunner) -> Repo<ScriptedRunner> {
@@ -1009,6 +1082,24 @@ mod tests {
         assert_eq!(s.change_count, 0);
         assert!(!s.conflicted);
         assert_eq!(s.operation, OperationState::Clear);
+    }
+
+    // jj: a conflicted `@` that jj marks `empty` (conflict but no net content change)
+    // is still reported `dirty` — the conflict is uncommitted state needing
+    // resolution — so the count runs and the snapshot is coherent (no
+    // `conflicted: true` next to `dirty: false`), mirroring git's conflict handling.
+    #[tokio::test]
+    async fn jj_snapshot_conflicted_empty_change_is_dirty() {
+        let repo = jj_repo(
+            ScriptedRunner::new()
+                .on(["jj", "log"], Reply::ok("c0ffee\t\t1\t1\n")) // empty=1, conflict=1
+                .on(["jj", "diff"], Reply::ok("M conflicted.rs\n")), // status → 1
+        );
+        let s = repo.snapshot().await.unwrap();
+        assert!(s.conflicted);
+        assert!(s.dirty, "a conflicted change is a dirty working copy");
+        assert_eq!(s.change_count, 1);
+        assert_eq!(s.operation, OperationState::Conflict);
     }
 
     // jj `list_worktrees` resolves each workspace's root via the batched

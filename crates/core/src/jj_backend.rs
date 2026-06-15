@@ -131,18 +131,23 @@ pub(crate) async fn snapshot<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result
         .get(1)
         .and_then(|b| b.split(',').find(|n| !n.is_empty()))
         .map(str::to_string);
-    // Read the flags as explicit values: `empty == "0"` ⇒ a non-empty change ⇒
-    // dirty (so a missing/garbled field falls to clean, not a contradictory
-    // "dirty with 0 changes"); `conflict == "1"` ⇒ conflicted.
-    let dirty = fields.get(2) == Some(&"0");
+    // Read the flags as explicit values: `conflict == "1"` ⇒ conflicted, and
+    // `empty == "0"` ⇒ a non-empty change ⇒ dirty (so a missing/garbled field falls
+    // to clean, not a contradictory "dirty with 0 changes"). A **conflicted** change
+    // is also dirty even when jj marks it `empty`: the conflict is uncommitted state
+    // needing resolution — exactly as git reports conflict markers as unstaged
+    // changes — so cross-backend `dirty` stays consistent (no `conflicted: true`
+    // alongside `dirty: false`).
     let conflicted = fields.get(3) == Some(&"1");
+    let dirty = fields.get(2) == Some(&"0") || conflicted;
     // jj has no paused merge/rebase; a conflict is recorded on the change itself.
     let operation = if conflicted {
         OperationState::Conflict
     } else {
         OperationState::Clear
     };
-    // 2nd spawn only when there's something to count.
+    // 2nd spawn only when there's something to count (dirty now includes the
+    // conflicted case, so the count reflects the conflicted files too).
     let change_count = if dirty {
         jj.status(dir).await?.len()
     } else {
@@ -315,6 +320,15 @@ pub(crate) async fn list_worktrees<R: ProcessRunner>(
     let workspaces = jj.workspace_list(dir).await?;
     let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
     let roots = jj.workspace_roots(dir, &names).await;
+    // `workspace_roots` returns exactly one result per name (it's a fan-out over
+    // `names`), so the `zip` below is 1:1. Pin that invariant: if it ever drifted to
+    // returning only the *successful* rows, `zip` would silently drop the tail
+    // workspaces from the listing rather than erroring.
+    debug_assert_eq!(
+        names.len(),
+        roots.len(),
+        "workspace_roots must return one result per name"
+    );
     let mut out = Vec::new();
     for (ws, root) in workspaces.into_iter().zip(roots) {
         let Ok(root) = root else {
@@ -411,6 +425,13 @@ async fn workspace_name_for_path<R: ProcessRunner>(
     let workspaces = jj.workspace_list(dir).await?;
     let names: Vec<String> = workspaces.iter().map(|ws| ws.name.clone()).collect();
     let roots = jj.workspace_roots(dir, &names).await;
+    // One result per name (see `list_worktrees`): a `zip` mismatch would silently
+    // skip a workspace and wrongly report `WorktreeNotFound` for a real one.
+    debug_assert_eq!(
+        names.len(),
+        roots.len(),
+        "workspace_roots must return one result per name"
+    );
     for (ws, root) in workspaces.into_iter().zip(roots) {
         let Ok(root) = root else {
             continue;

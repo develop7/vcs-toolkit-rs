@@ -50,6 +50,19 @@ crates; tag releases as `vcs-core-v<version>`.
   position with a debug-assert on its arity, so a truncated/garbled row yields a
   *coherent* snapshot (clean, unconflicted) rather than one whose `dirty` flag flips
   to a contradictory "dirty with 0 changes."
+- **A conflicted jj `@` is now reported `dirty`** even when jj marks the change
+  `empty` (a conflict with no net content change): the conflict is uncommitted state
+  needing resolution, so `dirty`/`change_count` reflect it — mirroring git, where
+  conflict markers are unstaged changes — instead of the surprising
+  `conflicted: true` next to `dirty: false`.
+- **`detect` validates a `.git` *file*** is a real gitlink (content starts with
+  `gitdir:`), not just any file named `.git`. A stray/garbage `.git` file no longer
+  registers as a repository (or shadows a real repo higher up the tree), making the
+  `.git` probe as strict as the `.jj` `is_dir()` one.
+- **jj worktree listing is guarded against silent truncation.** `list_worktrees` /
+  the worktree-name lookup `debug_assert` that the batched `workspace_roots` fan-out
+  returns one result per workspace, so a future contract drift can't silently drop a
+  worktree from the listing (or wrongly report one as not-found).
 
 ## [0.3.0] - 2026-06-08
 
