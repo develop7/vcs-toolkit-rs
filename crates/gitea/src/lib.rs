@@ -235,6 +235,13 @@ pub const BINARY: &str = "tea";
 const PR_FIELDS: &str = "index,title,state,head,base,url";
 const ISSUE_FIELDS: &str = "index,title,state,body,url";
 
+// `pr_view` has no single-PR endpoint in `tea`, so it lists all states and
+// filters by number. This caps the page; a repo with more PRs than this would
+// page-miss a high-numbered PR. Shared between the argv and the not-found path so
+// a miss at the cap can be reported as *possibly truncated* rather than a flat
+// "no such PR".
+const PR_VIEW_LIMIT: &str = "999";
+
 /// How [`GiteaApi::pr_merge`] merges the PR — maps to `tea pr merge --style`
 /// (Gitea's default is a merge commit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,8 +301,9 @@ pub trait GiteaApi: Send + Sync {
     /// A single pull request by number. `tea` has no single-PR view, so this
     /// **lists** (`tea pr list --state all --limit 999 --output json`) and filters
     /// by number; a missing number is an [`Error::Parse`]. The high `--limit`
-    /// guards against a false "not found", but PRs beyond the first 999 are still
-    /// not found.
+    /// guards against a false "not found"; a PR beyond the first 999 is still not
+    /// returned, but when the listing fills that cap the not-found error says so
+    /// (a *possible* page-miss) rather than asserting a flat absence.
     async fn pr_view(&self, dir: &Path, number: u64) -> Result<PullRequest>;
     /// Open a pull request, returning the command's output (`tea pr create`).
     /// Unlike `gh`/`glab`, `tea` prints a textual summary on success, **not** the
@@ -444,18 +452,38 @@ impl<R: ProcessRunner> GiteaApi for Gitea<R> {
                 self.core.command_in(
                     dir,
                     [
-                        "pr", "list", "--state", "all", "--limit", "999", "--fields", PR_FIELDS,
-                        "--output", "json",
+                        "pr",
+                        "list",
+                        "--state",
+                        "all",
+                        "--limit",
+                        PR_VIEW_LIMIT,
+                        "--fields",
+                        PR_FIELDS,
+                        "--output",
+                        "json",
                     ],
                 ),
                 parse::parse_pr_list,
             )
             .await?;
+        let truncated = prs.len() >= PR_VIEW_LIMIT.parse::<usize>().unwrap_or(usize::MAX);
         prs.into_iter()
             .find(|pr| pr.number == number)
             .ok_or_else(|| Error::Parse {
                 program: BINARY.to_string(),
-                message: format!("no pull request #{number} in `tea pr list`"),
+                // When the listing filled the page cap, a miss may be a page-miss
+                // rather than a genuine absence — say so instead of a flat "no such
+                // PR", so a caller on a very large repo can tell the difference.
+                message: if truncated {
+                    format!(
+                        "no pull request #{number} in the first {PR_VIEW_LIMIT} of `tea pr list` \
+                         (the listing hit the {PR_VIEW_LIMIT}-row cap, so a higher-numbered PR may \
+                         exist but was not returned)"
+                    )
+                } else {
+                    format!("no pull request #{number} in `tea pr list`")
+                },
             })
     }
 
@@ -745,6 +773,32 @@ mod tests {
         let pr = tea.pr_view(Path::new("."), 9).await.expect("pr_view");
         assert_eq!(pr.title, "Nine");
         assert!(pr.merged);
+    }
+
+    // When the listing fills the `--limit` page cap, a not-found is reported as a
+    // *possible* page-miss (mentions the cap), distinct from a flat absence.
+    #[tokio::test]
+    async fn pr_view_signals_possible_paging_miss_at_cap() {
+        let limit: u64 = super::PR_VIEW_LIMIT.parse().unwrap();
+        let rows: Vec<String> = (1..=limit)
+            .map(|i| {
+                format!(
+                    r#"{{"index":"{i}","title":"t","state":"open","head":"h","base":"main","url":"u"}}"#
+                )
+            })
+            .collect();
+        let json = format!("[{}]", rows.join(","));
+        let tea =
+            Gitea::with_runner(ScriptedRunner::new().on(["tea", "pr", "list"], Reply::ok(&json)));
+        // Ask for a number beyond the cap.
+        let err = tea.pr_view(Path::new("."), limit + 1).await.unwrap_err();
+        match err {
+            Error::Parse { message, .. } => assert!(
+                message.contains("cap"),
+                "a cap-filling miss must hint at truncation, got: {message}"
+            ),
+            other => panic!("expected Error::Parse, got {other:?}"),
+        }
     }
 
     // pr_view passes `--state all` + `--fields` so a closed/merged PR is found

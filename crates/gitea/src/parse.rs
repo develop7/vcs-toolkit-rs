@@ -196,15 +196,31 @@ pub struct Release {
 #[derive(Deserialize)]
 struct ReleaseJson {
     // No `default`: a row always carries the tag column, so a missing tag is a
-    // real parse failure rather than a silent empty string.
-    #[serde(rename = "tag-_name")]
+    // real parse failure rather than a silent empty string. The `rename` is tea's
+    // current `toSnakeCase` output; the aliases tolerate a future tea that fixes
+    // the stray-underscore quirk (or switches to camelCase / the raw header) so
+    // this parser doesn't silently break on a tea upgrade.
+    #[serde(
+        rename = "tag-_name",
+        alias = "tag_name",
+        alias = "tag-name",
+        alias = "tagName",
+        alias = "Tag-Name"
+    )]
     tag_name: String,
-    #[serde(default)]
+    #[serde(default, alias = "Title")]
     title: String,
-    #[serde(rename = "published _at", default)]
+    #[serde(
+        rename = "published _at",
+        default,
+        alias = "published_at",
+        alias = "published-at",
+        alias = "publishedAt",
+        alias = "Published At"
+    )]
     published_at: String,
     // tea collapses draft/prerelease/released into one `Status` column.
-    #[serde(default)]
+    #[serde(default, alias = "Status")]
     status: String,
 }
 

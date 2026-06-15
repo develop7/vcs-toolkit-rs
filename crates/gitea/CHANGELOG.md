@@ -48,7 +48,14 @@ crates; tag releases as `vcs-gitea-v<version>`.
   behind a feature. Downstream that enabled `vcs-gitea/cancellation` should drop it.
 
 ### Fixed
--
+- `pr_view` reports a *possible page-miss* when its `tea pr list --limit 999`
+  listing fills the cap and the requested number isn't found — distinguishing
+  "this PR exists but is beyond the page" from a flat "no such PR" on a very large
+  repo (instead of an indistinguishable not-found either way).
+- `Release` JSON parsing gained `serde` **aliases** for the cleaned/camelCase/raw
+  key forms (`tag_name`/`tag-name`/`tagName`/`Tag-Name`, `published_at`/…) alongside
+  tea's current quirky `toSnakeCase` keys (`tag-_name`, `published _at`), so a
+  future `tea` that fixes its header casing doesn't silently break release parsing.
 
 ## [0.1.0] - 2026-06-08
 

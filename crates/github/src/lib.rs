@@ -785,8 +785,17 @@ impl<R: ProcessRunner> GitHubApi for GitHub<R> {
             Some(1 | 8) if !res.stdout().trim().is_empty() => parse::from_json(res.stdout()),
             // gh exits 1 with NO JSON for a PR that simply has no checks — the
             // one bare non-zero we read as an empty list (cf. jj's
-            // `resolve_list` and its "No conflicts" exit).
-            _ if res.stderr().contains("no checks reported") => Ok(Vec::new()),
+            // `resolve_list` and its "No conflicts" exit). Matched
+            // case-insensitively so a capitalization tweak in gh's wording
+            // ("no checks reported on the 'X' branch") doesn't turn the empty case
+            // into a hard error.
+            _ if res
+                .stderr()
+                .to_ascii_lowercase()
+                .contains("no checks reported") =>
+            {
+                Ok(Vec::new())
+            }
             // Anything else (no such PR, auth required, timeout, signal…) is a
             // genuine failure; `ensure_success` builds the faithful error.
             _ => {
@@ -1333,17 +1342,23 @@ mod tests {
         }
 
         // A PR with no checks at all: gh exits 1 with NO JSON and a
-        // "no checks reported" message — an empty list, not an error.
-        let gh = GitHub::with_runner(ScriptedRunner::new().on(
-            ["gh", "pr", "checks"],
-            Reply::fail(1, "no checks reported on the 'feat/x' branch"),
-        ));
-        assert!(
-            gh.pr_checks(Path::new("."), 7)
-                .await
-                .expect("no checks → empty")
-                .is_empty()
-        );
+        // "no checks reported" message — an empty list, not an error. Matched
+        // case-insensitively, so a capitalized variant is still the empty case.
+        for stderr in [
+            "no checks reported on the 'feat/x' branch",
+            "No Checks Reported on the 'feat/x' branch",
+        ] {
+            let gh = GitHub::with_runner(
+                ScriptedRunner::new().on(["gh", "pr", "checks"], Reply::fail(1, stderr)),
+            );
+            assert!(
+                gh.pr_checks(Path::new("."), 7)
+                    .await
+                    .expect("no checks → empty")
+                    .is_empty(),
+                "no-checks must read as empty for stderr {stderr:?}"
+            );
+        }
         // …while a bare exit 1 for a different reason stays an error.
         let gh = GitHub::with_runner(ScriptedRunner::new().on(
             ["gh", "pr", "checks"],

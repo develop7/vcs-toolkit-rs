@@ -345,9 +345,19 @@ impl<R: ProcessRunner> Forge<R> {
         }
     }
 
-    /// Post a comment to an existing PR/MR. The body is guarded against flag-like
-    /// / empty values up front (see [`ForgeApi::pr_comment`]).
+    /// Post a comment to an existing PR/MR. An empty (or whitespace-only) body is
+    /// rejected with [`Error::InvalidInput`] before any CLI spawn — every backend
+    /// passes the body in a `--body`/`--comment` flag-value slot (so a flag-like
+    /// body is safe), but an empty comment is a caller bug that the CLIs either post
+    /// blank or reject opaquely, so fail fast and uniformly instead. (This guard is
+    /// facade-level; the per-crate clients reached directly apply their own
+    /// argument handling.)
     pub async fn pr_comment(&self, number: u64, body: &str) -> Result<String> {
+        if body.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "pr_comment: comment body must not be empty".into(),
+            ));
+        }
         match &self.backend {
             Backend::GitHub(c) => github_forge::pr_comment(c, &self.cwd, number, body).await,
             Backend::GitLab(c) => gitlab_forge::mr_comment(c, &self.cwd, number, body).await,
@@ -884,6 +894,20 @@ mod tests {
             matches!(err, crate::Error::InvalidInput(_)),
             "both-None must surface as InvalidInput, got {err:?}"
         );
+    }
+
+    // pr_comment rejects an empty / whitespace-only body with InvalidInput BEFORE
+    // any spawn — fail fast and uniformly instead of posting a blank comment.
+    #[tokio::test]
+    async fn pr_comment_empty_body_is_invalid_input() {
+        let forge = github(ScriptedRunner::new()); // no scripted rules: a spawn would error
+        for body in ["", "   ", "\t\n"] {
+            let err = forge.pr_comment(7, body).await.unwrap_err();
+            assert!(
+                matches!(err, crate::Error::InvalidInput(_)),
+                "empty body {body:?} must surface as InvalidInput, got {err:?}"
+            );
+        }
     }
 
     // pr_edit with a partial spec routes through to the wrapper and succeeds.

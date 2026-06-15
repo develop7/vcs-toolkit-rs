@@ -52,7 +52,9 @@ crates; tag releases as `vcs-github-v<version>`.
   behind a feature. Downstream that enabled `vcs-github/cancellation` should drop it.
 
 ### Fixed
--
+- `pr_checks` detects gh's "no checks reported" (a PR with no checks → empty list)
+  case-insensitively, so a capitalization tweak in gh's wording can't turn the
+  no-checks case into a hard error.
 
 ## [0.5.0] - 2026-06-08
 

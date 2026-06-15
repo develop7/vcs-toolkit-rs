@@ -35,7 +35,10 @@ crates; tag releases as `vcs-forge-v<version>`.
   `PrCreate`'s shape.
 - `Forge::pr_comment(number, body)` — post a comment to an existing PR/MR (routes
   to `vcs-github`'s `pr_comment` / `vcs-gitlab`'s `mr_comment` / `vcs-gitea`'s
-  `pr_comment`; `Unknown` returns `Unsupported`).
+  `pr_comment`; `Unknown` returns `Unsupported`). An empty (or whitespace-only)
+  body is rejected with `Error::InvalidInput` *before* any spawn — every backend
+  passes the body in a `--body`/`--comment` flag-value slot (so a flag-like body is
+  safe), but a blank comment is a caller bug, so it fails fast and uniformly.
 - `Forge::pr_edit(number, PrEdit)` — edit a PR/MR's title and/or body. Rejects
   both-`None` with `Error::InvalidInput` *before* any spawn; routes to the three
   per-forge wrappers.
