@@ -215,9 +215,13 @@ pub fn parse_conflicts(content: &str) -> Result<Vec<JjConflictSegment>> {
             // itself contains marker-like runs, so a shorter run is content.
             if marker_run(line, '>') == Some(n) {
                 let label = marker_label(line, n);
-                if parse_counter(label.trim_end_matches(" ends").trim_end()).is_some()
-                    || label.ends_with("ends")
-                {
+                // jj's end marker is `conflict N of M ends`; `parse_counter` matches
+                // it after trimming the trailing ` ends` (and also a hypothetical
+                // `conflict N of M` with no ` ends`). We rely *solely* on that
+                // structural check — no loose `ends_with("ends")` fallback, which
+                // could wrongly terminate the region on content that happens to be a
+                // run of exactly `n` `>` followed by a word ending in "ends".
+                if parse_counter(label.trim_end_matches(" ends").trim_end()).is_some() {
                     break line.to_string();
                 }
             }
@@ -395,6 +399,40 @@ mod tests {
             matches!(&region.sections[1], JjConflictSection::Base { label, .. }
                 if label.contains("\"base\"")),
         );
+    }
+
+    // A content line that is a run of exactly `n` `>` followed by a word ending in
+    // "ends" must NOT be mistaken for the region terminator — only `conflict N of M
+    // ends` ends the region. (The removed loose `ends_with("ends")` fallback would
+    // have wrongly terminated here.) This is malformed input jj wouldn't emit (it
+    // lengthens markers past content runs), but the parser must not be fooled by it.
+    #[test]
+    fn content_run_ending_in_ends_is_not_the_terminator() {
+        let input = concat!(
+            "line 1\n",
+            "<<<<<<< conflict 1 of 1\n",
+            "+++++++ side-a\n",
+            ">>>>>>> recommends\n", // 7 `>`, ends in "ends" — content, NOT the end marker
+            "------- base\n",
+            "line 2\n",
+            "+++++++ side-b\n",
+            "feature line 2\n",
+            ">>>>>>> conflict 1 of 1 ends\n", // the real terminator
+            "line 3\n",
+        );
+        let segments = parse_conflicts(input).expect("parse");
+        // Three segments — the region did not end early at the `recommends` line.
+        assert_eq!(segments.len(), 3);
+        let JjConflictSegment::Conflict(region) = &segments[1] else {
+            panic!("expected a conflict, got {segments:?}");
+        };
+        assert_eq!((region.number, region.total), (1, 1));
+        assert!(
+            region.sides()[0].iter().any(|l| l.contains("recommends")),
+            "the `>>>…recommends` content line is part of side-a, not the terminator"
+        );
+        // And it round-trips byte-for-byte (the content line is stored verbatim).
+        assert_eq!(render(&segments), input);
     }
 
     #[test]

@@ -124,6 +124,10 @@ const CONFLICT_MARKERS: &[&str] = &["conflict (", "automatic merge failed"];
 /// Lower-case substrings marking a commit that found nothing to record.
 const NOTHING_TO_COMMIT_MARKERS: &[&str] = &["nothing to commit", "nothing added to commit"];
 /// Lower-case substrings marking a transient (retryable) network/fetch failure.
+/// The timeout markers are kept *specific* (`connection timed out` /
+/// `operation timed out`) rather than a bare `timed out`, which would also match
+/// unrelated, non-network "timed out" messages (a lock wait, a hook) and trigger a
+/// spurious fetch retry.
 const TRANSIENT_FETCH_MARKERS: &[&str] = &[
     "could not resolve host",
     "couldn't resolve host",
@@ -131,7 +135,6 @@ const TRANSIENT_FETCH_MARKERS: &[&str] = &[
     "connection timed out",
     "connection refused",
     "operation timed out",
-    "timed out",
     "network is unreachable",
     "failed to connect",
     "could not read from remote repository",

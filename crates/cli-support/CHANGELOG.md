@@ -70,6 +70,11 @@ crates; tag releases as `vcs-cli-support-v<version>`.
 - `ManagedClient::output` dropped its dead lock-retry wrapper (it returns `Ok` on a
   non-zero exit, so the retry predicate could never fire); credential injection on
   `output` is unchanged.
+- **Transient-fetch classifier tightened:** dropped the bare `timed out` marker from
+  `is_transient_fetch_error`'s list. It subsumed the specific `connection timed out`
+  / `operation timed out` entries and would also match unrelated non-network
+  "timed out" messages (a lock wait, a hook), triggering a spurious fetch retry. The
+  specific timeout phrases are retained.
 
 ## [0.1.0] - 2026-06-08
 

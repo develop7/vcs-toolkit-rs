@@ -46,6 +46,14 @@ crates; tag releases as `vcs-jj-v<version>`.
   with no `{old => new}` brace form (jj always renders renames with it) expanded to
   `old == new` and set `old_path == path`; it now sets `old_path` to `None`, so
   `old_path != path` stays a reliable "is this a real rename?" test for consumers.
+- `resolve_list`'s "no conflicts" detection (the benign non-zero exit) matches the
+  stable core phrase **case-insensitively**, absorbing a jj capitalization/wording
+  change rather than surfacing a conflict-free revision as an error. (jj output is
+  English-only, so the risk is version wording, not locale.)
+- The jj conflict parser's region terminator now requires the structural
+  `conflict N of M ends` form only — the loose `ends_with("ends")` fallback was
+  removed, so a content line that is a run of exactly the marker length followed by
+  a word ending in "ends" can't be mistaken for the end marker.
 
 ## [0.5.0] - 2026-06-08
 

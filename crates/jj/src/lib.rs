@@ -1071,8 +1071,12 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
             // jj exits non-zero with "No conflicts found …" when the revision is
             // conflict-free — the one non-zero we read as an empty list. Any other
             // failure (bad revset, not a repo, …) must surface, not masquerade as
-            // "no conflicts".
-            _ if res.stderr().contains("No conflicts") => Ok(Vec::new()),
+            // "no conflicts". `resolve --list` has no exit-code contract that
+            // distinguishes the two, so this matches the message; jj's output is
+            // English-only (no localization), so the risk is version *wording* drift,
+            // not locale — matched on the stable core phrase, case-insensitively, to
+            // absorb a capitalization change.
+            _ if res.stderr().to_ascii_lowercase().contains("no conflicts") => Ok(Vec::new()),
             _ => {
                 res.ensure_success()?;
                 Ok(Vec::new()) // unreachable: a non-zero exit always errors above.
