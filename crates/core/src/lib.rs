@@ -1064,6 +1064,29 @@ mod tests {
         assert_eq!(worktrees[0].path, Path::new("/repo"));
     }
 
+    // remove_worktree surfaces a `workspace forget` failure rather than swallowing
+    // it — name resolution already proved the workspace is registered, so a forget
+    // error is a real dangling-registration the caller should see.
+    #[tokio::test]
+    async fn jj_remove_worktree_surfaces_forget_error() {
+        let repo = jj_repo(
+            ScriptedRunner::new()
+                .on(["jj", "workspace", "list"], Reply::ok("ws1\tc0ffee\t\n"))
+                .on(
+                    ["jj", "workspace", "root", "--name", "ws1"],
+                    Reply::ok("/repo/ws1\n"),
+                )
+                .on(
+                    ["jj", "workspace", "forget"],
+                    Reply::fail(1, "Error: cannot forget workspace"),
+                ),
+        );
+        // `/repo/ws1` does not exist on disk, so the dir-removal step is skipped and
+        // the forget error is the sole outcome.
+        let res = repo.remove_worktree(Path::new("/repo/ws1"), false).await;
+        assert!(res.is_err(), "a forget failure is surfaced, not swallowed");
+    }
+
     #[tokio::test]
     async fn kind_and_escape_hatches_reflect_backend() {
         let repo = git_repo(ScriptedRunner::new());
@@ -1165,24 +1188,21 @@ mod tests {
 
     #[tokio::test]
     async fn jj_local_branches_maps_bookmark_list() {
+        // BOOKMARK_LIST_TEMPLATE rows: `name\t<commit>`.
         let repo = jj_repo(ScriptedRunner::new().on(
             ["jj", "bookmark", "list"],
-            Reply::ok("main: chg cmt desc\nfeat: c2 m2 d2\n"),
+            Reply::ok("main\tcmt\nfeat\tm2\n"),
         ));
         assert_eq!(repo.local_branches().await.unwrap(), ["main", "feat"]);
     }
 
     #[tokio::test]
     async fn jj_branch_exists_scans_bookmarks() {
-        let repo = jj_repo(ScriptedRunner::new().on(
-            ["jj", "bookmark", "list"],
-            Reply::ok("main: chg cmt desc\n"),
-        ));
+        let repo =
+            jj_repo(ScriptedRunner::new().on(["jj", "bookmark", "list"], Reply::ok("main\tcmt\n")));
         assert!(repo.branch_exists("main").await.unwrap());
-        let repo2 = jj_repo(ScriptedRunner::new().on(
-            ["jj", "bookmark", "list"],
-            Reply::ok("main: chg cmt desc\n"),
-        ));
+        let repo2 =
+            jj_repo(ScriptedRunner::new().on(["jj", "bookmark", "list"], Reply::ok("main\tcmt\n")));
         assert!(!repo2.branch_exists("missing").await.unwrap());
     }
 

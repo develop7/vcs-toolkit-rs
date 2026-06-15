@@ -109,14 +109,33 @@ pub(crate) async fn snapshot<R: ProcessRunner>(jj: &Jj<R>, dir: &Path) -> Result
     let row = jj
         .template_query(dir, "@", SNAPSHOT_TEMPLATE, Some(1))
         .await?;
-    let mut fields = row.trim_end_matches(['\r', '\n']).split('\t');
-    let head = fields.next().filter(|s| !s.is_empty()).map(str::to_string);
+    let line = row.trim_end_matches(['\r', '\n']);
+    let fields: Vec<&str> = line.split('\t').collect();
+    // SNAPSHOT_TEMPLATE renders exactly four tab-separated fields: commit_id,
+    // comma-joined bookmarks, the empty-flag, and the conflict-flag. A different
+    // arity means the template / jj contract drifted — debug-assert it (so tests
+    // and debug builds catch a template edit) and read each field by position so a
+    // release build still returns a *coherent* snapshot rather than one whose
+    // `dirty` flag flips on a truncated row.
+    debug_assert_eq!(
+        fields.len(),
+        4,
+        "jj snapshot template arity drift (expected 4 tab fields): {line:?}"
+    );
+    let head = fields
+        .first()
+        .copied()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let branch = fields
-        .next()
+        .get(1)
         .and_then(|b| b.split(',').find(|n| !n.is_empty()))
         .map(str::to_string);
-    let dirty = fields.next() != Some("1"); // `empty == "1"` ⇒ clean
-    let conflicted = fields.next() == Some("1");
+    // Read the flags as explicit values: `empty == "0"` ⇒ a non-empty change ⇒
+    // dirty (so a missing/garbled field falls to clean, not a contradictory
+    // "dirty with 0 changes"); `conflict == "1"` ⇒ conflicted.
+    let dirty = fields.get(2) == Some(&"0");
+    let conflicted = fields.get(3) == Some(&"1");
     // jj has no paused merge/rebase; a conflict is recorded on the change itself.
     let operation = if conflicted {
         OperationState::Conflict
@@ -319,6 +338,11 @@ pub(crate) async fn create_worktree<R: ProcessRunner>(
     base: &str,
 ) -> Result<CreateOutcome> {
     let ws_name = workspace_name_for(branch);
+    // Whether the destination existed *before* we touched it. `jj workspace add`
+    // creates the directory itself, so a pre-existing path is not ours to delete:
+    // the rollback below must not `remove_dir_all` a directory the caller already
+    // had (that would be silent data loss on an unrelated failure).
+    let preexisting = path.exists();
     jj.workspace_add(dir, WorkspaceAdd::new(ws_name.clone(), base, path))
         .await?;
     // `workspace add -r <base>` puts a fresh empty change on the new workspace's
@@ -330,8 +354,9 @@ pub(crate) async fn create_worktree<R: ProcessRunner>(
         // workspace and its on-disk dir, but the bookmark didn't land. Roll back
         // so a failed call doesn't leak a half-made worktree — mirror
         // `remove_worktree` (delete the dir first, then forget the workspace
-        // best-effort), then surface the original error.
-        if path.exists() {
+        // best-effort), then surface the original error. Only remove the dir if we
+        // created it (it didn't exist before `workspace add`).
+        if !preexisting && path.exists() {
             let _ = std::fs::remove_dir_all(path);
         }
         let _ = jj.workspace_forget(dir, &ws_name).await;
@@ -352,8 +377,12 @@ pub(crate) async fn remove_worktree<R: ProcessRunner>(
     if path.exists() {
         std::fs::remove_dir_all(path)?;
     }
-    // Best-effort: jj happily forgets an already-deleted workspace dir.
-    let _ = jj.workspace_forget(dir, &name).await;
+    // Then forget the workspace. jj happily forgets an already-deleted workspace
+    // dir, so this normally succeeds; we *surface* a failure rather than swallow it
+    // (name resolution above already proved the workspace is registered, so an
+    // error here is a real dangling-registration the caller should see and can
+    // retry — the dir is gone, so a retry skips straight back to this forget).
+    jj.workspace_forget(dir, &name).await?;
     Ok(())
 }
 
@@ -449,11 +478,41 @@ mod tests {
         assert_eq!(change_kind_from_status('R'), ChangeKind::Renamed);
     }
 
+    // A `ScriptedRunner` that also performs `jj workspace add`'s real side effect —
+    // creating the destination directory — so a hermetic test can exercise the
+    // rollback's "we created the dir, so clean it up" branch faithfully: the dir
+    // does **not** exist when `create_worktree` is entered (matching the real flow,
+    // where `workspace add` is what creates it), and only appears once the mocked
+    // `workspace add` "runs".
+    struct AddCreatesDir {
+        inner: processkit::testing::ScriptedRunner,
+        dir: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl processkit::ProcessRunner for AddCreatesDir {
+        async fn output(
+            &self,
+            command: &processkit::Command,
+        ) -> processkit::Result<processkit::ProcessResult<String>> {
+            let args: Vec<String> = command
+                .arguments()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            if args.iter().any(|a| a == "workspace") && args.iter().any(|a| a == "add") {
+                let _ = std::fs::create_dir_all(&self.dir);
+            }
+            self.inner.output(command).await
+        }
+    }
+
     // R1: `create_worktree` is two non-atomic steps (`workspace add` then
-    // `bookmark create`). If the bookmark step fails, the just-added workspace +
-    // its on-disk dir must be cleaned up rather than leaked. Driven hermetically:
-    // `workspace add` succeeds, `bookmark create` fails, and we assert the error
-    // propagates and the dir is gone.
+    // `bookmark create`). If the bookmark step fails, the workspace dir that
+    // `workspace add` just created must be cleaned up rather than leaked. Driven
+    // hermetically with `AddCreatesDir` so the dir is born from the mocked
+    // `workspace add` (not pre-created): `bookmark create` fails, and we assert the
+    // error propagates and the dir is gone.
     #[tokio::test]
     async fn create_worktree_rolls_back_when_bookmark_step_fails() {
         use processkit::testing::{Reply, ScriptedRunner};
@@ -463,9 +522,43 @@ mod tests {
         let tmp = TempDir::new("r1-worktree-rollback");
         let repo = tmp.path();
         let wt = repo.join("wt");
-        // The ScriptedRunner never touches the filesystem, so stand in for the dir
-        // a real `jj workspace add` would have created.
+        assert!(!wt.exists(), "the worktree dir must not pre-exist");
+
+        let jj = Jj::with_runner(AddCreatesDir {
+            dir: wt.clone(),
+            inner: ScriptedRunner::new()
+                .on(["jj", "workspace", "add"], Reply::ok(""))
+                .on(
+                    ["jj", "bookmark", "create"],
+                    Reply::fail(1, "bookmark already exists\n"),
+                )
+                .on(["jj", "workspace", "forget"], Reply::ok("")),
+        });
+
+        let result = create_worktree(&jj, repo, &wt, "feature", "@").await;
+
+        assert!(result.is_err(), "the bookmark-step failure must propagate");
+        assert!(
+            !wt.exists(),
+            "the worktree dir that `workspace add` created must be cleaned up on rollback"
+        );
+    }
+
+    // The rollback's complement: a directory that already existed when
+    // `create_worktree` was entered is **not** deleted on a bookmark-step failure
+    // (it isn't ours to remove). Here the dir pre-exists, so `AddCreatesDir` isn't
+    // needed — a plain `ScriptedRunner` suffices.
+    #[tokio::test]
+    async fn create_worktree_rollback_spares_preexisting_dir() {
+        use processkit::testing::{Reply, ScriptedRunner};
+        use vcs_jj::Jj;
+        use vcs_testkit::TempDir;
+
+        let tmp = TempDir::new("r1-worktree-spare");
+        let repo = tmp.path();
+        let wt = repo.join("existing");
         std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("keep.txt"), b"mine").unwrap(); // sentinel
 
         let jj = Jj::with_runner(
             ScriptedRunner::new()
@@ -481,8 +574,8 @@ mod tests {
 
         assert!(result.is_err(), "the bookmark-step failure must propagate");
         assert!(
-            !wt.exists(),
-            "the half-made worktree dir must be cleaned up on rollback"
+            wt.join("keep.txt").exists(),
+            "a pre-existing directory must survive the rollback untouched"
         );
     }
 }

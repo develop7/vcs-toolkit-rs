@@ -29,6 +29,11 @@ crates; tag releases as `vcs-jj-v<version>`.
   `stdout`/`stderr`, `Error::Signalled`/`NotFound`/`CassetteMiss` are first-class
   variants, the blanket `From<io::Error>` is gone, and `Invocation::cwd` is now
   `Option<PathBuf>`.
+- `bookmarks()` now reads `jj bookmark list` through an explicit `-T` template
+  (`name\t<commit>`) instead of scraping jj's human-readable default output (which
+  interleaves the change id, description, and indented remote-tracking lines). Same
+  `Vec<Bookmark>` result, but robust against jj display-format drift — matching how
+  `bookmarks_all`/`reachable_bookmarks` already parse templated rows.
 
 ### Removed
 - The **`cancellation`** feature — cancellation is always available now

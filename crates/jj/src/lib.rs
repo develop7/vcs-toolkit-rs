@@ -803,7 +803,10 @@ impl<R: ProcessRunner> JjApi for Jj<R> {
     async fn bookmarks(&self, dir: &Path) -> Result<Vec<Bookmark>> {
         self.core
             .parse(
-                self.cmd_in(dir, ["bookmark", "list"]),
+                self.cmd_in(
+                    dir,
+                    ["bookmark", "list", "-T", parse::BOOKMARK_LIST_TEMPLATE],
+                ),
                 parse::parse_bookmarks,
             )
             .await
@@ -1991,6 +1994,28 @@ mod tests {
             rec.only_call().args_str(),
             ["bookmark", "track", "feat@origin", "--color", "never"]
         );
+    }
+
+    #[tokio::test]
+    async fn bookmarks_uses_template_and_parses_rows() {
+        let rec = RecordingRunner::replying(Reply::ok("main\tabc123\nfeature\tdef456\n"));
+        let jj = Jj::with_runner(&rec);
+        let marks = jj.bookmarks(Path::new(".")).await.unwrap();
+        assert_eq!(
+            rec.only_call().args_str(),
+            [
+                "bookmark",
+                "list",
+                "-T",
+                parse::BOOKMARK_LIST_TEMPLATE,
+                "--color",
+                "never"
+            ]
+        );
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].name, "main");
+        assert_eq!(marks[0].target, "abc123");
+        assert_eq!(marks[1].name, "feature");
     }
 
     #[tokio::test]

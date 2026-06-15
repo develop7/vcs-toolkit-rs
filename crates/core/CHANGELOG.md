@@ -37,7 +37,19 @@ crates; tag releases as `vcs-core-v<version>`.
   available without a feature.
 
 ### Fixed
--
+- **jj worktree safety.** `create_worktree`'s rollback (run when the bookmark
+  anchor fails after `workspace add` already created the workspace) no longer
+  deletes the destination directory unless `workspace add` itself created it — a
+  pre-existing directory the caller already had is left intact instead of being
+  wiped on an unrelated failure.
+- **jj `remove_worktree` no longer hides a `workspace forget` failure.** The dir is
+  still deleted first (an orphan dir is worse than a dangling registration), but a
+  failing `forget` now surfaces as an `Err` (name resolution already proved the
+  workspace is registered) instead of being swallowed — the caller can retry.
+- **jj `snapshot` parses defensively.** The `@`-template row is now read field-by-
+  position with a debug-assert on its arity, so a truncated/garbled row yields a
+  *coherent* snapshot (clean, unconflicted) rather than one whose `dirty` flag flips
+  to a contradictory "dirty with 0 changes."
 
 ## [0.3.0] - 2026-06-08
 

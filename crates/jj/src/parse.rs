@@ -86,6 +86,13 @@ pub(crate) const BOOKMARKS_TEMPLATE: &str = "local_bookmarks.map(|b| b.name()).j
 /// one row per local *and* remote-tracking bookmark.
 pub(crate) const BOOKMARK_ALL_TEMPLATE: &str = "name ++ \"\\t\" ++ remote ++ \"\\t\" ++ if(tracked, \"1\", \"0\") ++ \"\\t\" ++ if(normal_target, normal_target.commit_id().short(), \"\") ++ \"\\n\"";
 
+/// `jj bookmark list -T` template (no `-a`, so local bookmarks only):
+/// `name\t<commit>`, one row per local bookmark. Machine-parsed in place of jj's
+/// human-readable default, which interleaves the change id, description, and
+/// indented remote-tracking lines that drift with jj's display format.
+pub(crate) const BOOKMARK_LIST_TEMPLATE: &str =
+    "name ++ \"\\t\" ++ if(normal_target, normal_target.commit_id().short(), \"\") ++ \"\\n\"";
+
 /// `jj log -T` template: `"1"` when the commit has a conflict, else `"0"`.
 pub(crate) const CONFLICT_TEMPLATE: &str = "if(conflict, \"1\", \"0\")";
 
@@ -205,25 +212,21 @@ pub(crate) fn parse_changes(output: &str) -> Vec<Change> {
         .collect()
 }
 
-/// Parse `jj bookmark list` default output. Local bookmark lines look like
-/// `name: <change_id> <commit_id> <description>`; remote-tracking lines are
-/// indented and skipped.
+/// Parse rows produced by [`BOOKMARK_LIST_TEMPLATE`]: `name\t<commit>`, one row
+/// per local bookmark. A row with an empty name contributes nothing.
 pub(crate) fn parse_bookmarks(output: &str) -> Vec<Bookmark> {
     output
         .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with(char::is_whitespace))
+        .filter(|line| !line.is_empty())
         .filter_map(|line| {
-            let (name, rest) = line.split_once(':')?;
-            // Tokens after the name are `<change_id> <commit_id> …`; take the
-            // commit id (2nd), falling back to whatever is present.
-            let mut tokens = rest.split_whitespace();
-            let target = tokens
-                .nth(1)
-                .or_else(|| rest.split_whitespace().next())
-                .unwrap_or("")
-                .to_string();
+            let mut fields = line.split('\t');
+            let name = fields.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let target = fields.next().unwrap_or("").trim().to_string();
             Some(Bookmark {
-                name: name.trim().to_string(),
+                name: name.to_string(),
                 target,
             })
         })
@@ -519,8 +522,9 @@ mod tests {
     }
 
     #[test]
-    fn bookmarks_parse_name_and_commit_and_skip_remotes() {
-        let input = "main: pzlznprr f5d07685 feat(process): job-backed spawn\n  @origin: pzlznprr f5d07685 feat(process)\nfeature: abcd1234 deadbeef wip\n";
+    fn bookmarks_parse_name_and_commit_from_template() {
+        // Rows produced by BOOKMARK_LIST_TEMPLATE: `name\t<commit>`.
+        let input = "main\tf5d07685\nfeature\tdeadbeef\n";
         let got = parse_bookmarks(input);
         assert_eq!(
             got,
@@ -534,6 +538,16 @@ mod tests {
                     target: "deadbeef".into()
                 },
             ]
+        );
+        // A bookmark with no normal target (e.g. conflicted/deleted) → empty
+        // commit field, still a row; an empty name contributes nothing.
+        let got = parse_bookmarks("conflicted\t\n\tstray\n");
+        assert_eq!(
+            got,
+            vec![Bookmark {
+                name: "conflicted".into(),
+                target: String::new()
+            }]
         );
     }
 
