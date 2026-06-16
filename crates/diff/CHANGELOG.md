@@ -16,6 +16,14 @@ crates; tag releases as `vcs-diff-v<version>`.
 -
 
 ### Fixed
+- **Git-quoted paths are now decoded instead of dropping the file.** git C-quotes a
+  path (wraps it in `"…"` with `\NNN` octal/`\t`/`\"`/`\\` escapes) when it contains a
+  control byte, a quote/backslash, or — with the default `core.quotePath=true` — **any
+  non-ASCII byte** (e.g. `café.txt` → `"caf\303\251.txt"`). The parser only matched the
+  *unquoted* `+++ b/` / `--- a/` / `rename` / `" b/"` forms, so a file with a non-ASCII
+  (or tab/quote) name was **silently omitted** from `parse_diff`. It now unquotes the
+  path on every source (`rename to`/`from`, `+++`/`---`, and the `diff --git` header
+  fallback), so internationalised filenames parse correctly.
 - A diff section whose path can't be resolved to a non-empty string (a malformed
   `diff --git … b/` with no path, and no `+++`/`---`/rename line) is now **dropped**
   rather than yielding a `FileDiff` with an empty `path`. A present-but-empty

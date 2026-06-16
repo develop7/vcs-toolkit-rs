@@ -2,8 +2,10 @@
 //! hermetic and run on CI.
 //!
 //! The git-format unified-diff model + parser and the version type live in the
-//! shared [`vcs_diff`] crate (`jj diff --git` and `git diff` are byte-identical);
-//! this module keeps only the jj-specific parsers (changes, bookmarks, op log, …).
+//! shared [`vcs_diff`] crate (`jj diff --git` and `git diff` are byte-identical for
+//! ASCII paths — they differ only in non-ASCII filename rendering, which the shared
+//! parser decodes); this module keeps only the jj-specific parsers (changes,
+//! bookmarks, op log, …).
 
 use vcs_diff::DiffStat;
 

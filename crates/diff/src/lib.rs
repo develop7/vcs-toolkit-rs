@@ -3,9 +3,11 @@
 //! `vcs-diff` — the shared git-format unified-diff model and parser for the
 //! [vcs-toolkit-rs](https://github.com/ZelAnton/vcs-toolkit-rs) workspace.
 //!
-//! `git diff` and `jj diff --git` emit byte-identical **git-format unified
-//! diffs**, so `vcs-git` and `vcs-jj` share one model and one parser here rather
-//! than each carrying a copy that could silently drift. This is the foundational
+//! `git diff` and `jj diff --git` emit the same **git-format unified diffs**
+//! (byte-identical for ASCII paths; they differ only in non-ASCII filename
+//! rendering — git octal-C-quotes by default, jj writes raw UTF-8 — both of which
+//! the parser decodes), so `vcs-git` and `vcs-jj` share one model and one parser
+//! here rather than each carrying a copy that could silently drift. This is the foundational
 //! crate both depend on: **std only**, no async, no subprocess — pure data types
 //! and pure functions over text the wrapper crates obtained elsewhere.
 //!
