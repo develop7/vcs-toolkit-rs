@@ -325,9 +325,10 @@ pub struct BlameLine {
 }
 
 /// Parse `git blame --line-porcelain` output. Every line gets a header
-/// (`<40-hex sha> <orig> <final> [<group count>]`), a full set of `tag value`
-/// metadata lines (`author`, `author-time`, …, optional `boundary`), then the
-/// content prefixed with a literal TAB.
+/// (`<sha> <orig> <final> [<group count>]`, where `<sha>` is a 40-hex SHA-1 or a
+/// 64-hex SHA-256 object id), a full set of `tag value` metadata lines (`author`,
+/// `author-time`, …, optional `boundary`), then the content prefixed with a literal
+/// TAB.
 pub(crate) fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
     let mut lines = Vec::new();
     let mut current: Option<BlameLine> = None;
@@ -344,9 +345,12 @@ pub(crate) fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
             Some((l, v)) => (l, v),
             None => (line, ""),
         };
-        // Header: a 40-hex sha followed by line numbers (and an optional group
-        // count, which only appears on a group's first line).
-        if label.len() == 40 && label.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Header: a commit sha followed by line numbers (and an optional group
+        // count, which only appears on a group's first line). Accept both SHA-1
+        // (40 hex) and SHA-256 (64 hex) object ids — a SHA-256 repo would otherwise
+        // never match, so `blame` would silently return an empty `Vec`.
+        if (label.len() == 40 || label.len() == 64) && label.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             let mut nums = value.split(' ');
             let orig = nums.next().and_then(|n| n.parse().ok()).unwrap_or(0);
             let fin = nums.next().and_then(|n| n.parse().ok()).unwrap_or(0);
@@ -569,6 +573,27 @@ mod tests {
     fn blame_ignores_garbage_and_empty_input() {
         assert!(parse_blame_porcelain("").is_empty());
         assert!(parse_blame_porcelain("not a header\n\torphan content\n").is_empty());
+    }
+
+    // A SHA-256 repository emits 64-hex commit ids; the header must still be
+    // recognised (the old `len()==40`-only check made `blame` return an empty Vec).
+    #[test]
+    fn blame_recognises_sha256_object_ids() {
+        let sha = "c".repeat(64);
+        let out = format!(
+            "{sha} 1 1 1\nauthor Carol\nauthor-mail <c@x>\nauthor-time 1717700000\n\
+             author-tz +0000\ncommitter Carol\nsummary s\nfilename f.txt\n\
+             \tline\n"
+        );
+        let lines = parse_blame_porcelain(&out);
+        assert_eq!(
+            lines.len(),
+            1,
+            "a SHA-256 blame must parse, not drop to empty"
+        );
+        assert_eq!(lines[0].commit, sha);
+        assert_eq!(lines[0].author, "Carol");
+        assert_eq!(lines[0].content, "line");
     }
 
     #[test]

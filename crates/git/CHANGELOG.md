@@ -77,6 +77,18 @@ crates; tag releases as `vcs-git-v<version>`.
 - `config_get` strips only git's trailing line terminator (`\n`/`\r\n`) instead of
   all trailing whitespace, so a config value that legitimately ends in spaces or a
   tab is returned intact.
+- **`blame` works on SHA-256 repositories.** The blame-porcelain header parser only
+  recognised a **40-hex** (SHA-1) commit id, so on a SHA-256 repo (64-hex object ids)
+  no header matched and `blame` silently returned an **empty `Vec`**. It now accepts
+  both 40- and 64-hex ids.
+- **`remote_head_branch` and `upstream` surface a timeout/signal instead of reporting
+  it as "absent".** Both mapped *any* non-success outcome to `None`, so a timed-out or
+  signal-killed run read as "no default branch"/"no upstream" rather than an error.
+  `remote_head_branch` now maps exit 0 → the branch, exit 1 (the `--quiet` "unset"
+  signal) → `None`, and anything else (a real failure / no exit code) errors via
+  `ensure_success`; `upstream` keeps a non-zero **exit** as `None` (git uses exit 128
+  for both "no upstream" and a real failure, indistinguishable by code) but surfaces a
+  no-exit-code timeout/signal — matching `config_get`/`current_branch`.
 
 ## [0.5.0] - 2026-06-08
 

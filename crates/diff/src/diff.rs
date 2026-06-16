@@ -179,14 +179,15 @@ fn parse_section(section: &str) -> Option<FileDiff> {
             rename_from = Some(unquote_git_path(p.trim_end()));
         } else if let Some(rest) = line.strip_prefix("+++ ") {
             // `b/<path>`, or `"b/<path>"` quoted (the `b/` is *inside* the quotes),
-            // or `/dev/null` (deleted side). Unquote, then strip the `b/`.
-            if let Some(p) = unquote_git_path(rest.trim_end()).strip_prefix("b/") {
-                new_path = Some(p.to_string());
-            }
+            // or `/dev/null` (deleted side). Unquote, then strip the `b/` — a
+            // `/dev/null` (no `b/`) yields `None`, leaving `new_path` unset.
+            new_path = unquote_git_path(rest.trim_end())
+                .strip_prefix("b/")
+                .map(str::to_string);
         } else if let Some(rest) = line.strip_prefix("--- ") {
-            if let Some(p) = unquote_git_path(rest.trim_end()).strip_prefix("a/") {
-                minus_path = Some(p.to_string());
-            }
+            minus_path = unquote_git_path(rest.trim_end())
+                .strip_prefix("a/")
+                .map(str::to_string);
         }
     }
     if let Some(done) = current.take() {
