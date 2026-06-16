@@ -234,13 +234,16 @@ pub fn parse_conflicts(content: &str) -> Result<Vec<JjConflictSegment>> {
                 let Some(to_line) = lines.next() else {
                     return Err(parse_error("diff section missing its `to:` line".into()));
                 };
-                if marker_run(to_line, '\\').is_none() {
+                // The `\\\` run must match the `%%%` run length `m` (== the
+                // region's `n`) — jj lengthens every marker in a file together,
+                // so a differing run is malformed input, not a valid `to:` line.
+                if marker_run(to_line, '\\') != Some(m) {
                     return Err(parse_error(format!(
-                        "diff section: expected a \\\\\\\\\\\\\\\\ `to:` line, got {:?}",
+                        "diff section: expected a {m}-long `\\` `to:` line, got {:?}",
                         to_line.trim_end()
                     )));
                 }
-                let to_label = marker_label(to_line, marker_run(to_line, '\\').unwrap())
+                let to_label = marker_label(to_line, m)
                     .trim_start_matches("to:")
                     .trim()
                     .to_string();
@@ -433,6 +436,27 @@ mod tests {
         );
         // And it round-trips byte-for-byte (the content line is stored verbatim).
         assert_eq!(render(&segments), input);
+    }
+
+    // The `\\\ to:` run must match the region's marker length. A `%%%%%%%` (7)
+    // diff header followed by an 8-long `\` run is malformed (jj lengthens all
+    // markers together) and must be rejected, not silently accepted.
+    #[test]
+    fn diff_section_rejects_mismatched_to_marker_length() {
+        let input = concat!(
+            "<<<<<<< conflict 1 of 1\n",
+            "%%%%%%% diff from: ab cd \"base\"\n",
+            "\\\\\\\\\\\\\\\\        to: ef gh \"side\"\n", // 8 backslashes ≠ 7
+            "-line\n",
+            "+new\n",
+            ">>>>>>> conflict 1 of 1 ends\n",
+        );
+        let err = parse_conflicts(input).unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }), "structured parse error");
+        assert!(
+            err.to_string().contains("to:"),
+            "error should point at the malformed `to:` line: {err}"
+        );
     }
 
     #[test]

@@ -152,7 +152,9 @@ pub struct AnnotationLine {
     pub change_id: String,
     /// Line number in the annotated file (1-based).
     pub line: u32,
-    /// The line's content (without the trailing newline).
+    /// The line's content (the raw bytes jj reports for the line, with only
+    /// the `\n` row separator removed; a trailing `\r` from a CRLF-terminated
+    /// source file is preserved, not stripped).
     pub content: String,
 }
 
@@ -176,9 +178,14 @@ pub(crate) fn parse_operations(output: &str) -> Vec<Operation> {
 
 /// Parse rows produced by [`ANNOTATE_TEMPLATE`]: one row per source line, the
 /// 1-based line number is the row index.
+///
+/// Splits on `\n` (not [`str::lines`]) so a trailing `\r` belonging to a
+/// CRLF-terminated source line stays in the content instead of being stripped.
+/// The empty final segment left by a trailing newline carries no tab, so the
+/// `split_once('\t')?` filter drops it and the line numbering stays exact.
 pub(crate) fn parse_annotate(output: &str) -> Vec<AnnotationLine> {
     output
-        .lines()
+        .split('\n')
         .enumerate()
         .filter_map(|(idx, line)| {
             let (change_id, content) = line.split_once('\t')?;
@@ -236,19 +243,23 @@ pub(crate) fn parse_bookmarks(output: &str) -> Vec<Bookmark> {
 }
 
 /// Parse rows produced by [`BOOKMARK_ALL_TEMPLATE`]:
-/// `name\t<remote>\t<tracked 1/0>\t<commit>` per local/remote bookmark.
+/// `name\t<remote>\t<tracked 1/0>\t<commit>` per local/remote bookmark. A row
+/// whose name field is empty contributes nothing (mirrors [`parse_bookmarks`]).
 pub(crate) fn parse_bookmarks_all(output: &str) -> Vec<BookmarkRef> {
     output
         .lines()
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
             let mut fields = line.split('\t');
-            let name = fields.next()?.to_string();
+            let name = fields.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
             let remote = fields.next().unwrap_or("");
             let tracked = fields.next() == Some("1");
             let target = fields.next().unwrap_or("").to_string();
             Some(BookmarkRef {
-                name,
+                name: name.to_string(),
                 remote: (!remote.is_empty()).then(|| remote.to_string()),
                 target,
                 tracked,
@@ -455,6 +466,18 @@ mod tests {
         assert!(parse_annotate("").is_empty());
     }
 
+    // A CRLF-terminated source line keeps its `\r` in the content (the old
+    // `.lines()` split silently stripped it), and a trailing newline does not
+    // add a phantom row or perturb the 1-based line numbering.
+    #[test]
+    fn annotate_preserves_cr_and_ignores_trailing_newline() {
+        let out = "kxoyzabc\tfn main() {\r\nkxoyzabc\t}\r\n";
+        let lines = parse_annotate(out);
+        assert_eq!(lines.len(), 2, "no phantom row from the trailing newline");
+        assert_eq!(lines[0].content, "fn main() {\r", "CR preserved");
+        assert_eq!((lines[1].line, lines[1].content.as_str()), (2, "}\r"));
+    }
+
     // EVOLOG_TEMPLATE renders the same columns as CHANGE_TEMPLATE, so the rows
     // flow through parse_changes unchanged.
     #[test]
@@ -555,6 +578,32 @@ mod tests {
                 name: "conflicted".into(),
                 target: String::new()
             }]
+        );
+    }
+
+    // `parse_bookmarks_all` drops a row whose name field is empty, matching its
+    // siblings — no phantom `BookmarkRef { name: "" }` leaks through.
+    #[test]
+    fn bookmarks_all_drops_empty_name_rows() {
+        let input = "main\t\t1\tf5d07685\n\torigin\t1\tdeadbeef\nfeat\torigin\t0\tcafef00d\n";
+        let got = parse_bookmarks_all(input);
+        assert_eq!(
+            got,
+            vec![
+                BookmarkRef {
+                    name: "main".into(),
+                    remote: None,
+                    target: "f5d07685".into(),
+                    tracked: true,
+                },
+                BookmarkRef {
+                    name: "feat".into(),
+                    remote: Some("origin".into()),
+                    target: "cafef00d".into(),
+                    tracked: false,
+                },
+            ],
+            "the empty-name row must contribute nothing"
         );
     }
 

@@ -54,6 +54,16 @@ crates; tag releases as `vcs-jj-v<version>`.
   `conflict N of M ends` form only — the loose `ends_with("ends")` fallback was
   removed, so a content line that is a run of exactly the marker length followed by
   a word ending in "ends" can't be mistaken for the end marker.
+- `bookmarks_all` (`jj bookmark list --all`) now drops a row whose name field is
+  empty instead of yielding a phantom `BookmarkRef { name: "" }`, matching how
+  `bookmarks`/`workspaces`/`reachable_bookmarks` already reject empty-name rows.
+- `file_annotate` keeps a CRLF source line's trailing `\r` in the annotation
+  content — parsing now splits on `\n` instead of `str::lines()`, which silently
+  stripped the `\r`. Line numbering is unchanged (the trailing-newline artifact
+  carries no tab and is dropped).
+- The jj conflict parser now validates the `\\\ to:` line's marker-run length
+  against the region's marker length (mirroring the `%%%%%%%` gate); a `to:` line
+  with a mismatched run is rejected as malformed rather than silently accepted.
 
 ## [0.5.0] - 2026-06-08
 
